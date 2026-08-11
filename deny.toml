@@ -19,6 +19,10 @@ targets = [
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+# Only fail on an UNMAINTAINED advisory for a crate WE own; transitive deps going
+# unmaintained (paste, proc-macro-error, the unic-* cluster pulled in by the AI
+# stack) is not actionable for us and shouldn't block the build.
+unmaintained = "workspace"
 # Kept in sync with `.cargo/audit.toml`. Empty to start - POSEIDEN's core
 # stack (reqwest/rustls, axum, sqlx, tokio, serde) has no standing advisories.
 # Tauri's Linux webview backend (the GTK3 cluster) is the likely source of
@@ -46,6 +50,9 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "Unlicense",
+    # CDLA-Permissive-2.0: a permissive Community Data License used by a couple of
+    # crates in the HuggingFace/AI dependency stack (hf-hub ecosystem).
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

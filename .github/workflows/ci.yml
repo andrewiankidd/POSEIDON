@@ -58,8 +58,9 @@ jobs:
           tool: cargo-deny
       - name: cargo-deny (license + ban + dup + advisories)
         # Run in-job (not the action's frozen container) so it uses the pinned
-        # toolchain from rust-toolchain.toml instead of a mismatched one.
-        run: cargo deny check --all-features
+        # toolchain from rust-toolchain.toml instead of a mismatched one. Checks
+        # the default dependency graph (the cuda feature is an opt-in niche).
+        run: cargo deny check
       - name: Install cargo-machete (prebuilt binary)
         run: |
           VERSION=0.7.0
