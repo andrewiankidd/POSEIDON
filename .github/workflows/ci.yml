@@ -43,10 +43,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: cargo-audit (RustSec advisories)
-        uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit (prebuilt binary)
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo-audit (RustSec advisories)
+        # Run cargo-audit directly (not the check-run action) so it honours our
+        # .cargo/audit.toml ignore list and needs no `checks: write` token.
+        run: cargo audit
       - name: cargo-deny (license + ban + dup + advisories)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
