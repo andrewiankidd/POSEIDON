@@ -25,12 +25,18 @@ const MAX_NEW_TOKENS: usize = 200;
 
 /// An offline tagger backed by a downloaded quantized model. Loaded lazily on the
 /// first `suggest` (the download can be hundreds of MB) and reused after.
+/// One cached model's slot: an optionally-loaded model behind a mutex that
+/// serialises inference on it, shared via `Arc` across owners.
+type ModelSlot = Arc<Mutex<Option<Loaded>>>;
+/// Process-wide model cache, keyed by model id.
+type ModelCache = Mutex<HashMap<String, ModelSlot>>;
+
 /// Loaded models shared process-wide by model id, so multiple owners choosing the
 /// same offline model share one in-memory copy (a GGUF is ~GB) instead of loading
 /// it per owner. The inner mutex serialises inference on a given model.
-static MODEL_CACHE: OnceLock<Mutex<HashMap<String, Arc<Mutex<Option<Loaded>>>>>> = OnceLock::new();
+static MODEL_CACHE: OnceLock<ModelCache> = OnceLock::new();
 
-fn model_slot(id: &str) -> Arc<Mutex<Option<Loaded>>> {
+fn model_slot(id: &str) -> ModelSlot {
     let cache = MODEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().unwrap();
     map.entry(id.to_string())
@@ -109,7 +115,9 @@ fn chat_prompt(user: &str) -> String {
 pub(crate) fn cuda_available() -> bool {
     #[cfg(feature = "cuda")]
     {
-        Device::cuda_if_available(0).map(|d| d.is_cuda()).unwrap_or(false)
+        Device::cuda_if_available(0)
+            .map(|d| d.is_cuda())
+            .unwrap_or(false)
     }
     #[cfg(not(feature = "cuda"))]
     {
@@ -153,12 +161,17 @@ fn load(preset: &OfflineModel) -> Result<Loaded, String> {
     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
     #[cfg(not(feature = "cuda"))]
     let device = Device::Cpu;
-    tracing::info!(gpu = device.is_cuda(), model = preset.id, "embedded model device");
+    tracing::info!(
+        gpu = device.is_cuda(),
+        model = preset.id,
+        "embedded model device"
+    );
     let mut file = std::fs::File::open(&gguf_path).map_err(|e| format!("open gguf: {e}"))?;
     let content = gguf_file::Content::read(&mut file).map_err(|e| format!("read gguf: {e}"))?;
-    let model =
-        ModelWeights::from_gguf(content, &mut file, &device).map_err(|e| format!("load model: {e}"))?;
-    let tokenizer = Tokenizer::from_bytes(&tok_bytes).map_err(|e| format!("load tokenizer: {e}"))?;
+    let model = ModelWeights::from_gguf(content, &mut file, &device)
+        .map_err(|e| format!("load model: {e}"))?;
+    let tokenizer =
+        Tokenizer::from_bytes(&tok_bytes).map_err(|e| format!("load tokenizer: {e}"))?;
     let eos = tokenizer.token_to_id("<|im_end|>").unwrap_or(151645);
     tracing::info!(model = preset.id, "offline model ready");
     Ok(Loaded {
@@ -212,7 +225,10 @@ fn generate(loaded: &mut Loaded, prompt: &str) -> Result<String, String> {
         let logits = logits.squeeze(0).map_err(cerr)?;
         next = logits_processor.sample(&logits).map_err(cerr)?;
     }
-    loaded.tokenizer.decode(&out, true).map_err(|e| e.to_string())
+    loaded
+        .tokenizer
+        .decode(&out, true)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -271,7 +287,11 @@ mod tests {
         use std::time::Instant;
         let preset = offline_model("qwen2.5-0.5b").expect("preset exists");
         let allowed = [
-            "type:bug", "area:frontend", "priority:high", "platform:mobile", "needs:triage",
+            "type:bug",
+            "area:frontend",
+            "priority:high",
+            "platform:mobile",
+            "needs:triage",
         ];
         let item = TaggerInput {
             id: 0,

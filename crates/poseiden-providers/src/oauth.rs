@@ -250,10 +250,16 @@ mod tests {
 
     #[test]
     fn terminal_errors_fail_with_a_message() {
-        match classify_poll(400, br#"{"error":"expired_token","error_description":"code expired"}"#) {
+        match classify_poll(
+            400,
+            br#"{"error":"expired_token","error_description":"code expired"}"#,
+        ) {
             PollOutcome::Failed(m) => assert_eq!(m, "code expired"),
             _ => panic!("expected Failed"),
         }
-        assert!(matches!(classify_poll(400, b"not json"), PollOutcome::Failed(_)));
+        assert!(matches!(
+            classify_poll(400, b"not json"),
+            PollOutcome::Failed(_)
+        ));
     }
 }

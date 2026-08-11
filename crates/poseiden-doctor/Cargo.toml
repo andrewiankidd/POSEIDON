@@ -9,7 +9,6 @@ description = "POSEIDEN health-check engine - a Doctor that runs registered chec
 
 [dependencies]
 serde = { workspace = true }
-chrono = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }

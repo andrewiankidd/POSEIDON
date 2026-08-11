@@ -379,7 +379,9 @@ impl Store {
             .bind(owner)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.and_then(|r| serde_json::from_str::<UserConfig>(&r.get::<String, _>("config_json")).ok()))
+        Ok(row.and_then(|r| {
+            serde_json::from_str::<UserConfig>(&r.get::<String, _>("config_json")).ok()
+        }))
     }
 
     /// Insert or replace an owner's [`UserConfig`].
@@ -404,7 +406,10 @@ impl Store {
         let rows = sqlx::query("SELECT owner FROM user_config ORDER BY owner")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(|r| r.get::<String, _>("owner")).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<String, _>("owner"))
+            .collect())
     }
 
     // ─────────────────────── Saved reports ───────────────────────
@@ -418,7 +423,9 @@ impl Store {
             .await?;
         Ok(rows
             .into_iter()
-            .filter_map(|r| serde_json::from_str::<ReportSpec>(&r.get::<String, _>("spec_json")).ok())
+            .filter_map(|r| {
+                serde_json::from_str::<ReportSpec>(&r.get::<String, _>("spec_json")).ok()
+            })
             .collect())
     }
 
@@ -429,7 +436,9 @@ impl Store {
             .bind(name)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.and_then(|r| serde_json::from_str::<ReportSpec>(&r.get::<String, _>("spec_json")).ok()))
+        Ok(row.and_then(|r| {
+            serde_json::from_str::<ReportSpec>(&r.get::<String, _>("spec_json")).ok()
+        }))
     }
 
     /// Insert or replace a saved report (keyed by owner + spec name).
@@ -974,19 +983,31 @@ mod tests {
     #[tokio::test]
     async fn user_config_is_owner_isolated() {
         let store = Store::connect_in_memory().await.unwrap();
-        let mut a = poseiden_core::UserConfig::default();
-        a.poll_all_teams = true;
+        let a = poseiden_core::UserConfig {
+            poll_all_teams: true,
+            ..Default::default()
+        };
         store.put_user_config("alice@x.com", &a).await.unwrap();
         // A different owner is independent and starts empty.
         assert!(store.get_user_config("bob@x.com").await.unwrap().is_none());
-        assert!(store.get_user_config("alice@x.com").await.unwrap().unwrap().poll_all_teams);
+        assert!(
+            store
+                .get_user_config("alice@x.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .poll_all_teams
+        );
 
         store
             .put_user_config("bob@x.com", &poseiden_core::UserConfig::default())
             .await
             .unwrap();
         let owners = store.list_config_owners().await.unwrap();
-        assert_eq!(owners, vec!["alice@x.com".to_string(), "bob@x.com".to_string()]);
+        assert_eq!(
+            owners,
+            vec!["alice@x.com".to_string(), "bob@x.com".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -1008,7 +1029,13 @@ mod tests {
             .replace_team_work_items(
                 DEFAULT_OWNER,
                 "Platform",
-                &[wi(1, &[], "2026-07-01T00:00:00Z", "2026-07-12T00:00:00Z", None)],
+                &[wi(
+                    1,
+                    &[],
+                    "2026-07-01T00:00:00Z",
+                    "2026-07-12T00:00:00Z",
+                    None,
+                )],
             )
             .await
             .unwrap();
@@ -1019,7 +1046,10 @@ mod tests {
         // A different team's items are untouched by another team's replace.
         let mut other = wi(3, &[], "2026-07-03T00:00:00Z", "2026-07-13T00:00:00Z", None);
         other.team = "DevOps".into();
-        store.upsert_work_items(DEFAULT_OWNER, &[other]).await.unwrap();
+        store
+            .upsert_work_items(DEFAULT_OWNER, &[other])
+            .await
+            .unwrap();
         store
             .replace_team_work_items(DEFAULT_OWNER, "Platform", &[])
             .await
@@ -1323,9 +1353,18 @@ mod tests {
     #[tokio::test]
     async fn description_survives_round_trip_and_updates_in_place() {
         let store = Store::connect_in_memory().await.unwrap();
-        let mut item = wi(1, &["x"], "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", None);
+        let mut item = wi(
+            1,
+            &["x"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            None,
+        );
         item.description = Some("Original body <b>html</b>".into());
-        store.upsert_work_items(DEFAULT_OWNER, &[item]).await.unwrap();
+        store
+            .upsert_work_items(DEFAULT_OWNER, &[item])
+            .await
+            .unwrap();
         let back = store.list_work_items(DEFAULT_OWNER, None).await.unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(
@@ -1334,7 +1373,13 @@ mod tests {
         );
 
         // Re-upsert the same id with a changed description -> updated in place.
-        let mut updated = wi(1, &["x"], "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z", None);
+        let mut updated = wi(
+            1,
+            &["x"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-02T00:00:00Z",
+            None,
+        );
         updated.description = Some("Edited body".into());
         store
             .upsert_work_items(DEFAULT_OWNER, &[updated])
@@ -1352,14 +1397,26 @@ mod tests {
         store
             .upsert_work_items(
                 "alice@x.com",
-                &[wi(1, &["a"], "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", None)],
+                &[wi(
+                    1,
+                    &["a"],
+                    "2026-07-01T00:00:00Z",
+                    "2026-07-01T00:00:00Z",
+                    None,
+                )],
             )
             .await
             .unwrap();
         store
             .upsert_work_items(
                 "bob@x.com",
-                &[wi(1, &["b"], "2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", None)],
+                &[wi(
+                    1,
+                    &["b"],
+                    "2026-07-01T00:00:00Z",
+                    "2026-07-01T00:00:00Z",
+                    None,
+                )],
             )
             .await
             .unwrap();
@@ -1414,7 +1471,7 @@ mod tests {
             .await
             .unwrap();
         let map = store.ai_suggestions(DEFAULT_OWNER, None).await.unwrap();
-        assert!(map.get(&1).is_none(), "empty set clears the item");
+        assert!(!map.contains_key(&1), "empty set clears the item");
     }
 
     #[tokio::test]
@@ -1443,7 +1500,10 @@ mod tests {
             .await
             .unwrap();
         assert!(platform.contains_key(&1));
-        assert!(!platform.contains_key(&3), "DevOps item excluded by team scope");
+        assert!(
+            !platform.contains_key(&3),
+            "DevOps item excluded by team scope"
+        );
     }
 
     #[tokio::test]
@@ -1492,8 +1552,20 @@ mod tests {
             .upsert_work_items(
                 "bob@x.com",
                 &[
-                    wi(2, &[], "2026-06-01T00:00:00Z", "2026-07-06T00:00:00Z", Some("2026-07-06T00:00:00Z")),
-                    wi(3, &[], "2026-06-01T00:00:00Z", "2026-07-07T00:00:00Z", Some("2026-07-07T00:00:00Z")),
+                    wi(
+                        2,
+                        &[],
+                        "2026-06-01T00:00:00Z",
+                        "2026-07-06T00:00:00Z",
+                        Some("2026-07-06T00:00:00Z"),
+                    ),
+                    wi(
+                        3,
+                        &[],
+                        "2026-06-01T00:00:00Z",
+                        "2026-07-07T00:00:00Z",
+                        Some("2026-07-07T00:00:00Z"),
+                    ),
                 ],
             )
             .await

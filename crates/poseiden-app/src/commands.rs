@@ -27,7 +27,9 @@ fn scope(team: &Option<String>) -> Option<&str> {
 #[tauri::command]
 pub async fn get_teams(state: State<'_, AppState>) -> CmdResult {
     let service = state.service()?;
-    Ok(to_value(service.team_names().await.map_err(|e| e.to_string())?))
+    Ok(to_value(
+        service.team_names().await.map_err(|e| e.to_string())?,
+    ))
 }
 
 /// Current auth state (PAT / az / not signed in) for the sign-in banner.
@@ -53,10 +55,7 @@ pub async fn doctor_recheck(state: State<'_, AppState>) -> CmdResult {
 
 /// Add a team at runtime + persist. `team` is a TeamConfig-shaped object.
 #[tauri::command]
-pub async fn add_team(
-    state: State<'_, AppState>,
-    team: poseiden_core::TeamConfig,
-) -> CmdResult {
+pub async fn add_team(state: State<'_, AppState>, team: poseiden_core::TeamConfig) -> CmdResult {
     let service = state.service()?;
     let added = service.add_team(team).await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "added": added }))
@@ -101,11 +100,7 @@ pub async fn link_work_item_pr(
 
 /// Resolve a single PR by id (for a linked-PR chip with no stored URL/status).
 #[tauri::command]
-pub async fn pull_request_url(
-    state: State<'_, AppState>,
-    team: String,
-    pr_id: i64,
-) -> CmdResult {
+pub async fn pull_request_url(state: State<'_, AppState>, team: String, pr_id: i64) -> CmdResult {
     let service = state.service()?;
     let pr = service
         .resolve_pull_request(&team, pr_id)
@@ -133,18 +128,21 @@ pub async fn update_team(
 #[tauri::command]
 pub async fn remove_team(state: State<'_, AppState>, name: String) -> CmdResult {
     let service = state.service()?;
-    let removed = service.remove_team(&name).await.map_err(|e| e.to_string())?;
+    let removed = service
+        .remove_team(&name)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "removed": removed }))
 }
 
 /// Replace the instance-wide default ruleset (`[rules]`).
 #[tauri::command]
-pub async fn update_rules(
-    state: State<'_, AppState>,
-    rules: poseiden_core::RuleSet,
-) -> CmdResult {
+pub async fn update_rules(state: State<'_, AppState>, rules: poseiden_core::RuleSet) -> CmdResult {
     let service = state.service()?;
-    service.update_rules(rules).await.map_err(|e| e.to_string())?;
+    service
+        .update_rules(rules)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "updated": true }))
 }
 
@@ -216,7 +214,10 @@ pub async fn sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult {
     // Native device-code sign-in (no Azure CLI): the prompt comes back at once,
     // and the grant completes on the service's background poll. Same flow the
     // hosted web instance uses.
-    let prompt = service.start_web_sign_in().await.map_err(|e| e.to_string())?;
+    let prompt = service
+        .start_web_sign_in()
+        .await
+        .map_err(|e| e.to_string())?;
     let _ = app.emit(
         "auth-device-code",
         serde_json::json!({ "url": prompt.url, "code": prompt.code }),
@@ -313,16 +314,25 @@ pub async fn get_llm_config(state: State<'_, AppState>) -> CmdResult {
 }
 
 #[tauri::command]
-pub async fn set_llm_config(state: State<'_, AppState>, config: poseiden_server::LlmConfig) -> CmdResult {
+pub async fn set_llm_config(
+    state: State<'_, AppState>,
+    config: poseiden_server::LlmConfig,
+) -> CmdResult {
     let service = state.service()?;
-    service.set_llm_config(config).await.map_err(|e| e.to_string())?;
+    service
+        .set_llm_config(config)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "enabled": service.ai_enabled().await }))
 }
 
 #[tauri::command]
 pub async fn reset_llm_config(state: State<'_, AppState>) -> CmdResult {
     let service = state.service()?;
-    service.reset_llm_config().await.map_err(|e| e.to_string())?;
+    service
+        .reset_llm_config()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(service.llm_config_view().await)
 }
 
@@ -341,7 +351,10 @@ pub async fn get_tag_settings(state: State<'_, AppState>) -> CmdResult {
 #[tauri::command]
 pub async fn set_tag_settings(state: State<'_, AppState>, use_description: bool) -> CmdResult {
     let service = state.service()?;
-    service.set_tag_use_description(use_description).await.map_err(|e| e.to_string())?;
+    service
+        .set_tag_use_description(use_description)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "use_description": use_description }))
 }
 
@@ -370,10 +383,7 @@ pub async fn get_pipelines(state: State<'_, AppState>, team: Option<String>) -> 
 }
 
 #[tauri::command]
-pub async fn get_pull_requests(
-    state: State<'_, AppState>,
-    team: Option<String>,
-) -> CmdResult {
+pub async fn get_pull_requests(state: State<'_, AppState>, team: Option<String>) -> CmdResult {
     let service = state.service()?;
     service
         .pull_requests(scope(&team))
@@ -410,7 +420,7 @@ pub async fn get_reports(
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> CmdResult {
     let service = state.service()?;
-    Ok(service.config().await.map_err(|e| e.to_string())?)
+    service.config().await.map_err(|e| e.to_string())
 }
 
 /// Record the UI's selected team so the active-team poll fetches it. `null`
@@ -429,7 +439,10 @@ pub async fn set_active_team(state: State<'_, AppState>, team: Option<String>) -
 #[tauri::command]
 pub async fn set_poll_all_teams(state: State<'_, AppState>, all: bool) -> CmdResult {
     let service = state.service()?;
-    service.set_poll_all_teams(all).await.map_err(|e| e.to_string())?;
+    service
+        .set_poll_all_teams(all)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "poll_all_teams": all }))
 }
 
@@ -484,10 +497,7 @@ pub async fn run_report_spec(
 }
 
 #[tauri::command]
-pub async fn save_report(
-    state: State<'_, AppState>,
-    spec: poseiden_core::ReportSpec,
-) -> CmdResult {
+pub async fn save_report(state: State<'_, AppState>, spec: poseiden_core::ReportSpec) -> CmdResult {
     let service = state.service()?;
     service.save_report(spec).await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "saved": true }))
@@ -496,7 +506,10 @@ pub async fn save_report(
 #[tauri::command]
 pub async fn delete_report(state: State<'_, AppState>, name: String) -> CmdResult {
     let service = state.service()?;
-    let removed = service.delete_report(&name).await.map_err(|e| e.to_string())?;
+    let removed = service
+        .delete_report(&name)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "deleted": removed }))
 }
 

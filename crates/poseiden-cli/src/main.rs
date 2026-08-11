@@ -328,7 +328,9 @@ async fn cmd_tag(
 
     if !json {
         match (&ids, assignee) {
-            (Some(v), Some(name)) => eprintln!("Tagging {} item(s) assigned to \"{name}\"...", v.len()),
+            (Some(v), Some(name)) => {
+                eprintln!("Tagging {} item(s) assigned to \"{name}\"...", v.len())
+            }
             _ => eprintln!("Tagging the whole scope..."),
         }
     }
@@ -412,7 +414,11 @@ async fn cmd_config(service: &Service, action: ConfigCmd) -> anyhow::Result<()> 
                 "Imported {} team(s) and {} report(s) ({}).",
                 summary.teams,
                 summary.reports,
-                if summary.replaced { "replaced" } else { "merged" }
+                if summary.replaced {
+                    "replaced"
+                } else {
+                    "merged"
+                }
             );
         }
     }

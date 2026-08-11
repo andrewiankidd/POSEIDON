@@ -24,7 +24,11 @@ yanked = "deny"
 # Tauri's Linux webview backend (the GTK3 cluster) is the likely source of
 # future transitive advisories; add them here WITH a justification when they
 # land, don't blanket-ignore.
-ignore = []
+ignore = [
+    # rsa (transitive): Marvin Attack timing sidechannel, no upstream fix yet.
+    # POSEIDEN never does remote-observable RSA ops. See .cargo/audit.toml.
+    "RUSTSEC-2023-0071",
+]
 
 [licenses]
 # SPDX IDs from https://spdx.org/licenses/. Union of what the current graph

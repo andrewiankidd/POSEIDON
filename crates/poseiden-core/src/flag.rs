@@ -98,8 +98,14 @@ mod tests {
 
     #[test]
     fn severity_serializes_snake_case() {
-        assert_eq!(serde_json::to_value(Severity::Warn).unwrap(), serde_json::json!("warn"));
-        assert_eq!(serde_json::to_value(Severity::Error).unwrap(), serde_json::json!("error"));
+        assert_eq!(
+            serde_json::to_value(Severity::Warn).unwrap(),
+            serde_json::json!("warn")
+        );
+        assert_eq!(
+            serde_json::to_value(Severity::Error).unwrap(),
+            serde_json::json!("error")
+        );
         let w: Severity = serde_json::from_value(serde_json::json!("warn")).unwrap();
         assert_eq!(w, Severity::Warn);
     }

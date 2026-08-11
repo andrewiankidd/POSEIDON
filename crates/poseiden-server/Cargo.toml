@@ -37,7 +37,6 @@ serde_json = { workspace = true }
 serde_norway = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [features]
 # Forward the embedded-model GPU build to poseiden-ai (off by default; CPU build

@@ -191,7 +191,11 @@ fn evaluate_resolved_stale_tags(item: &WorkItem, flags: &mut Vec<Flag>, rules: &
         return;
     }
     for tag in &item.tags {
-        if rules.stale_when_resolved_tags.iter().any(|p| tag_matches(p, tag)) {
+        if rules
+            .stale_when_resolved_tags
+            .iter()
+            .any(|p| tag_matches(p, tag))
+        {
             flags.push(Flag {
                 work_item_id: item.id,
                 team: item.team.clone(),
@@ -365,7 +369,10 @@ mod tests {
 
         // Runs even when the terminal state is ALSO exempted via ignore_states -
         // that's the whole point (a leftover work tag on a "done and ignored" item).
-        let ignored = RuleSet { ignore_states: vec!["Closed".into()], ..rules.clone() };
+        let ignored = RuleSet {
+            ignore_states: vec!["Closed".into()],
+            ..rules.clone()
+        };
         let closed_wip = item(|w| {
             w.state = "Closed".into();
             w.tags = vec!["wip".into()];
@@ -592,7 +599,10 @@ mod tests {
             ..Default::default()
         };
         let missing = pr(|p| p.linked_work_items.clear());
-        assert_eq!(codes(&evaluate_pull_request(&missing, &rules, now())), ["no-work-item"]);
+        assert_eq!(
+            codes(&evaluate_pull_request(&missing, &rules, now())),
+            ["no-work-item"]
+        );
         // Linked -> no flag.
         assert!(evaluate_pull_request(&pr(|_| {}), &rules, now()).is_empty());
     }
@@ -628,12 +638,18 @@ mod tests {
             ..Default::default()
         };
         let old_open = pr(|p| p.created_at = Some(now() - chrono::Duration::days(20)));
-        assert_eq!(codes(&evaluate_pull_request(&old_open, &rules, now())), ["stale-open"]);
+        assert_eq!(
+            codes(&evaluate_pull_request(&old_open, &rules, now())),
+            ["stale-open"]
+        );
         let old_draft = pr(|p| {
             p.is_draft = true;
             p.created_at = Some(now() - chrono::Duration::days(5));
         });
-        assert_eq!(codes(&evaluate_pull_request(&old_draft, &rules, now())), ["stale-draft"]);
+        assert_eq!(
+            codes(&evaluate_pull_request(&old_draft, &rules, now())),
+            ["stale-draft"]
+        );
         // A draft 5 days old is NOT past the 14-day open limit, proving the draft
         // path uses its own (shorter) threshold.
         let fresh_open = pr(|p| p.created_at = Some(now() - chrono::Duration::days(5)));
@@ -671,13 +687,22 @@ mod tests {
         use poseiden_core::TagKeywords;
         let rules = RuleSet {
             tag_keywords: vec![
-                TagKeywords { tag: "type:bug".into(), keywords: vec!["error".into(), "crash".into()] },
-                TagKeywords { tag: "Documentation".into(), keywords: vec!["docs".into()] },
+                TagKeywords {
+                    tag: "type:bug".into(),
+                    keywords: vec!["error".into(), "crash".into()],
+                },
+                TagKeywords {
+                    tag: "Documentation".into(),
+                    keywords: vec!["docs".into()],
+                },
             ],
             ..Default::default()
         };
         // "Crash" matches type:bug (case-insensitive); docs is absent.
-        let it = item(|w| { w.title = "Fix Crash on startup".into(); w.tags = vec![]; });
+        let it = item(|w| {
+            w.title = "Fix Crash on startup".into();
+            w.tags = vec![];
+        });
         let s = suggest_tags(&it, &rules, false);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].tag, "type:bug");
@@ -711,10 +736,16 @@ mod tests {
     fn suggest_tags_skips_already_applied() {
         use poseiden_core::TagKeywords;
         let rules = RuleSet {
-            tag_keywords: vec![TagKeywords { tag: "type:bug".into(), keywords: vec!["crash".into()] }],
+            tag_keywords: vec![TagKeywords {
+                tag: "type:bug".into(),
+                keywords: vec!["crash".into()],
+            }],
             ..Default::default()
         };
-        let it = item(|w| { w.title = "Crash".into(); w.tags = vec!["type:bug".into()]; });
+        let it = item(|w| {
+            w.title = "Crash".into();
+            w.tags = vec!["type:bug".into()];
+        });
         assert!(suggest_tags(&it, &rules, false).is_empty());
     }
 
@@ -722,19 +753,33 @@ mod tests {
     fn tag_alias_suggests_a_canonical_rewrite_from_a_legacy_tag() {
         use poseiden_core::TagAlias;
         let rules = RuleSet {
-            tag_aliases: vec![TagAlias { from: "ssa".into(), to: "area:ssa".into() }],
+            tag_aliases: vec![TagAlias {
+                from: "ssa".into(),
+                to: "area:ssa".into(),
+            }],
             ..Default::default()
         };
         // Legacy "SSA" (any case), no title/body needed -> suggest area:ssa as a REWRITE.
-        let it = item(|w| { w.tags = vec!["SSA".into()]; });
+        let it = item(|w| {
+            w.tags = vec!["SSA".into()];
+        });
         let s = suggest_tags(&it, &rules, false);
-        let sug = s.iter().find(|x| x.tag == "area:ssa").expect("alias suggestion");
+        let sug = s
+            .iter()
+            .find(|x| x.tag == "area:ssa")
+            .expect("alias suggestion");
         assert_eq!(sug.replaces.as_deref(), Some("SSA"));
         // Already migrated -> nothing to do.
-        let done = item(|w| { w.tags = vec!["SSA".into(), "area:ssa".into()]; });
-        assert!(suggest_tags(&done, &rules, false).iter().all(|x| x.tag != "area:ssa"));
+        let done = item(|w| {
+            w.tags = vec!["SSA".into(), "area:ssa".into()];
+        });
+        assert!(suggest_tags(&done, &rules, false)
+            .iter()
+            .all(|x| x.tag != "area:ssa"));
         // No matching legacy tag -> no rewrite.
-        let clean = item(|w| { w.tags = vec!["area:kubernetes".into()]; });
+        let clean = item(|w| {
+            w.tags = vec!["area:kubernetes".into()];
+        });
         assert!(suggest_tags(&clean, &rules, false).is_empty());
     }
 }

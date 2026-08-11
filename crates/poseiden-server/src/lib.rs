@@ -21,11 +21,11 @@ use poseiden_store::Store;
 use tracing::info;
 
 pub use http::router;
+pub use poseiden_ai::{AiConfig, LlmConfig, OFFLINE_MODELS, ONLINE_PROVIDERS};
 pub use scheduler::Scheduler;
 pub use service::{
     AuthStatus, BrowserSuggestion, PollOutcome, Service, SharedService, SigninState,
 };
-pub use poseiden_ai::{AiConfig, LlmConfig, OFFLINE_MODELS, ONLINE_PROVIDERS};
 
 /// Env var pointing at the static frontend bundle. Set in the Docker image;
 /// falls back to `frontend/web` relative to the working directory for local
@@ -44,7 +44,6 @@ pub fn load_config() -> PoseidenConfig {
     PoseidenConfig {
         server: poseiden_core::ServerConfig::from_env(),
         telemetry: poseiden_telemetry::TelemetrySettings::from_env(),
-        ..Default::default()
     }
 }
 

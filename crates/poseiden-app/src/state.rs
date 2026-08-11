@@ -86,7 +86,9 @@ impl AppState {
                 .map_err(|e| format!("could not enable portable mode: {e}"))?;
         }
         let portable_now = Paths::resolve().is_portable();
-        let rt = build_runtime(portable_now).await.map_err(|e| e.to_string())?;
+        let rt = build_runtime(portable_now)
+            .await
+            .map_err(|e| e.to_string())?;
         *self.inner.lock().unwrap() = Some(rt);
         Ok(())
     }
@@ -106,8 +108,7 @@ async fn build_runtime(portable: bool) -> anyhow::Result<Runtime> {
     if portable {
         info!(root = %paths.data_root().display(), "portable mode - writes confined here");
     }
-    let service: SharedService =
-        Arc::new(Service::new(config, store, paths.az_sessions_dir()));
+    let service: SharedService = Arc::new(Service::new(config, store, paths.az_sessions_dir()));
     let scheduler = Scheduler::spawn(service.clone());
     Ok(Runtime {
         service,

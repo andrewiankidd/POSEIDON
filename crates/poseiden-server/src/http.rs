@@ -126,7 +126,10 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
         .route("/api/llm-benchmark", post(llm_benchmark))
-        .route("/api/tag-settings", get(tag_settings_get).post(tag_settings_set))
+        .route(
+            "/api/tag-settings",
+            get(tag_settings_get).post(tag_settings_set),
+        )
         .route("/api/work-items/descriptions", post(work_item_descriptions))
         .route("/api/tag-suggestions/run", post(run_tag_suggestions))
         .route("/api/tag-suggestions/status", get(tag_suggestions_status))
@@ -226,8 +229,14 @@ async fn identity(headers: axum::http::HeaderMap) -> ApiResult {
         .unwrap_or("")
         .trim();
     let authenticated = !email.is_empty();
-    let owner = if authenticated { email } else { poseiden_core::DEFAULT_OWNER };
-    Ok(Json(serde_json::json!({ "owner": owner, "authenticated": authenticated })))
+    let owner = if authenticated {
+        email
+    } else {
+        poseiden_core::DEFAULT_OWNER
+    };
+    Ok(Json(
+        serde_json::json!({ "owner": owner, "authenticated": authenticated }),
+    ))
 }
 
 /// Begin a hosted **device-code** sign-in for the request's owner. Kicks off
@@ -264,10 +273,7 @@ async fn doctor_tick(svc: Scoped) -> ApiResult {
 /// Add a team at runtime + persist. Body is a `TeamConfig` JSON (name +
 /// organization + project required; area_path / tenant optional). The Doctor's
 /// reconciler registers its access check on the next tick.
-async fn add_team(
-    svc: Scoped,
-    Json(team): Json<poseiden_core::TeamConfig>,
-) -> ApiResult {
+async fn add_team(svc: Scoped, Json(team): Json<poseiden_core::TeamConfig>) -> ApiResult {
     match svc.add_team(team).await {
         Ok(added) => Ok(Json(serde_json::json!({ "added": added }))),
         Err(e) => Err(err500(e)),
@@ -327,10 +333,7 @@ async fn link_work_item_pr(
 }
 
 /// Replace the instance-wide default ruleset (`[rules]`).
-async fn update_rules(
-    svc: Scoped,
-    Json(rules): Json<poseiden_core::RuleSet>,
-) -> ApiResult {
+async fn update_rules(svc: Scoped, Json(rules): Json<poseiden_core::RuleSet>) -> ApiResult {
     match svc.update_rules(rules).await {
         Ok(()) => Ok(Json(serde_json::json!({ "updated": true }))),
         Err(e) => Err(err500(e)),
@@ -416,7 +419,9 @@ async fn doctor_fix(
 
 /// Configured team names - populates the UI scope selector.
 async fn teams(svc: Scoped) -> ApiResult {
-    Ok(Json(serde_json::to_value(svc.team_names().await.map_err(err500)?).unwrap()))
+    Ok(Json(
+        serde_json::to_value(svc.team_names().await.map_err(err500)?).unwrap(),
+    ))
 }
 
 /// Optional `?team=<name>` scope. Empty / missing → all teams.
@@ -528,10 +533,7 @@ async fn run_report_spec(
 }
 
 /// Save (create/replace) a user report. Built-in names are rejected.
-async fn save_report(
-    svc: Scoped,
-    Json(spec): Json<poseiden_core::ReportSpec>,
-) -> ApiResult {
+async fn save_report(svc: Scoped, Json(spec): Json<poseiden_core::ReportSpec>) -> ApiResult {
     match svc.save_report(spec).await {
         Ok(()) => Ok(Json(serde_json::json!({ "saved": true }))),
         Err(e) => Err(err500(e)),
@@ -581,10 +583,7 @@ struct ClientErrorBody {
 }
 
 /// Log a frontend error into the backend telemetry stream.
-async fn log_client_error(
-    svc: Scoped,
-    Json(body): Json<ClientErrorBody>,
-) -> ApiResult {
+async fn log_client_error(svc: Scoped, Json(body): Json<ClientErrorBody>) -> ApiResult {
     svc.log_client_error(&body.message, body.stack.as_deref(), body.url.as_deref());
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -637,7 +636,9 @@ async fn poll(svc: Scoped) -> ApiResult {
 
 /// Whether an AI tag suggester is configured (so the UI shows the action or not).
 async fn ai_status(svc: Scoped) -> ApiResult {
-    Ok(Json(serde_json::json!({ "enabled": svc.ai_enabled().await })))
+    Ok(Json(
+        serde_json::json!({ "enabled": svc.ai_enabled().await }),
+    ))
 }
 
 /// The LLM integration registry for the settings UI: integrations (keys redacted,
@@ -649,7 +650,9 @@ async fn llm_config_get(svc: Scoped) -> ApiResult {
 /// Persist the LLM registry (from the LLM Integrations table) and reload the tagger.
 async fn llm_config_set(svc: Scoped, Json(cfg): Json<poseiden_ai::LlmConfig>) -> ApiResult {
     svc.set_llm_config(cfg).await.map_err(err500)?;
-    Ok(Json(serde_json::json!({ "enabled": svc.ai_enabled().await })))
+    Ok(Json(
+        serde_json::json!({ "enabled": svc.ai_enabled().await }),
+    ))
 }
 
 /// Drop the saved registry so it reverts to the seeded default catalog.
@@ -684,18 +687,24 @@ async fn run_tag_suggestions(
     svc.start_tag_suggestions(scope(&q.team).map(str::to_string), ids)
         .await
         .map_err(err500)?;
-    Ok(Json(serde_json::to_value(svc.tag_suggestions_status()).unwrap()))
+    Ok(Json(
+        serde_json::to_value(svc.tag_suggestions_status()).unwrap(),
+    ))
 }
 
 /// Current AI tag-suggestion run state for this owner (idle / running / done /
 /// failed), for the browser to poll after starting a run.
 async fn tag_suggestions_status(svc: Scoped) -> ApiResult {
-    Ok(Json(serde_json::to_value(svc.tag_suggestions_status()).unwrap()))
+    Ok(Json(
+        serde_json::to_value(svc.tag_suggestions_status()).unwrap(),
+    ))
 }
 
 /// Tag-input settings: whether work-item descriptions feed the tagger (AI + keyword).
 async fn tag_settings_get(svc: Scoped) -> ApiResult {
-    Ok(Json(serde_json::json!({ "use_description": svc.tag_use_description().await })))
+    Ok(Json(
+        serde_json::json!({ "use_description": svc.tag_use_description().await }),
+    ))
 }
 
 #[derive(serde::Deserialize)]
@@ -705,8 +714,12 @@ struct TagSettingsBody {
 }
 
 async fn tag_settings_set(svc: Scoped, Json(b): Json<TagSettingsBody>) -> ApiResult {
-    svc.set_tag_use_description(b.use_description).await.map_err(err500)?;
-    Ok(Json(serde_json::json!({ "use_description": b.use_description })))
+    svc.set_tag_use_description(b.use_description)
+        .await
+        .map_err(err500)?;
+    Ok(Json(
+        serde_json::json!({ "use_description": b.use_description }),
+    ))
 }
 
 /// Descriptions (HTML-stripped) for the given work-item ids, for the client-side

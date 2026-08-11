@@ -3916,7 +3916,6 @@ dependencies = [
  "anyhow",
  "poseiden-core",
  "poseiden-paths",
- "poseiden-providers",
  "poseiden-server",
  "poseiden-store",
  "poseiden-telemetry",
@@ -3960,7 +3959,6 @@ name = "poseiden-doctor"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "futures",
  "serde",
  "serde_json",
@@ -4035,7 +4033,6 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

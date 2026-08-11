@@ -22,7 +22,6 @@ poseiden-core = { workspace = true }
 poseiden-paths = { workspace = true }
 poseiden-server = { workspace = true }
 poseiden-store = { workspace = true }
-poseiden-providers = { workspace = true }
 poseiden-telemetry = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
