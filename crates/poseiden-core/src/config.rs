@@ -282,10 +282,17 @@ fn default_resolved_states() -> Vec<String> {
 /// "Still needs work" tags seeded by default - contradictory once an item is in a
 /// resolved state. Override per team (or empty to disable the check).
 fn default_stale_when_resolved_tags() -> Vec<String> {
-    ["to refine", "to do", "needs triage", "in progress", "blocked", "wip"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "to refine",
+        "to do",
+        "needs triage",
+        "in progress",
+        "blocked",
+        "wip",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Keywords that auto-suggest a tag. See [`RuleSet::tag_keywords`].
@@ -500,7 +507,14 @@ mod tests {
         );
         assert_eq!(
             rs.stale_when_resolved_tags,
-            vec!["to refine", "to do", "needs triage", "in progress", "blocked", "wip"]
+            vec![
+                "to refine",
+                "to do",
+                "needs triage",
+                "in progress",
+                "blocked",
+                "wip"
+            ]
         );
         // Fields without a custom default are empty/false.
         assert!(rs.required_tags.is_empty());
@@ -544,7 +558,13 @@ mod tests {
         // Spot-check parsed fields.
         assert_eq!(rs.tag_keywords.len(), 1);
         assert_eq!(rs.tag_keywords[0].tag, "type:bug");
-        assert_eq!(rs.tag_aliases[0], TagAlias { from: "SSA".into(), to: "area:ssa".into() });
+        assert_eq!(
+            rs.tag_aliases[0],
+            TagAlias {
+                from: "SSA".into(),
+                to: "area:ssa".into()
+            }
+        );
         assert_eq!(rs.disallowed_tags, vec!["wip", "temp"]);
         assert_eq!(rs.resolved_states, vec!["Done"]);
         assert_eq!(rs.stale_days.get("In Progress"), Some(&5));
@@ -568,15 +588,33 @@ mod tests {
         let rules = rs.stale_rules();
         assert_eq!(rules.len(), 2);
         // BTreeMap iterates sorted by key: "In Progress" < "New".
-        assert_eq!(rules[0], StaleRule { state: "In Progress".into(), days: 5 });
-        assert_eq!(rules[1], StaleRule { state: "New".into(), days: 14 });
+        assert_eq!(
+            rules[0],
+            StaleRule {
+                state: "In Progress".into(),
+                days: 5
+            }
+        );
+        assert_eq!(
+            rules[1],
+            StaleRule {
+                state: "New".into(),
+                days: 14
+            }
+        );
     }
 
     #[test]
     fn tag_alias_defaults_and_parse() {
         // TagAlias fields both default to empty strings when absent.
         let empty: TagAlias = serde_json::from_str("{}").expect("parses");
-        assert_eq!(empty, TagAlias { from: String::new(), to: String::new() });
+        assert_eq!(
+            empty,
+            TagAlias {
+                from: String::new(),
+                to: String::new()
+            }
+        );
         // And parse from a normal rule.
         let a: TagAlias =
             serde_json::from_str(r#"{ "from": "legacy*", "to": "area:x" }"#).expect("parses");
@@ -602,9 +640,15 @@ mod tests {
     #[test]
     fn poll_interval_duration_falls_back_on_garbage() {
         // A malformed interval must not stop the server booting - it uses 15m.
-        let s = ServerConfig { poll_interval: "nonsense".to_string(), ..Default::default() };
+        let s = ServerConfig {
+            poll_interval: "nonsense".to_string(),
+            ..Default::default()
+        };
         assert_eq!(s.poll_interval_duration(), Duration::from_secs(900));
-        let s = ServerConfig { poll_interval: "30s".to_string(), ..Default::default() };
+        let s = ServerConfig {
+            poll_interval: "30s".to_string(),
+            ..Default::default()
+        };
         assert_eq!(s.poll_interval_duration(), Duration::from_secs(30));
     }
 }

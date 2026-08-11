@@ -78,10 +78,7 @@ impl ConfigStore {
     /// Write-through: persists and refreshes the cache.
     pub async fn set_user_config(&self, owner: &str, cfg: UserConfig) -> anyhow::Result<()> {
         self.store.put_user_config(owner, &cfg).await?;
-        self.cache
-            .write()
-            .unwrap()
-            .insert(owner.to_string(), cfg);
+        self.cache.write().unwrap().insert(owner.to_string(), cfg);
         Ok(())
     }
 
@@ -95,10 +92,7 @@ impl ConfigStore {
         let mut cfg = self.user_config(owner).await?;
         let r = f(&mut cfg);
         self.store.put_user_config(owner, &cfg).await?;
-        self.cache
-            .write()
-            .unwrap()
-            .insert(owner.to_string(), cfg);
+        self.cache.write().unwrap().insert(owner.to_string(), cfg);
         Ok(r)
     }
 
@@ -112,7 +106,11 @@ impl ConfigStore {
     }
 
     /// Replace the registered-check set. Returns whether it changed.
-    pub async fn set_registered_checks(&self, owner: &str, keys: Vec<String>) -> anyhow::Result<bool> {
+    pub async fn set_registered_checks(
+        &self,
+        owner: &str,
+        keys: Vec<String>,
+    ) -> anyhow::Result<bool> {
         self.update(owner, |c| {
             if c.doctor.checks == keys {
                 false
@@ -127,7 +125,10 @@ impl ConfigStore {
     /// Append a team (deduped by name). `false` if the name already existed.
     pub async fn add_team(&self, owner: &str, team: TeamConfig) -> anyhow::Result<bool> {
         self.update(owner, move |c| {
-            if c.teams.iter().any(|t| t.name.eq_ignore_ascii_case(&team.name)) {
+            if c.teams
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(&team.name))
+            {
                 false
             } else {
                 c.teams.push(team);
@@ -155,7 +156,11 @@ impl ConfigStore {
         team: TeamConfig,
     ) -> anyhow::Result<bool> {
         self.update(owner, move |c| {
-            match c.teams.iter_mut().find(|t| t.name.eq_ignore_ascii_case(original)) {
+            match c
+                .teams
+                .iter_mut()
+                .find(|t| t.name.eq_ignore_ascii_case(original))
+            {
                 Some(slot) => {
                     *slot = team;
                     true
@@ -184,7 +189,11 @@ impl ConfigStore {
         rules: Option<RuleSet>,
     ) -> anyhow::Result<bool> {
         self.update(owner, move |c| {
-            match c.teams.iter_mut().find(|t| t.name.eq_ignore_ascii_case(name)) {
+            match c
+                .teams
+                .iter_mut()
+                .find(|t| t.name.eq_ignore_ascii_case(name))
+            {
                 Some(team) => {
                     team.rules = rules;
                     true

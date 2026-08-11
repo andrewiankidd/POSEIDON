@@ -369,8 +369,12 @@ fn map_pipeline_status(status: Option<&str>) -> RunStatus {
         Some("success") => RunStatus::Succeeded,
         Some("failed") => RunStatus::Failed,
         Some("canceled") | Some("cancelled") => RunStatus::Canceled,
-        Some("running") | Some("pending") | Some("created") | Some("preparing")
-        | Some("waiting_for_resource") | Some("scheduled") => RunStatus::Running,
+        Some("running")
+        | Some("pending")
+        | Some("created")
+        | Some("preparing")
+        | Some("waiting_for_resource")
+        | Some("scheduled") => RunStatus::Running,
         _ => RunStatus::Unknown,
     }
 }
@@ -437,8 +441,14 @@ mod tests {
 
     #[test]
     fn credential_token_unwraps_either_kind_and_detects_empty() {
-        assert_eq!(credential_token(&Credential::Pat("glpat-x".into())), "glpat-x");
-        assert_eq!(credential_token(&Credential::Bearer("oauth".into())), "oauth");
+        assert_eq!(
+            credential_token(&Credential::Pat("glpat-x".into())),
+            "glpat-x"
+        );
+        assert_eq!(
+            credential_token(&Credential::Bearer("oauth".into())),
+            "oauth"
+        );
         assert!(credential_token(&Credential::Pat(String::new())).is_empty());
     }
 

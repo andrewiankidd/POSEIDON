@@ -116,54 +116,233 @@ impl Provider for StubProvider {
         // Closed items are ignored by the hygiene engine, so they never add flags.
         Ok(vec![
             // --- open: the three that trip a rule ---
-            self.wi(1001, "Investigate flaky integration test", "Task", "New",
-                &[], 2, None, &[]), // untagged
-            self.wi(1002, "Document the config import format", "Task", "In Progress",
-                &["team:platform", "area:kubernetes"], 5, None, &[]), // missing type:*
-            self.wi(1003, "Spike: cache provider responses", "User Story", "Active",
-                &["team:platform", "type:story", "wip"], 4, None, &[]), // disallowed 'wip'
+            self.wi(
+                1001,
+                "Investigate flaky integration test",
+                "Task",
+                "New",
+                &[],
+                2,
+                None,
+                &[],
+            ), // untagged
+            self.wi(
+                1002,
+                "Document the config import format",
+                "Task",
+                "In Progress",
+                &["team:platform", "area:kubernetes"],
+                5,
+                None,
+                &[],
+            ), // missing type:*
+            self.wi(
+                1003,
+                "Spike: cache provider responses",
+                "User Story",
+                "Active",
+                &["team:platform", "type:story", "wip"],
+                4,
+                None,
+                &[],
+            ), // disallowed 'wip'
             // --- open: clean ---
-            self.wi(1004, "Add retry/backoff to the poller", "Bug", "Active",
-                &["team:platform", "type:bug", "priority:high"], 1, None, &[2001]), // linked PR
-            self.wi(1005, "Ship the reports engine", "Feature", "New",
-                &["team:platform", "type:feature", "area:frontend"], 3, None, &[]),
-            self.wi(1006, "Wire up the live-reload dev loop", "Task", "In Progress",
-                &["team:platform", "type:task", "area:backend"], 6, None, &[]),
+            self.wi(
+                1004,
+                "Add retry/backoff to the poller",
+                "Bug",
+                "Active",
+                &["team:platform", "type:bug", "priority:high"],
+                1,
+                None,
+                &[2001],
+            ), // linked PR
+            self.wi(
+                1005,
+                "Ship the reports engine",
+                "Feature",
+                "New",
+                &["team:platform", "type:feature", "area:frontend"],
+                3,
+                None,
+                &[],
+            ),
+            self.wi(
+                1006,
+                "Wire up the live-reload dev loop",
+                "Task",
+                "In Progress",
+                &["team:platform", "type:task", "area:backend"],
+                6,
+                None,
+                &[],
+            ),
             // --- closed in the last ~month: the Recap history ---
-            self.wi(1007, "Migrate config to the database", "User Story", "Closed",
-                &["team:platform", "type:story", "area:kubernetes", "source:roadmap", "internal"], 3, Some(3), &[]),
-            self.wi(1008, "Fix node-pool autoscaling", "Bug", "Closed",
-                &["team:platform", "type:bug", "area:kubernetes", "source:incident", "internal"], 6, Some(6), &[]),
-            self.wi(1009, "Add OpenTelemetry traces to the API", "Task", "Closed",
-                &["team:platform", "type:task", "area:observability", "source:support", "external"], 9, Some(9), &[]),
-            self.wi(1010, "Roll out Argo CD to staging", "User Story", "Closed",
-                &["team:platform", "type:story", "area:dev-platform", "source:roadmap", "internal"], 12, Some(12), &[]),
-            self.wi(1011, "Self-service portal access request", "Feature", "Closed",
-                &["team:platform", "type:feature", "area:idp", "source:request", "internal"], 15, Some(15), &[]),
-            self.wi(1012, "Standardise pipeline YAML templates", "Task", "Closed",
-                &["team:platform", "type:task", "area:azuredevops", "source:support", "external"], 20, Some(20), &[]),
-            self.wi(1013, "Investigate cluster DNS latency", "Bug", "Closed",
-                &["team:platform", "type:bug", "area:kubernetes", "source:incident", "internal"], 25, Some(25), &[]),
-            self.wi(1014, "Dashboards for uptime SLOs", "User Story", "Closed",
-                &["team:platform", "type:story", "area:observability", "source:roadmap", "external"], 28, Some(28), &[]),
+            self.wi(
+                1007,
+                "Migrate config to the database",
+                "User Story",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:story",
+                    "area:kubernetes",
+                    "source:roadmap",
+                    "internal",
+                ],
+                3,
+                Some(3),
+                &[],
+            ),
+            self.wi(
+                1008,
+                "Fix node-pool autoscaling",
+                "Bug",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:bug",
+                    "area:kubernetes",
+                    "source:incident",
+                    "internal",
+                ],
+                6,
+                Some(6),
+                &[],
+            ),
+            self.wi(
+                1009,
+                "Add OpenTelemetry traces to the API",
+                "Task",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:task",
+                    "area:observability",
+                    "source:support",
+                    "external",
+                ],
+                9,
+                Some(9),
+                &[],
+            ),
+            self.wi(
+                1010,
+                "Roll out Argo CD to staging",
+                "User Story",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:story",
+                    "area:dev-platform",
+                    "source:roadmap",
+                    "internal",
+                ],
+                12,
+                Some(12),
+                &[],
+            ),
+            self.wi(
+                1011,
+                "Self-service portal access request",
+                "Feature",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:feature",
+                    "area:idp",
+                    "source:request",
+                    "internal",
+                ],
+                15,
+                Some(15),
+                &[],
+            ),
+            self.wi(
+                1012,
+                "Standardise pipeline YAML templates",
+                "Task",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:task",
+                    "area:azuredevops",
+                    "source:support",
+                    "external",
+                ],
+                20,
+                Some(20),
+                &[],
+            ),
+            self.wi(
+                1013,
+                "Investigate cluster DNS latency",
+                "Bug",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:bug",
+                    "area:kubernetes",
+                    "source:incident",
+                    "internal",
+                ],
+                25,
+                Some(25),
+                &[],
+            ),
+            self.wi(
+                1014,
+                "Dashboards for uptime SLOs",
+                "User Story",
+                "Closed",
+                &[
+                    "team:platform",
+                    "type:story",
+                    "area:observability",
+                    "source:roadmap",
+                    "external",
+                ],
+                28,
+                Some(28),
+                &[],
+            ),
         ])
     }
 
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError> {
-        let pipe = |id: i64, name: &str, status: Option<RunStatus>, at: Option<DateTime<Utc>>| Pipeline {
-            id,
-            provider: PROVIDER.into(),
-            team: self.team.clone(),
-            name: name.into(),
-            folder: Some("\\platform".into()),
-            url: format!("https://stub.example/{}/_build?definitionId={id}", self.team),
-            last_run_status: status,
-            last_run_at: at,
-            last_run_url: at.map(|_| format!("https://stub.example/{}/_build/results?buildId={id}", self.team)),
-        };
+        let pipe =
+            |id: i64, name: &str, status: Option<RunStatus>, at: Option<DateTime<Utc>>| Pipeline {
+                id,
+                provider: PROVIDER.into(),
+                team: self.team.clone(),
+                name: name.into(),
+                folder: Some("\\platform".into()),
+                url: format!(
+                    "https://stub.example/{}/_build?definitionId={id}",
+                    self.team
+                ),
+                last_run_status: status,
+                last_run_at: at,
+                last_run_url: at.map(|_| {
+                    format!(
+                        "https://stub.example/{}/_build/results?buildId={id}",
+                        self.team
+                    )
+                }),
+            };
         Ok(vec![
-            pipe(10, "platform-ci", Some(RunStatus::Succeeded), Some(self.days_ago(1))),
-            pipe(11, "platform-nightly", Some(RunStatus::Failed), Some(self.days_ago(1))),
+            pipe(
+                10,
+                "platform-ci",
+                Some(RunStatus::Succeeded),
+                Some(self.days_ago(1)),
+            ),
+            pipe(
+                11,
+                "platform-nightly",
+                Some(RunStatus::Failed),
+                Some(self.days_ago(1)),
+            ),
             pipe(12, "platform-release", None, None), // never run
         ])
     }
@@ -180,7 +359,10 @@ impl Provider for StubProvider {
             started_at: Some(at),
             finished_at: Some(at),
             source_branch: Some("refs/heads/main".into()),
-            url: format!("https://stub.example/{}/_build/results?buildId={id}", self.team),
+            url: format!(
+                "https://stub.example/{}/_build/results?buildId={id}",
+                self.team
+            ),
         };
         Ok(vec![
             run(9001, 10, RunStatus::Succeeded, self.days_ago(1)),
@@ -192,7 +374,12 @@ impl Provider for StubProvider {
     }
 
     async fn fetch_pull_requests(&self) -> Result<Vec<PullRequest>, ProviderError> {
-        let pr = |id: i64, title: &str, status: PrStatus, draft: bool, author: &str, created: DateTime<Utc>| PullRequest {
+        let pr = |id: i64,
+                  title: &str,
+                  status: PrStatus,
+                  draft: bool,
+                  author: &str,
+                  created: DateTime<Utc>| PullRequest {
             id,
             provider: PROVIDER.into(),
             team: self.team.clone(),
@@ -205,14 +392,38 @@ impl Provider for StubProvider {
             source_branch: Some("refs/heads/feature/x".into()),
             target_branch: Some("refs/heads/main".into()),
             reviewer_count: 2,
-            url: format!("https://stub.example/{}/_git/platform-core/pullrequest/{id}", self.team),
+            url: format!(
+                "https://stub.example/{}/_git/platform-core/pullrequest/{id}",
+                self.team
+            ),
             flags: Vec::new(),
             linked_work_items: Vec::new(),
         };
         Ok(vec![
-            pr(2001, "Add retry/backoff to the poller", PrStatus::Active, false, "Alex Rivera", self.days_ago(1)),
-            pr(2002, "Bump dependencies", PrStatus::Active, true, "Sam Lee", self.days_ago(2)),
-            pr(2003, "Fix flaky integration test", PrStatus::Completed, false, "Sam Lee", self.days_ago(4)),
+            pr(
+                2001,
+                "Add retry/backoff to the poller",
+                PrStatus::Active,
+                false,
+                "Alex Rivera",
+                self.days_ago(1),
+            ),
+            pr(
+                2002,
+                "Bump dependencies",
+                PrStatus::Active,
+                true,
+                "Sam Lee",
+                self.days_ago(2),
+            ),
+            pr(
+                2003,
+                "Fix flaky integration test",
+                PrStatus::Completed,
+                false,
+                "Sam Lee",
+                self.days_ago(4),
+            ),
         ])
     }
 
@@ -319,10 +530,20 @@ mod tests {
     async fn stub_closed_items_are_recent() {
         let p = StubProvider::new(&cfg("Platform"));
         let now = Utc::now();
-        for w in p.fetch_work_items().await.unwrap().iter().filter(|w| w.state == "Closed") {
+        for w in p
+            .fetch_work_items()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|w| w.state == "Closed")
+        {
             let closed = w.closed_at.expect("closed item has a closed_at");
             let age = (now - closed).num_days();
-            assert!((0..=30).contains(&age), "closed item {} is {age} days old", w.id);
+            assert!(
+                (0..=30).contains(&age),
+                "closed item {} is {age} days old",
+                w.id
+            );
         }
     }
 
@@ -333,10 +554,22 @@ mod tests {
     async fn stub_output_is_deterministic_for_the_same_input() {
         let a = StubProvider::new(&cfg("Platform"));
         let b = StubProvider::new(&cfg("Platform"));
-        assert_eq!(a.fetch_work_items().await.unwrap(), a.fetch_work_items().await.unwrap());
-        assert_eq!(a.fetch_work_items().await.unwrap(), b.fetch_work_items().await.unwrap());
-        assert_eq!(a.fetch_pipelines().await.unwrap(), b.fetch_pipelines().await.unwrap());
-        assert_eq!(a.fetch_pull_requests().await.unwrap(), b.fetch_pull_requests().await.unwrap());
+        assert_eq!(
+            a.fetch_work_items().await.unwrap(),
+            a.fetch_work_items().await.unwrap()
+        );
+        assert_eq!(
+            a.fetch_work_items().await.unwrap(),
+            b.fetch_work_items().await.unwrap()
+        );
+        assert_eq!(
+            a.fetch_pipelines().await.unwrap(),
+            b.fetch_pipelines().await.unwrap()
+        );
+        assert_eq!(
+            a.fetch_pull_requests().await.unwrap(),
+            b.fetch_pull_requests().await.unwrap()
+        );
     }
 
     // The data is a function of the team name (so a multi-team demo stays coherent):

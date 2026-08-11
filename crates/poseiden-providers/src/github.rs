@@ -62,9 +62,8 @@ impl GithubProvider {
         );
         let token = credential_token(&credential).trim();
         if !token.is_empty() {
-            let mut auth =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|e| ProviderError::Client(e.to_string()))?;
+            let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|e| ProviderError::Client(e.to_string()))?;
             auth.set_sensitive(true);
             headers.insert(reqwest::header::AUTHORIZATION, auth);
         }
@@ -431,7 +430,10 @@ fn normalise_issue(raw: GhIssue, team_name: &str) -> WorkItem {
 fn map_pr_status(merged: bool, state: Option<&str>) -> PrStatus {
     if merged {
         PrStatus::Completed
-    } else if state.map(|s| s.eq_ignore_ascii_case("closed")).unwrap_or(false) {
+    } else if state
+        .map(|s| s.eq_ignore_ascii_case("closed"))
+        .unwrap_or(false)
+    {
         PrStatus::Abandoned
     } else {
         PrStatus::Active
@@ -576,7 +578,10 @@ mod tests {
             RunStatus::Canceled
         );
         // In-flight runs (no conclusion yet) are Running.
-        assert_eq!(map_run_status(Some("in_progress"), None), RunStatus::Running);
+        assert_eq!(
+            map_run_status(Some("in_progress"), None),
+            RunStatus::Running
+        );
         assert_eq!(map_run_status(Some("queued"), None), RunStatus::Running);
         // A completed run with an unmapped conclusion is honestly Unknown.
         assert_eq!(
@@ -620,7 +625,10 @@ mod tests {
         assert!(wi.story_points.is_none());
         assert!(wi.iteration_path.is_none());
         // Body is trimmed.
-        assert_eq!(wi.description.as_deref(), Some("A description with padding"));
+        assert_eq!(
+            wi.description.as_deref(),
+            Some("A description with padding")
+        );
         assert_eq!(wi.url, "https://github.com/acme/widgets/issues/4321");
     }
 
@@ -657,8 +665,7 @@ mod tests {
 
     #[test]
     fn normalise_issue_maps_whitespace_body_to_none() {
-        let raw: GhIssue =
-            serde_json::from_str(r#"{ "number": 3, "body": "   \n  " }"#).unwrap();
+        let raw: GhIssue = serde_json::from_str(r#"{ "number": 3, "body": "   \n  " }"#).unwrap();
         let wi = normalise_issue(raw, "Platform");
         assert!(wi.description.is_none());
     }
@@ -769,7 +776,10 @@ mod tests {
         // An empty token = anonymous. The provider must still build (and, by
         // construction, omit the Authorization header). Both credential kinds.
         assert_eq!(credential_token(&Credential::Pat(String::new())), "");
-        assert_eq!(credential_token(&Credential::Bearer("  ".into())).trim(), "");
+        assert_eq!(
+            credential_token(&Credential::Bearer("  ".into())).trim(),
+            ""
+        );
         let cfg = sample_cfg();
         assert!(GithubProvider::new(&cfg, Credential::Pat(String::new())).is_ok());
         assert!(GithubProvider::new(&cfg, Credential::Bearer("tok".into())).is_ok());
@@ -821,7 +831,11 @@ mod tests {
             // Never a PR URL - PRs were filtered before normalisation.
             assert!(!wi.url.contains("/pull/"), "leaked PR url: {}", wi.url);
             // State is one of the mapped forms.
-            assert!(wi.state == "Open" || wi.state == "Closed", "state {}", wi.state);
+            assert!(
+                wi.state == "Open" || wi.state == "Closed",
+                "state {}",
+                wi.state
+            );
         }
         // At least one closed issue exercises the closed-state mapping + closed_at.
         assert!(

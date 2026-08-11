@@ -247,7 +247,11 @@ impl AzureDevOpsProvider {
         let mut hi: i64 = 4_000_000;
         loop {
             let empty_above = self
-                .wiql_ids(&build_wiql(self.area_path.as_deref(), self.area_path_strict, Some((hi, MAX_WIQL_ID))))
+                .wiql_ids(&build_wiql(
+                    self.area_path.as_deref(),
+                    self.area_path_strict,
+                    Some((hi, MAX_WIQL_ID)),
+                ))
                 .await
                 .map(|ids| ids.is_empty())
                 .unwrap_or(false);
@@ -264,11 +268,16 @@ impl AzureDevOpsProvider {
         &'a self,
         lo: i64,
         hi: i64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<i64>, ProviderError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<i64>, ProviderError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             match self
-                .wiql_ids(&build_wiql(self.area_path.as_deref(), self.area_path_strict, Some((lo, hi))))
+                .wiql_ids(&build_wiql(
+                    self.area_path.as_deref(),
+                    self.area_path_strict,
+                    Some((lo, hi)),
+                ))
                 .await
             {
                 Ok(ids) => Ok(ids),
@@ -727,7 +736,11 @@ fn normalise_work_item(
             )
         });
 
-    let linked_pr_ids: Vec<i64> = raw.relations.iter().filter_map(pr_id_from_relation).collect();
+    let linked_pr_ids: Vec<i64> = raw
+        .relations
+        .iter()
+        .filter_map(pr_id_from_relation)
+        .collect();
 
     WorkItem {
         id: raw.id,
@@ -1064,7 +1077,10 @@ mod tests {
         assert_eq!(strip_html("Tom &amp; Jerry"), "Tom & Jerry");
         assert_eq!(strip_html("a&nbsp;b"), "a b");
         assert_eq!(strip_html("1 &lt; 2 &gt; 0"), "1 < 2 > 0");
-        assert_eq!(strip_html("say &quot;hi&quot; it&#39;s fine"), "say \"hi\" it's fine");
+        assert_eq!(
+            strip_html("say &quot;hi&quot; it&#39;s fine"),
+            "say \"hi\" it's fine"
+        );
         // Runs of whitespace (incl. newlines/tabs from block tags) collapse to one
         // space, and leading/trailing whitespace is trimmed.
         assert_eq!(strip_html("  foo   bar\n\tbaz  "), "foo bar baz");
@@ -1216,7 +1232,12 @@ mod tests {
             "repository": { "name": "repo-c", "project": { "name": "Payments" } }
         }"#;
         let raw: AdoPullRequest = serde_json::from_str(json).unwrap();
-        let pr = normalise_pull_request(raw, "Platform", "https://dev.azure.com/contoso", "Platform Engineering");
+        let pr = normalise_pull_request(
+            raw,
+            "Platform",
+            "https://dev.azure.com/contoso",
+            "Platform Engineering",
+        );
         assert_eq!(
             pr.url,
             "https://dev.azure.com/contoso/Payments/_git/repo-c/pullrequest/252573"
@@ -1314,7 +1335,11 @@ mod tests {
             body: "VS402337: exceeds the size limit of 20000".into(),
         };
         assert!(is_result_limit(&cap));
-        let other = ProviderError::Api { status: 400, url: "u".into(), body: "bad query".into() };
+        let other = ProviderError::Api {
+            status: 400,
+            url: "u".into(),
+            body: "bad query".into(),
+        };
         assert!(!is_result_limit(&other));
         assert!(!is_result_limit(&ProviderError::Config("x".into())));
     }
@@ -1340,7 +1365,14 @@ mod tests {
         let items: Vec<WorkItem> = parsed
             .value
             .into_iter()
-            .map(|raw| normalise_work_item(raw, "Example", "https://dev.azure.com/contoso", "Example Project"))
+            .map(|raw| {
+                normalise_work_item(
+                    raw,
+                    "Example",
+                    "https://dev.azure.com/contoso",
+                    "Example Project",
+                )
+            })
             .collect();
         let by_id = |id: i64| items.iter().find(|w| w.id == id).unwrap();
         // 889555's PR link uses an upper-case %2F separator...
@@ -1353,10 +1385,16 @@ mod tests {
     #[test]
     fn pullrequests_fixture_deserialises_and_normalises() {
         let json = include_str!("fixtures/pullrequests.json");
-        let parsed: PullRequestsResponse = serde_json::from_str(json).expect("real PR list payload");
+        let parsed: PullRequestsResponse =
+            serde_json::from_str(json).expect("real PR list payload");
         assert!(!parsed.value.is_empty());
         for raw in parsed.value {
-            let pr = normalise_pull_request(raw, "Example", "https://dev.azure.com/contoso", "Example Project");
+            let pr = normalise_pull_request(
+                raw,
+                "Example",
+                "https://dev.azure.com/contoso",
+                "Example Project",
+            );
             assert!(pr.id > 0);
             // Every PR builds a usable web URL and a mapped status.
             assert!(pr.url.starts_with("https://dev.azure.com/contoso/"));
@@ -1368,13 +1406,19 @@ mod tests {
     fn pull_request_by_id_fixture_builds_cross_project_url() {
         let json = include_str!("fixtures/pullrequest_by_id.json");
         let raw: AdoPullRequest = serde_json::from_str(json).expect("real single-PR payload");
-        let pr = normalise_pull_request(raw, "Example", "https://dev.azure.com/contoso", "Example Project");
+        let pr = normalise_pull_request(
+            raw,
+            "Example",
+            "https://dev.azure.com/contoso",
+            "Example Project",
+        );
         // The captured PR lives in a different project than the configured one;
         // its URL must use the repo's own project segment.
         assert_eq!(pr.id, 252573);
         assert_eq!(pr.status, PrStatus::Completed);
         assert!(
-            pr.url.contains("/Second%20Project/_git/repo-c/pullrequest/252573"),
+            pr.url
+                .contains("/Second%20Project/_git/repo-c/pullrequest/252573"),
             "unexpected URL: {}",
             pr.url
         );
@@ -1383,17 +1427,27 @@ mod tests {
     #[test]
     fn definitions_fixture_folds_in_latest_build() {
         let json = include_str!("fixtures/definitions.json");
-        let parsed: DefinitionsResponse = serde_json::from_str(json).expect("real definitions payload");
+        let parsed: DefinitionsResponse =
+            serde_json::from_str(json).expect("real definitions payload");
         assert!(!parsed.value.is_empty());
         let pipelines: Vec<_> = parsed
             .value
             .into_iter()
-            .map(|d| normalise_pipeline(d, "Example", "https://dev.azure.com/contoso", "Example Project"))
+            .map(|d| {
+                normalise_pipeline(
+                    d,
+                    "Example",
+                    "https://dev.azure.com/contoso",
+                    "Example Project",
+                )
+            })
             .collect();
         // includeLatestBuilds=true means a completed definition carries its last
         // run status/time (the fix for "never run" on long-idle pipelines).
         assert!(
-            pipelines.iter().any(|p| p.last_run_status.is_some() && p.last_run_at.is_some()),
+            pipelines
+                .iter()
+                .any(|p| p.last_run_status.is_some() && p.last_run_at.is_some()),
             "expected at least one pipeline with a folded-in last run"
         );
     }
@@ -1406,7 +1460,10 @@ mod tests {
         for raw in parsed.value {
             let run = normalise_run(raw, "Example");
             assert!(run.id > 0);
-            assert!(run.pipeline_id > 0, "a build should reference its definition");
+            assert!(
+                run.pipeline_id > 0,
+                "a build should reference its definition"
+            );
         }
     }
 }

@@ -9,4 +9,11 @@
 # pulled in by Tauri's Linux webview backend that has no upstream fix yet.
 
 [advisories]
-ignore = []
+ignore = [
+    # rsa (transitive, via an AI/HTTP dependency): Marvin Attack timing
+    # sidechannel. There is NO upstream fix yet - the rsa crate is mid-migration
+    # to a constant-time implementation. POSEIDEN never performs remote-observable
+    # RSA operations, so this is non-actionable for us. Revisit when a patched
+    # rsa releases. https://rustsec.org/advisories/RUSTSEC-2023-0071
+    "RUSTSEC-2023-0071",
+]

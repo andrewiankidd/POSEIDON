@@ -181,7 +181,10 @@ fn measure<T: Queryable>(rows: &[&T], metric: &Metric) -> f64 {
             numerator,
             denominator,
         } => {
-            let denom = rows.iter().filter(|r| matches_all(**r, denominator)).count();
+            let denom = rows
+                .iter()
+                .filter(|r| matches_all(**r, denominator))
+                .count();
             if denom == 0 {
                 return 0.0;
             }
@@ -214,7 +217,11 @@ fn matches_one<T: Queryable>(row: &T, c: &Condition) -> bool {
     match c.op {
         Op::Eq => a == v,
         Op::Ne => a != v,
-        Op::In => c.value.split(',').map(|s| s.trim().to_lowercase()).any(|x| x == a),
+        Op::In => c
+            .value
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .any(|x| x == a),
         Op::Contains => a.contains(&v),
     }
 }
@@ -235,7 +242,10 @@ fn order_points(points: &mut [Point], group_by: Option<GroupBy>) {
 
 // ── Time window ────────────────────────────────────────────────────────
 
-fn range_bounds(range: &TimeRange, now: DateTime<Utc>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+fn range_bounds(
+    range: &TimeRange,
+    now: DateTime<Utc>,
+) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
     match range {
         TimeRange::AllTime => (None, None),
         TimeRange::LastDays { days } => (Some(now - chrono::Duration::days(*days)), Some(now)),
@@ -255,10 +265,17 @@ fn parse_bound(s: &str, end_of_day: bool) -> Option<DateTime<Utc>> {
     } else {
         chrono::NaiveTime::from_hms_opt(0, 0, 0)?
     };
-    Some(DateTime::from_naive_utc_and_offset(date.and_time(time), Utc))
+    Some(DateTime::from_naive_utc_and_offset(
+        date.and_time(time),
+        Utc,
+    ))
 }
 
-fn in_window(ts: Option<DateTime<Utc>>, from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> bool {
+fn in_window(
+    ts: Option<DateTime<Utc>>,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+) -> bool {
     if from.is_none() && to.is_none() {
         return true; // no bound -> keep everything, even rows lacking a timestamp
     }
@@ -334,7 +351,12 @@ impl Queryable for PullRequest {
 impl Queryable for PipelineHealth {
     fn field(&self, name: &str) -> Option<String> {
         match name {
-            "status" => Some(self.last_status.map(run_status_str).unwrap_or("never_run").to_string()),
+            "status" => Some(
+                self.last_status
+                    .map(run_status_str)
+                    .unwrap_or("never_run")
+                    .to_string(),
+            ),
             "team" => Some(self.team.clone()),
             "name" => Some(self.name.clone()),
             _ => None,
@@ -392,7 +414,14 @@ pub fn builtins() -> Vec<ReportSpec> {
     ]
 }
 
-fn stat_count(name: &str, desc: &str, source: DataSource, days: i64, filters: Vec<Condition>, time_field: Option<&str>) -> ReportSpec {
+fn stat_count(
+    name: &str,
+    desc: &str,
+    source: DataSource,
+    days: i64,
+    filters: Vec<Condition>,
+    time_field: Option<&str>,
+) -> ReportSpec {
     ReportSpec {
         name: name.into(),
         description: Some(desc.into()),
@@ -456,7 +485,11 @@ fn pr_merge_rate() -> ReportSpec {
 }
 
 fn cond(field: &str, op: Op, value: &str) -> Condition {
-    Condition { field: field.into(), op, value: value.into() }
+    Condition {
+        field: field.into(),
+        op,
+        value: value.into(),
+    }
 }
 
 fn work_items_by_tag() -> ReportSpec {
@@ -633,7 +666,10 @@ mod tests {
             }],
             render: RenderKind::Stat,
         };
-        let data = Datasets { work_items: vec![item], ..Default::default() };
+        let data = Datasets {
+            work_items: vec![item],
+            ..Default::default()
+        };
         assert_eq!(run(&spec, &data, now()).series[0].points[0].value, 1.0);
     }
 
@@ -709,7 +745,10 @@ mod tests {
     fn pr_merge_rate_all_active_yields_zero_not_empty() {
         // Rows exist (a bucket forms) but none are completed/abandoned -> denom 0 -> 0.0.
         let data = Datasets {
-            pull_requests: vec![pr(1, "A", PrStatus::Active, 1), pr(2, "A", PrStatus::Active, 1)],
+            pull_requests: vec![
+                pr(1, "A", PrStatus::Active, 1),
+                pr(2, "A", PrStatus::Active, 1),
+            ],
             ..Default::default()
         };
         let s = &run(&pr_merge_rate(), &data, now()).series[0];
@@ -828,4 +867,3 @@ mod ser_probe {
         assert!(v.unwrap().is_array());
     }
 }
-

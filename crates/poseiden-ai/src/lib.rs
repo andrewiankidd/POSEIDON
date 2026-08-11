@@ -155,7 +155,10 @@ impl AiConfig {
             "custom" => Some((self.endpoint.clone()?, self.model.clone()?)),
             id => {
                 let p = presets::online_provider(id)?;
-                let model = self.model.clone().unwrap_or_else(|| p.default_model.to_string());
+                let model = self
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| p.default_model.to_string());
                 Some((p.endpoint.to_string(), model))
             }
         }
@@ -165,14 +168,21 @@ impl AiConfig {
     pub fn enabled(&self) -> bool {
         match self.mode.as_str() {
             "online" => self.resolve_online().is_some(),
-            "offline" => self.offline_model.as_deref().and_then(presets::offline_model).is_some(),
+            "offline" => self
+                .offline_model
+                .as_deref()
+                .and_then(presets::offline_model)
+                .is_some(),
             _ => false,
         }
     }
 }
 
 fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 // ─────────────────────────── LLM integration registry ───────────────────────
@@ -198,7 +208,11 @@ pub struct PlatformCaps {
 impl PlatformCaps {
     /// This server process's capabilities (pod / desktop / CLI).
     pub fn server() -> Self {
-        Self { embedded: true, gpu: embedded::cuda_available(), webgpu: false }
+        Self {
+            embedded: true,
+            gpu: embedded::cuda_available(),
+            webgpu: false,
+        }
     }
 }
 
@@ -265,8 +279,12 @@ impl LlmIntegration {
                 if !self.to_ai_config().enabled() {
                     return false;
                 }
-                let is_custom = self.provider.as_deref().map_or(true, |p| p == "custom");
-                is_custom || self.api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
+                let is_custom = self.provider.as_deref().is_none_or(|p| p == "custom");
+                is_custom
+                    || self
+                        .api_key
+                        .as_deref()
+                        .is_some_and(|k| !k.trim().is_empty())
             }
             "offline" => self.to_ai_config().enabled(),
             "webgpu" => self.model.is_some() || self.offline_model.is_some(),
@@ -449,8 +467,7 @@ pub fn parse_suggestions(content: &str, allowed: &[String]) -> Vec<TagSuggestion
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let canon: HashMap<String, &String> =
-        allowed.iter().map(|t| (t.to_lowercase(), t)).collect();
+    let canon: HashMap<String, &String> = allowed.iter().map(|t| (t.to_lowercase(), t)).collect();
     let mut seen = HashSet::new();
     reply
         .tags
@@ -463,7 +480,9 @@ pub fn parse_suggestions(content: &str, allowed: &[String]) -> Vec<TagSuggestion
             }
             Some(TagSuggestion {
                 tag: (*canonical).clone(),
-                reasons: vec![rationale.clone().unwrap_or_else(|| "AI suggestion".to_string())],
+                reasons: vec![rationale
+                    .clone()
+                    .unwrap_or_else(|| "AI suggestion".to_string())],
                 replaces: None,
             })
         })
@@ -520,7 +539,10 @@ impl AiTagger for ChatTagger {
             .map_err(|e| AiError::Http(e.to_string()))?
             .error_for_status()
             .map_err(|e| AiError::Http(e.to_string()))?;
-        let v: serde_json::Value = resp.json().await.map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
         let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
 
         let mut suggestions = parse_suggestions(content, allowed);
@@ -536,11 +558,20 @@ mod tests {
     use super::*;
 
     fn allowed() -> Vec<String> {
-        vec!["type:bug".into(), "type:task".into(), "priority:high".into()]
+        vec![
+            "type:bug".into(),
+            "type:task".into(),
+            "priority:high".into(),
+        ]
     }
 
     fn integ(id: &str, kind: &str) -> LlmIntegration {
-        LlmIntegration { id: id.into(), name: id.into(), kind: kind.into(), ..Default::default() }
+        LlmIntegration {
+            id: id.into(),
+            name: id.into(),
+            kind: kind.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -558,16 +589,30 @@ mod tests {
         let mut cloud = integ("cloud", "online");
         cloud.provider = Some("anthropic".into());
         cloud.api_key = Some("k".into()); // a cloud preset needs a key to be configured
-        let cfg = LlmConfig { integrations: vec![gpu, cloud] };
+        let cfg = LlmConfig {
+            integrations: vec![gpu, cloud],
+        };
 
         // Embedded but no GPU: the gpu-offline entry is incompatible -> cloud wins.
-        let cpu = PlatformCaps { embedded: true, gpu: false, webgpu: false };
+        let cpu = PlatformCaps {
+            embedded: true,
+            gpu: false,
+            webgpu: false,
+        };
         assert_eq!(cfg.active_id(&cpu), Some("cloud"));
         // GPU present: the higher-priority gpu-offline entry wins.
-        let gpu_caps = PlatformCaps { embedded: true, gpu: true, webgpu: false };
+        let gpu_caps = PlatformCaps {
+            embedded: true,
+            gpu: true,
+            webgpu: false,
+        };
         assert_eq!(cfg.active_id(&gpu_caps), Some("gpu"));
         // Browser client (no in-process embedded): only the online entry works.
-        let browser = PlatformCaps { embedded: false, gpu: false, webgpu: false };
+        let browser = PlatformCaps {
+            embedded: false,
+            gpu: false,
+            webgpu: false,
+        };
         assert_eq!(cfg.active_id(&browser), Some("cloud"));
     }
 
@@ -575,10 +620,20 @@ mod tests {
     fn seeded_catalog_grays_gpu_and_webgpu_on_a_cpu_server_and_activates_local_cpu() {
         let cfg = LlmConfig::seeded();
         // A plain CPU server: embedded yes, no CUDA, no WebGPU.
-        let caps = PlatformCaps { embedded: true, gpu: false, webgpu: false };
+        let caps = PlatformCaps {
+            embedded: true,
+            gpu: false,
+            webgpu: false,
+        };
         let by = |id: &str| cfg.integrations.iter().find(|i| i.id == id).unwrap();
-        assert!(!by("local-gpu").compatible(&caps), "GPU entry unusable without CUDA");
-        assert!(!by("webgpu").compatible(&caps), "WebGPU entry unusable server-side");
+        assert!(
+            !by("local-gpu").compatible(&caps),
+            "GPU entry unusable without CUDA"
+        );
+        assert!(
+            !by("webgpu").compatible(&caps),
+            "WebGPU entry unusable server-side"
+        );
         assert!(by("local-cpu").compatible(&caps) && by("local-cpu").configured());
         // Local-first: the CPU embedded entry wins over the cloud/ollama entries.
         assert_eq!(cfg.active_id(&caps), Some("local-cpu"));
@@ -592,8 +647,16 @@ mod tests {
     fn webgpu_is_only_compatible_on_a_webgpu_platform() {
         let mut wg = integ("wg", "webgpu");
         wg.model = Some("qwen2.5-0.5b-q4f16".into());
-        assert!(!wg.compatible(&PlatformCaps { embedded: true, gpu: true, webgpu: false }));
-        assert!(wg.compatible(&PlatformCaps { embedded: false, gpu: false, webgpu: true }));
+        assert!(!wg.compatible(&PlatformCaps {
+            embedded: true,
+            gpu: true,
+            webgpu: false
+        }));
+        assert!(wg.compatible(&PlatformCaps {
+            embedded: false,
+            gpu: false,
+            webgpu: true
+        }));
         // The server can't build a webgpu tagger (the browser runs it).
         assert!(wg.build().is_none());
     }
@@ -610,7 +673,10 @@ mod tests {
     #[test]
     fn matches_case_insensitively_but_returns_canonical_spelling() {
         let raw = r#"{"tags": ["TYPE:Bug", "Priority:HIGH"]}"#;
-        let s: Vec<_> = parse_suggestions(raw, &allowed()).into_iter().map(|x| x.tag).collect();
+        let s: Vec<_> = parse_suggestions(raw, &allowed())
+            .into_iter()
+            .map(|x| x.tag)
+            .collect();
         assert_eq!(s, vec!["type:bug".to_string(), "priority:high".to_string()]);
     }
 
@@ -646,19 +712,28 @@ mod tests {
         assert!(!AiConfig::default().enabled() && AiConfig::default().build().is_none());
         // Online custom: needs endpoint + model.
         let custom = AiConfig {
-            mode: "online".into(), provider: Some("custom".into()),
-            endpoint: Some("http://x/v1/chat/completions".into()), model: Some("m".into()),
+            mode: "online".into(),
+            provider: Some("custom".into()),
+            endpoint: Some("http://x/v1/chat/completions".into()),
+            model: Some("m".into()),
             ..Default::default()
         };
         assert!(custom.enabled() && custom.build().is_some());
         // Online preset: endpoint comes from the preset, model defaults.
         let preset = AiConfig {
-            mode: "online".into(), provider: Some("anthropic".into()),
-            api_key: Some("k".into()), ..Default::default()
+            mode: "online".into(),
+            provider: Some("anthropic".into()),
+            api_key: Some("k".into()),
+            ..Default::default()
         };
         assert!(preset.enabled() && preset.build().is_some());
         // Unknown provider / bare offline (no embedded engine yet) -> off.
-        assert!(!AiConfig { mode: "online".into(), provider: Some("nope".into()), ..Default::default() }.enabled());
+        assert!(!AiConfig {
+            mode: "online".into(),
+            provider: Some("nope".into()),
+            ..Default::default()
+        }
+        .enabled());
     }
 
     // ── parse_suggestions: the explicit "nothing applies" contract ───────────
@@ -730,7 +805,12 @@ mod tests {
 
     #[test]
     fn build_prompt_includes_title_type_and_allowed_set() {
-        let input = TaggerInput::from(&work_item("Wire up ingress", "User Story", &["team:platform"], None));
+        let input = TaggerInput::from(&work_item(
+            "Wire up ingress",
+            "User Story",
+            &["team:platform"],
+            None,
+        ));
         let prompt = build_prompt(&input, &allowed());
         assert!(prompt.contains("- Title: Wire up ingress"));
         assert!(prompt.contains("- Type: User Story"));

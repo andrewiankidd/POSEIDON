@@ -48,7 +48,9 @@ fn copy_docs_dir(src: &Path, dst: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name() else { continue };
+        let Some(name) = path.file_name() else {
+            continue;
+        };
         if path.is_dir() {
             copy_docs_dir(&path, &dst.join(name));
         } else if path

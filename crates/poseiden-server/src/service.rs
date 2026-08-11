@@ -65,6 +65,11 @@ pub struct ImportSummary {
     pub replaced: bool,
 }
 
+/// Per-owner AI taggers: each owner maps to their configured tagger, or `None`
+/// when AI is not enabled for them. `Option` distinguishes "not yet built" from
+/// "built, none configured".
+type OwnerTaggers = HashMap<String, Option<Arc<dyn poseiden_ai::AiTagger>>>;
+
 /// The transport-agnostic logic layer. Cheap to clone (all fields Arc-backed),
 /// which is how a hosted request re-scopes it to the authenticated owner.
 #[derive(Clone)]
@@ -89,7 +94,7 @@ pub struct Service {
     /// Multi-tenant: each owner picks their own provider/model/key (Alice on
     /// Claude, Bob on a local model). Offline models are shared process-wide by id
     /// (see `poseiden_ai::embedded`), so per-owner taggers don't multiply memory.
-    ai: Arc<std::sync::RwLock<HashMap<String, Option<Arc<dyn poseiden_ai::AiTagger>>>>>,
+    ai: Arc<std::sync::RwLock<OwnerTaggers>>,
     /// In-flight / last AI tag-suggestion run, per owner (a background job). Same
     /// non-`.await`-held mutex discipline as `signins`.
     suggest_jobs: Arc<std::sync::Mutex<HashMap<String, SuggestState>>>,
@@ -119,7 +124,11 @@ pub enum SuggestState {
     /// No run has been started for this owner this process.
     Idle,
     /// A run is in progress: `done`/`total` items processed, `suggestions` stored so far.
-    Running { done: usize, total: usize, suggestions: usize },
+    Running {
+        done: usize,
+        total: usize,
+        suggestions: usize,
+    },
     /// The last run finished.
     Done { summary: AiSuggestSummary },
     /// The last run failed.
@@ -236,7 +245,10 @@ impl Service {
             .stored_llm_config()
             .await
             .resolve(&poseiden_ai::PlatformCaps::server());
-        self.ai.write().unwrap().insert(self.owner.clone(), built.clone());
+        self.ai
+            .write()
+            .unwrap()
+            .insert(self.owner.clone(), built.clone());
         built
     }
 
@@ -264,9 +276,16 @@ impl Service {
                     // "" = a key is stored (leave blank to keep); null = none.
                     obj.insert(
                         "api_key".to_string(),
-                        if has_key { serde_json::json!("") } else { serde_json::Value::Null },
+                        if has_key {
+                            serde_json::json!("")
+                        } else {
+                            serde_json::Value::Null
+                        },
                     );
-                    obj.insert("compatible".to_string(), serde_json::json!(i.compatible(&caps)));
+                    obj.insert(
+                        "compatible".to_string(),
+                        serde_json::json!(i.compatible(&caps)),
+                    );
                     obj.insert("configured".to_string(), serde_json::json!(i.configured()));
                     obj.insert(
                         "active".to_string(),
@@ -299,7 +318,9 @@ impl Service {
             }
         }
         let json = serde_json::to_string(&cfg)?;
-        self.store.set_meta(&self.owner, "llm_config", &json).await?;
+        self.store
+            .set_meta(&self.owner, "llm_config", &json)
+            .await?;
         self.invalidate_ai();
         Ok(())
     }
@@ -316,7 +337,11 @@ impl Service {
     /// (AI + keyword). Default TRUE (richer signal); flip off to keep bodies out of
     /// the prompt - notably so they don't leave the box for a cloud backend.
     pub async fn tag_use_description(&self) -> bool {
-        match self.store.get_meta(&self.owner, "tag_use_description").await {
+        match self
+            .store
+            .get_meta(&self.owner, "tag_use_description")
+            .await
+        {
             Ok(Some(v)) => v != "false",
             _ => true,
         }
@@ -325,7 +350,11 @@ impl Service {
     /// Persist the description-in-tagging toggle.
     pub async fn set_tag_use_description(&self, on: bool) -> anyhow::Result<()> {
         self.store
-            .set_meta(&self.owner, "tag_use_description", if on { "true" } else { "false" })
+            .set_meta(
+                &self.owner,
+                "tag_use_description",
+                if on { "true" } else { "false" },
+            )
             .await?;
         Ok(())
     }
@@ -373,23 +402,34 @@ impl Service {
             current_tags: vec![],
             description: None,
         };
-        let allowed: Vec<String> =
-            ["type:bug", "area:frontend", "priority:high", "platform:mobile", "needs:triage"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let allowed: Vec<String> = [
+            "type:bug",
+            "area:frontend",
+            "priority:high",
+            "platform:mobile",
+            "needs:triage",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
         let mut set = tokio::task::JoinSet::new();
-        for integ in cfg.integrations.iter().filter(|i| i.kind != "webgpu").cloned() {
+        for integ in cfg
+            .integrations
+            .iter()
+            .filter(|i| i.kind != "webgpu")
+            .cloned()
+        {
             let item = item.clone();
             let allowed = allowed.clone();
             set.spawn(async move {
-                let base = |status: &str, ms: Option<u64>, tags: Vec<String>, error: Option<String>| {
-                    serde_json::json!({
-                        "id": integ.id, "name": integ.name, "kind": integ.kind,
-                        "status": status, "ms": ms, "tags": tags, "error": error,
-                    })
-                };
+                let base =
+                    |status: &str, ms: Option<u64>, tags: Vec<String>, error: Option<String>| {
+                        serde_json::json!({
+                            "id": integ.id, "name": integ.name, "kind": integ.kind,
+                            "status": status, "ms": ms, "tags": tags, "error": error,
+                        })
+                    };
                 if !integ.compatible(&caps) {
                     return base("unsupported", None, vec![], None);
                 }
@@ -397,17 +437,26 @@ impl Service {
                     return base("unconfigured", None, vec![], None);
                 }
                 let Some(tagger) = integ.build() else {
-                    return base("error", None, vec![], Some("backend failed to build".to_string()));
+                    return base(
+                        "error",
+                        None,
+                        vec![],
+                        Some("backend failed to build".to_string()),
+                    );
                 };
                 let start = Instant::now();
-                let outcome = tokio::time::timeout(PER_BACKEND, tagger.suggest(&item, &allowed)).await;
+                let outcome =
+                    tokio::time::timeout(PER_BACKEND, tagger.suggest(&item, &allowed)).await;
                 let ms = start.elapsed().as_millis() as u64;
                 match outcome {
                     Err(_) => base("timeout", Some(ms), vec![], None),
                     Ok(Err(e)) => base("error", Some(ms), vec![], Some(e.to_string())),
-                    Ok(Ok(tags)) => {
-                        base("ok", Some(ms), tags.into_iter().map(|t| t.tag).collect(), None)
-                    }
+                    Ok(Ok(tags)) => base(
+                        "ok",
+                        Some(ms),
+                        tags.into_iter().map(|t| t.tag).collect(),
+                        None,
+                    ),
                 }
             });
         }
@@ -418,10 +467,17 @@ impl Service {
             }
         }
         // JoinSet completes out of order - restore the registry (priority) order.
-        let order: std::collections::HashMap<&str, usize> =
-            cfg.integrations.iter().enumerate().map(|(n, i)| (i.id.as_str(), n)).collect();
+        let order: std::collections::HashMap<&str, usize> = cfg
+            .integrations
+            .iter()
+            .enumerate()
+            .map(|(n, i)| (i.id.as_str(), n))
+            .collect();
         results.sort_by_key(|r| {
-            order.get(r["id"].as_str().unwrap_or("")).copied().unwrap_or(usize::MAX)
+            order
+                .get(r["id"].as_str().unwrap_or(""))
+                .copied()
+                .unwrap_or(usize::MAX)
         });
 
         let webgpu: Vec<serde_json::Value> = cfg
@@ -528,8 +584,12 @@ impl Service {
                 reports: bundle.reports.len(),
                 replaced: true,
             };
-            self.config.set_user_config(&self.owner, bundle.config).await?;
-            self.store.replace_reports(&self.owner, &bundle.reports).await?;
+            self.config
+                .set_user_config(&self.owner, bundle.config)
+                .await?;
+            self.store
+                .replace_reports(&self.owner, &bundle.reports)
+                .await?;
             s
         } else {
             let mut current = self.config.user_config(&self.owner).await?;
@@ -655,7 +715,13 @@ impl Service {
     /// The configured team names, in config order - powers the UI scope
     /// selector.
     pub async fn team_names(&self) -> anyhow::Result<Vec<String>> {
-        Ok(self.config.teams(&self.owner).await?.iter().map(|t| t.name.clone()).collect())
+        Ok(self
+            .config
+            .teams(&self.owner)
+            .await?
+            .iter()
+            .map(|t| t.name.clone())
+            .collect())
     }
 
     /// The teams a poll should fetch: all of them when `poll_all_teams` is on,
@@ -874,7 +940,10 @@ impl Service {
             .unwrap_or_default();
 
         let mut checks: Vec<Arc<dyn Check>> = vec![
-            Arc::new(TeamCheckReconciler::new(self.config.clone(), self.owner.clone())),
+            Arc::new(TeamCheckReconciler::new(
+                self.config.clone(),
+                self.owner.clone(),
+            )),
             Arc::new(UpdateCheck::new()),
         ];
 
@@ -896,14 +965,20 @@ impl Service {
     /// Run the health checks and report status (no fixes applied) - backs the
     /// traffic-light indicator + `GET /api/doctor`.
     pub async fn doctor_report(&self) -> DoctorReport {
-        self.build_doctor().await.report(Utc::now().to_rfc3339()).await
+        self.build_doctor()
+            .await
+            .report(Utc::now().to_rfc3339())
+            .await
     }
 
     /// Run the checks AND apply auto-fixes (the reconciler auto-registers team
     /// checks; future checks may self-heal too). Driven by the background Doctor
     /// tick so the traffic light trends green without user action.
     pub async fn doctor_tick(&self) -> DoctorReport {
-        self.build_doctor().await.tick(Utc::now().to_rfc3339()).await
+        self.build_doctor()
+            .await
+            .tick(Utc::now().to_rfc3339())
+            .await
     }
 
     /// Run one check's server-side fix (the Doctor panel's Fix button, for
@@ -991,7 +1066,10 @@ impl Service {
         };
         self.signins.lock().unwrap().insert(
             self.owner.clone(),
-            SigninState::Pending { url: prompt.url.clone(), code: prompt.code.clone() },
+            SigninState::Pending {
+                url: prompt.url.clone(),
+                code: prompt.code.clone(),
+            },
         );
 
         let signins = self.signins.clone();
@@ -1003,7 +1081,9 @@ impl Service {
             let deadline = Utc::now() + chrono::Duration::seconds(expires_in as i64);
             let state = loop {
                 if Utc::now() >= deadline {
-                    break SigninState::Failed { error: "sign-in timed out".to_string() };
+                    break SigninState::Failed {
+                        error: "sign-in timed out".to_string(),
+                    };
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 match oauth::poll_once(&http, tenant.as_deref(), &device_code).await {
@@ -1018,7 +1098,11 @@ impl Service {
                         break SigninState::Done;
                     }
                     Ok(PollOutcome::Failed(msg)) => break SigninState::Failed { error: msg },
-                    Err(e) => break SigninState::Failed { error: e.to_string() },
+                    Err(e) => {
+                        break SigninState::Failed {
+                            error: e.to_string(),
+                        }
+                    }
                 }
             };
             signins.lock().unwrap().insert(owner, state);
@@ -1051,9 +1135,17 @@ impl Service {
         self.attach_linked_prs(&mut items, team).await?;
         // Advisory tag suggestions: each team's keyword map, plus any stored AI
         // suggestions (both dropped if already applied; AI de-duped vs keyword).
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         let use_desc = self.tag_use_description().await;
-        let ai = self.store.ai_suggestions(&self.owner, team).await.unwrap_or_default();
+        let ai = self
+            .store
+            .ai_suggestions(&self.owner, team)
+            .await
+            .unwrap_or_default();
         for it in &mut items {
             let rules = rules_for_team(&cfg, &it.team);
             let mut suggestions = poseiden_rules::suggest_tags(it, rules, use_desc);
@@ -1089,7 +1181,8 @@ impl Service {
         &self,
         team: Option<&str>,
     ) -> anyhow::Result<AiSuggestSummary> {
-        self.generate_tag_suggestions_with(team, None, |_, _, _| {}).await
+        self.generate_tag_suggestions_with(team, None, |_, _, _| {})
+            .await
     }
 
     /// As [`Self::generate_tag_suggestions`], but scoped to `ids` when given (a
@@ -1114,7 +1207,11 @@ impl Service {
             let want: std::collections::HashSet<i64> = ids.iter().copied().collect();
             items.retain(|it| want.contains(&it.id));
         }
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         let use_desc = self.tag_use_description().await;
         let total = items.len();
 
@@ -1132,7 +1229,12 @@ impl Service {
                     Ok(sugg) => {
                         let pairs: Vec<(String, String)> = sugg
                             .iter()
-                            .map(|s| (s.tag.clone(), s.reasons.first().cloned().unwrap_or_default()))
+                            .map(|s| {
+                                (
+                                    s.tag.clone(),
+                                    s.reasons.first().cloned().unwrap_or_default(),
+                                )
+                            })
                             .collect();
                         self.store
                             .set_ai_suggestions(&self.owner, &it.team, it.id, &pairs)
@@ -1175,7 +1277,11 @@ impl Service {
             }
             jobs.insert(
                 self.owner.clone(),
-                SuggestState::Running { done: 0, total: 0, suggestions: 0 },
+                SuggestState::Running {
+                    done: 0,
+                    total: 0,
+                    suggestions: 0,
+                },
             );
         }
         let svc = self.clone();
@@ -1190,14 +1296,20 @@ impl Service {
                     move |done, total, suggestions| {
                         pjobs.lock().unwrap().insert(
                             powner.clone(),
-                            SuggestState::Running { done, total, suggestions },
+                            SuggestState::Running {
+                                done,
+                                total,
+                                suggestions,
+                            },
                         );
                     },
                 )
                 .await;
             let final_state = match result {
                 Ok(summary) => SuggestState::Done { summary },
-                Err(e) => SuggestState::Failed { error: e.to_string() },
+                Err(e) => SuggestState::Failed {
+                    error: e.to_string(),
+                },
             };
             jobs.lock().unwrap().insert(owner, final_state);
         });
@@ -1225,16 +1337,23 @@ impl Service {
         incoming: Vec<BrowserSuggestion>,
     ) -> anyhow::Result<AiSuggestSummary> {
         let items = self.store.list_work_items(&self.owner, team).await?;
-        let team_of: HashMap<i64, String> =
-            items.iter().map(|i| (i.id, i.team.clone())).collect();
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let team_of: HashMap<i64, String> = items.iter().map(|i| (i.id, i.team.clone())).collect();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         let mut summary = AiSuggestSummary::default();
         for entry in incoming {
-            let Some(team_name) = team_of.get(&entry.id) else { continue };
+            let Some(team_name) = team_of.get(&entry.id) else {
+                continue;
+            };
             summary.considered += 1;
             let rules = rules_for_team(&cfg, team_name);
-            let canon: HashMap<String, String> =
-                canonical_tags(rules).into_iter().map(|t| (t.to_lowercase(), t)).collect();
+            let canon: HashMap<String, String> = canonical_tags(rules)
+                .into_iter()
+                .map(|t| (t.to_lowercase(), t))
+                .collect();
             let mut seen = std::collections::HashSet::new();
             let mut pairs: Vec<(String, String)> = Vec::new();
             for t in entry.tags {
@@ -1276,7 +1395,11 @@ impl Service {
     ) -> anyhow::Result<()> {
         let prs = self.store.list_pull_requests(&self.owner, team).await?;
         let pr_map: HashMap<i64, &PullRequest> = prs.iter().map(|p| (p.id, p)).collect();
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         for it in items.iter_mut() {
             if it.linked_pr_ids.is_empty() {
                 it.linked_prs = Vec::new();
@@ -1316,7 +1439,10 @@ impl Service {
 
     /// Build a provider for `team` with a freshly-resolved credential. Shared by
     /// every write/lookup path that needs to talk to the provider directly.
-    async fn provider_for(&self, team: &str) -> anyhow::Result<Box<dyn poseiden_providers::Provider>> {
+    async fn provider_for(
+        &self,
+        team: &str,
+    ) -> anyhow::Result<Box<dyn poseiden_providers::Provider>> {
         let team_cfg = self
             .config
             .teams(&self.owner)
@@ -1358,7 +1484,11 @@ impl Service {
     /// Resolve a single PR live by id (for a linked-PR chip that fell outside the
     /// polled window, so its chip can both open in the browser and take on its
     /// real status colour). Returns the normalised PR.
-    pub async fn resolve_pull_request(&self, team: &str, pr_id: i64) -> anyhow::Result<PullRequest> {
+    pub async fn resolve_pull_request(
+        &self,
+        team: &str,
+        pr_id: i64,
+    ) -> anyhow::Result<PullRequest> {
         let provider = self.provider_for(team).await?;
         Ok(provider.fetch_pull_request(pr_id).await?)
     }
@@ -1386,7 +1516,11 @@ impl Service {
         let flags = self.evaluate_scoped(std::slice::from_ref(&updated)).await;
         self.attach_linked_prs(std::slice::from_mut(&mut updated), Some(team))
             .await?;
-        info!(link, flags = flags.len(), "work item PR link updated in Azure DevOps");
+        info!(
+            link,
+            flags = flags.len(),
+            "work item PR link updated in Azure DevOps"
+        );
         Ok((updated, flags))
     }
 
@@ -1433,7 +1567,11 @@ impl Service {
     /// longer in config falls back to the global default. Grouped via `BTreeMap`
     /// so the flag order is deterministic (by team name) across calls.
     async fn evaluate_scoped(&self, items: &[WorkItem]) -> Vec<Flag> {
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         let now = Utc::now();
         let mut groups: std::collections::BTreeMap<&str, Vec<WorkItem>> =
             std::collections::BTreeMap::new();
@@ -1461,7 +1599,11 @@ impl Service {
         let runs = self.store.list_runs(&self.owner, since, team).await?;
         let mut health = fold_pipeline_health(&pipelines, &runs);
         // Attach pipeline hygiene flags using each pipeline's team-effective rules.
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         for h in &mut health {
             let rules = rules_for_team(&cfg, &h.team);
             h.flags = poseiden_rules::evaluate_pipeline(h.last_status, &rules.pipelines);
@@ -1485,7 +1627,11 @@ impl Service {
                 by_pr.entry(*pr_id).or_default().push(it.id);
             }
         }
-        let cfg = self.config.user_config(&self.owner).await.unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         let now = Utc::now();
         for pr in &mut prs {
             pr.linked_work_items = by_pr.get(&pr.id).cloned().unwrap_or_default();
@@ -1579,7 +1725,10 @@ impl Service {
 
     /// Find a spec by name across built-ins + saved.
     async fn find_spec(&self, name: &str) -> anyhow::Result<poseiden_core::ReportSpec> {
-        if let Some(b) = poseiden_reports::builtins().into_iter().find(|s| s.name == name) {
+        if let Some(b) = poseiden_reports::builtins()
+            .into_iter()
+            .find(|s| s.name == name)
+        {
             return Ok(b);
         }
         self.store
@@ -1643,8 +1792,14 @@ impl Service {
     /// Save a user report. Rejects overwriting a built-in template's name - the
     /// UI turns that into a "save as" prompt for a fresh name.
     pub async fn save_report(&self, mut spec: poseiden_core::ReportSpec) -> anyhow::Result<()> {
-        if poseiden_reports::builtins().iter().any(|b| b.name == spec.name) {
-            anyhow::bail!("\"{}\" is a built-in report; save it under a new name", spec.name);
+        if poseiden_reports::builtins()
+            .iter()
+            .any(|b| b.name == spec.name)
+        {
+            anyhow::bail!(
+                "\"{}\" is a built-in report; save it under a new name",
+                spec.name
+            );
         }
         if spec.name.trim().is_empty() {
             anyhow::bail!("report name is required");
@@ -1726,7 +1881,10 @@ fn count_entity_flags<'a>(flags: impl IntoIterator<Item = &'a EntityFlag>) -> Ve
 
 /// The effective ruleset for a team by name: its `[team.rules]` override if any,
 /// else the instance default. Used to attach per-team hygiene flags on read.
-fn rules_for_team<'a>(cfg: &'a poseiden_core::UserConfig, team: &str) -> &'a poseiden_core::RuleSet {
+fn rules_for_team<'a>(
+    cfg: &'a poseiden_core::UserConfig,
+    team: &str,
+) -> &'a poseiden_core::RuleSet {
     cfg.teams
         .iter()
         .find(|t| t.name == team)
@@ -1819,11 +1977,19 @@ mod ai_tests {
     fn canonical_tags_drops_patterns_and_dedups() {
         let rules = RuleSet {
             required_tags: vec!["type:*".into(), "team:platform".into()],
-            allowed_tags: vec!["type:bug".into(), "TYPE:BUG".into(), "priority:*".into(), " ".into()],
+            allowed_tags: vec![
+                "type:bug".into(),
+                "TYPE:BUG".into(),
+                "priority:*".into(),
+                " ".into(),
+            ],
             ..Default::default()
         };
         let got = canonical_tags(&rules);
-        assert_eq!(got, vec!["team:platform".to_string(), "type:bug".to_string()]);
+        assert_eq!(
+            got,
+            vec!["team:platform".to_string(), "type:bug".to_string()]
+        );
     }
 
     #[test]
@@ -1980,7 +2146,10 @@ mod tests {
         // Emails stay readable; path separators + other chars become `_` so the
         // per-owner az dir can never escape the sessions root.
         assert_eq!(sanitize_owner("a.user@example.com"), "a.user_example.com");
-        assert_eq!(sanitize_owner("first.last-team@corp.co.uk"), "first.last-team_corp.co.uk");
+        assert_eq!(
+            sanitize_owner("first.last-team@corp.co.uk"),
+            "first.last-team_corp.co.uk"
+        );
         assert_eq!(sanitize_owner("../../etc/passwd"), ".._.._etc_passwd");
         assert_eq!(sanitize_owner("plain"), "plain");
         // A dots-only owner would resolve to the root / its parent - collapse it.
@@ -2049,7 +2218,10 @@ mod tests {
             .export_config()
             .await
             .unwrap();
-        assert!(attacker.contains("Injected"), "attacker should get the team");
+        assert!(
+            attacker.contains("Injected"),
+            "attacker should get the team"
+        );
         assert!(
             !victim.contains("Injected"),
             "victim must be untouched - no cross-tenant write"
@@ -2172,7 +2344,7 @@ mod tests {
             severity: poseiden_core::Severity::Warn,
             message: String::new(),
         };
-        let flags = vec![
+        let flags = [
             flag("stale-open"),
             flag("no-work-item"),
             flag("no-work-item"),
@@ -2255,7 +2427,10 @@ mod tests {
         };
         svc.config.set_user_config(&owner, cfg).await.unwrap();
         svc.store
-            .upsert_work_items(&owner, &[work_item(1, "Alpha", "Database migration work", &[])])
+            .upsert_work_items(
+                &owner,
+                &[work_item(1, "Alpha", "Database migration work", &[])],
+            )
             .await
             .unwrap();
         // Stored AI suggestions: one novel, one that case-dupes the keyword hit.
@@ -2264,7 +2439,10 @@ mod tests {
                 &owner,
                 "Alpha",
                 1,
-                &[("priority:high".into(), "ai".into()), ("AREA:DATA".into(), "ai".into())],
+                &[
+                    ("priority:high".into(), "ai".into()),
+                    ("AREA:DATA".into(), "ai".into()),
+                ],
             )
             .await
             .unwrap();
@@ -2292,7 +2470,10 @@ mod tests {
         let owner = svc.owner.clone();
         // No keywords: isolate the AI-merge branch. Item already carries area:data.
         svc.store
-            .upsert_work_items(&owner, &[work_item(2, "Alpha", "Some ticket", &["area:data"])])
+            .upsert_work_items(
+                &owner,
+                &[work_item(2, "Alpha", "Some ticket", &["area:data"])],
+            )
             .await
             .unwrap();
         svc.store
@@ -2300,7 +2481,10 @@ mod tests {
                 &owner,
                 "Alpha",
                 2,
-                &[("area:data".into(), "ai".into()), ("type:bug".into(), "ai".into())],
+                &[
+                    ("area:data".into(), "ai".into()),
+                    ("type:bug".into(), "ai".into()),
+                ],
             )
             .await
             .unwrap();
@@ -2384,9 +2568,9 @@ mod tests {
         svc.config.set_user_config(&owner, cfg).await.unwrap();
 
         let items = vec![
-            work_item(1, "Alpha", "a", &["wip"]),  // default rules -> flagged
-            work_item(2, "Beta", "b", &["wip"]),   // override -> not flagged
-            work_item(3, "Gamma", "g", &["wip"]),  // team not in config -> default -> flagged
+            work_item(1, "Alpha", "a", &["wip"]), // default rules -> flagged
+            work_item(2, "Beta", "b", &["wip"]),  // override -> not flagged
+            work_item(3, "Gamma", "g", &["wip"]), // team not in config -> default -> flagged
         ];
         let flags = svc.evaluate_scoped(&items).await;
         let disallowed: Vec<i64> = flags
@@ -2396,7 +2580,10 @@ mod tests {
             .collect();
         assert!(disallowed.contains(&1), "Alpha inherits the disallow rule");
         assert!(!disallowed.contains(&2), "Beta's override permits wip");
-        assert!(disallowed.contains(&3), "unknown team falls back to the default");
+        assert!(
+            disallowed.contains(&3),
+            "unknown team falls back to the default"
+        );
     }
 
     #[tokio::test]
@@ -2419,10 +2606,17 @@ mod tests {
         // Bob sees none of it.
         assert!(b.work_items(None).await.unwrap().is_empty(), "no item leak");
         assert!(
-            b.store.ai_suggestions(b.owner(), None).await.unwrap().is_empty(),
+            b.store
+                .ai_suggestions(b.owner(), None)
+                .await
+                .unwrap()
+                .is_empty(),
             "no suggestion leak"
         );
-        assert!(b.tag_use_description().await, "Bob keeps the default toggle");
+        assert!(
+            b.tag_use_description().await,
+            "Bob keeps the default toggle"
+        );
 
         // Alice still has her own.
         assert_eq!(a.work_items(None).await.unwrap().len(), 1);
@@ -2453,10 +2647,10 @@ mod tests {
 
     /// Inject a stub tagger into the owner's cache so `ai_tagger()` resolves it.
     fn install_stub_tagger(svc: &Service) {
-        svc.ai
-            .write()
-            .unwrap()
-            .insert(svc.owner.clone(), Some(Arc::new(StubTagger) as Arc<dyn poseiden_ai::AiTagger>));
+        svc.ai.write().unwrap().insert(
+            svc.owner.clone(),
+            Some(Arc::new(StubTagger) as Arc<dyn poseiden_ai::AiTagger>),
+        );
     }
 
     #[tokio::test]
@@ -2525,7 +2719,10 @@ mod tests {
             .generate_tag_suggestions_with(None, None, |_, _, _| {})
             .await
             .unwrap();
-        assert_eq!(summary.considered, 0, "no concrete approved set -> nothing considered");
+        assert_eq!(
+            summary.considered, 0,
+            "no concrete approved set -> nothing considered"
+        );
         assert_eq!(summary.suggestions, 0);
     }
 
@@ -2554,7 +2751,11 @@ mod tests {
 
         svc.reset_llm_config().await.unwrap();
         assert!(
-            svc.store.get_meta(&owner, "llm_config").await.unwrap().is_none(),
+            svc.store
+                .get_meta(&owner, "llm_config")
+                .await
+                .unwrap()
+                .is_none(),
             "stored registry cleared"
         );
         assert!(

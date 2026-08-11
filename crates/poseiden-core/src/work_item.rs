@@ -132,7 +132,10 @@ mod tests {
         let wi = sample();
         assert!(wi.description.is_some());
         let v = serde_json::to_value(&wi).unwrap();
-        assert!(v.get("description").is_none(), "description skipped on serialize");
+        assert!(
+            v.get("description").is_none(),
+            "description skipped on serialize"
+        );
     }
 
     #[test]
@@ -173,8 +176,16 @@ mod tests {
     #[test]
     fn work_item_update_is_empty() {
         assert!(WorkItemUpdate::default().is_empty());
-        assert!(!WorkItemUpdate { state: Some("Resolved".into()), tags: None }.is_empty());
+        assert!(!WorkItemUpdate {
+            state: Some("Resolved".into()),
+            tags: None
+        }
+        .is_empty());
         // Clearing all tags (Some(empty vec)) is still a change.
-        assert!(!WorkItemUpdate { state: None, tags: Some(vec![]) }.is_empty());
+        assert!(!WorkItemUpdate {
+            state: None,
+            tags: Some(vec![])
+        }
+        .is_empty());
     }
 }

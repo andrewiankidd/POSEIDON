@@ -70,14 +70,15 @@ impl TokenVerifier {
             return Err("symmetric token algorithm is not allowed".to_string());
         }
 
-        let kid = header.kid.ok_or_else(|| "token has no key id (kid)".to_string())?;
+        let kid = header
+            .kid
+            .ok_or_else(|| "token has no key id (kid)".to_string())?;
         let jwk = self.jwk_for(&kid).await?;
         let key = DecodingKey::from_jwk(&jwk).map_err(|e| format!("unusable JWK: {e}"))?;
 
         let mut validation = Validation::new(alg);
-        match &self.issuer {
-            Some(iss) => validation.set_issuer(&[iss]),
-            None => {}
+        if let Some(iss) = &self.issuer {
+            validation.set_issuer(&[iss])
         }
         match &self.audience {
             Some(aud) => validation.set_audience(&[aud]),
@@ -128,7 +129,10 @@ impl TokenVerifier {
 }
 
 fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Pull the configured email claim out of the verified payload.

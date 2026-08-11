@@ -32,10 +32,11 @@ pub enum GroupBy {
 }
 
 /// What a series measures per bucket.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Metric {
     /// Number of matching rows in the bucket.
+    #[default]
     Count,
     /// `|rows matching numerator| / |rows matching denominator|`, 0.0-1.0 (or
     /// `NaN`-safe 0 when the denominator is empty). Powers e.g. pipeline success
@@ -44,12 +45,6 @@ pub enum Metric {
         numerator: Vec<Condition>,
         denominator: Vec<Condition>,
     },
-}
-
-impl Default for Metric {
-    fn default() -> Self {
-        Metric::Count
-    }
 }
 
 /// Comparison operators for a [`Condition`]. `In` matches any of a comma-
@@ -107,21 +102,16 @@ pub enum RenderKind {
 
 /// Time window a report covers, applied to each source's primary timestamp
 /// (work items: created; PRs: created; runs: finished; pipelines: last run).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TimeRange {
     /// No time bound - every stored row.
+    #[default]
     AllTime,
     /// Rows whose primary timestamp is within the last N days of `now`.
     LastDays { days: i64 },
     /// Inclusive ISO-8601 (`YYYY-MM-DD` or RFC3339) bounds.
     Between { from: String, to: String },
-}
-
-impl Default for TimeRange {
-    fn default() -> Self {
-        TimeRange::AllTime
-    }
 }
 
 /// A complete, runnable report. `builtin` specs are code-defined templates and
