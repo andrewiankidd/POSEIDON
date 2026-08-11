@@ -52,10 +52,14 @@ jobs:
         # Run cargo-audit directly (not the check-run action) so it honours our
         # .cargo/audit.toml ignore list and needs no `checks: write` token.
         run: cargo audit
-      - name: cargo-deny (license + ban + dup + advisories)
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install cargo-deny (prebuilt binary)
+        uses: taiki-e/install-action@v2
         with:
-          command: check
+          tool: cargo-deny
+      - name: cargo-deny (license + ban + dup + advisories)
+        # Run in-job (not the action's frozen container) so it uses the pinned
+        # toolchain from rust-toolchain.toml instead of a mismatched one.
+        run: cargo deny check --all-features
       - name: Install cargo-machete (prebuilt binary)
         run: |
           VERSION=0.7.0
