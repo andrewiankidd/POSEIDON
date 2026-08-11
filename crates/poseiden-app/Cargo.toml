@@ -1,0 +1,42 @@
+[package]
+name = "poseiden-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDEN Tauri desktop/mobile shell. Standalone: embeds the poseiden-server Service + scheduler and reaches it via invoke. Repointed: the webview targets a remote instance URL instead."
+publish = false
+build = "build.rs"
+
+[lib]
+name = "poseiden_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "poseiden-app"
+path = "src/main.rs"
+
+[dependencies]
+poseiden-core = { workspace = true }
+poseiden-paths = { workspace = true }
+poseiden-server = { workspace = true }
+poseiden-store = { workspace = true }
+poseiden-providers = { workspace = true }
+poseiden-telemetry = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# GPU (CUDA) embedded model for the desktop build: `cargo tauri build --features cuda`
+# on a machine with the CUDA toolkit. Off by default - the normal build is CPU and
+# runs anywhere. Ships as a separate NVIDIA-only artifact.
+cuda = ["poseiden-server/cuda"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

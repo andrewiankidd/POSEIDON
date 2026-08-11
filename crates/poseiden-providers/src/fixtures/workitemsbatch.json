@@ -1,0 +1,287 @@
+{
+  "count": 2,
+  "value": [
+    {
+      "id": 889555,
+      "rev": 5,
+      "fields": {
+        "System.AreaPath": "Example Project\\Area",
+        "System.TeamProject": "Example Project",
+        "System.IterationPath": "Example Project\\Sprint 1",
+        "System.WorkItemType": "Task",
+        "System.State": "Closed",
+        "System.Reason": "Completed",
+        "System.AssignedTo": {
+          "displayName": "Person A",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+            }
+          },
+          "id": "00000002-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.CreatedDate": "2026-07-28T09:30:26.78Z",
+        "System.CreatedBy": {
+          "displayName": "Person A",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+            }
+          },
+          "id": "00000002-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.ChangedDate": "2026-07-28T13:06:58.87Z",
+        "System.ChangedBy": {
+          "displayName": "Person A",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+            }
+          },
+          "id": "00000002-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.CommentCount": 1,
+        "System.Title": "Example work item title",
+        "Microsoft.VSTS.Common.StateChangeDate": "2026-07-28T13:06:58.87Z",
+        "Microsoft.VSTS.Common.ActivatedDate": "2026-07-28T09:32:27.793Z",
+        "Microsoft.VSTS.Common.ActivatedBy": {
+          "displayName": "Person A",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+            }
+          },
+          "id": "00000002-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "Microsoft.VSTS.Common.ClosedDate": "2026-07-28T13:06:58.87Z",
+        "Microsoft.VSTS.Common.ClosedBy": {
+          "displayName": "Person A",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+            }
+          },
+          "id": "00000002-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "Microsoft.VSTS.Common.Priority": 2,
+        "System.Parent": 848539
+      },
+      "multilineFieldsFormat": {},
+      "relations": [
+        {
+          "rel": "System.LinkTypes.Hierarchy-Reverse",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/wit/workItems/848539",
+          "attributes": {
+            "isLocked": false,
+            "name": "Parent"
+          }
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/Commit/00000004-0000-0000-0000-000000000000%2f00000005-0000-0000-0000-000000000000%2fdc3ac01185e523db2974bc30663f5808e0403266",
+          "attributes": {
+            "authorizedDate": "2026-07-28T13:06:58.09Z",
+            "id": 28552848,
+            "resourceCreatedDate": "2026-07-28T13:06:58.09Z",
+            "resourceModifiedDate": "2026-07-28T13:06:58.09Z",
+            "revisedDate": "9999-01-01T00:00:00Z",
+            "name": "Fixed in Commit"
+          }
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/PullRequestId/00000004-0000-0000-0000-000000000000%2F00000005-0000-0000-0000-000000000000%2F252573",
+          "attributes": {
+            "authorizedDate": "2026-07-28T09:37:24.657Z",
+            "id": 28549136,
+            "resourceCreatedDate": "2026-07-28T09:37:24.657Z",
+            "resourceModifiedDate": "2026-07-28T09:37:24.657Z",
+            "revisedDate": "9999-01-01T00:00:00Z",
+            "name": "Pull Request"
+          }
+        }
+      ],
+      "commentVersionRef": {
+        "commentId": 17002738,
+        "version": 1,
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/wit/workItems/889555/comments/17002738/versions/1"
+      },
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/wit/workItems/889555"
+    },
+    {
+      "id": 865173,
+      "rev": 48,
+      "fields": {
+        "System.AreaPath": "Example Project\\Area",
+        "System.TeamProject": "Example Project",
+        "System.IterationPath": "Example Project\\Sprint 1",
+        "System.WorkItemType": "User Story",
+        "System.State": "Closed",
+        "System.Reason": "Acceptance tests pass",
+        "System.AssignedTo": {
+          "displayName": "Person B",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+            }
+          },
+          "id": "00000006-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.CreatedDate": "2026-07-06T09:27:20.557Z",
+        "System.CreatedBy": {
+          "displayName": "Person B",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+            }
+          },
+          "id": "00000006-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.ChangedDate": "2026-07-30T19:29:10.75Z",
+        "System.ChangedBy": {
+          "displayName": "Person B",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+            }
+          },
+          "id": "00000006-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "System.CommentCount": 0,
+        "System.Title": "Example work item title",
+        "System.BoardColumn": "Closed",
+        "System.BoardColumnDone": false,
+        "Microsoft.VSTS.Common.StateChangeDate": "2026-07-09T07:32:26.173Z",
+        "Microsoft.VSTS.Common.ActivatedDate": "2026-07-07T09:00:09.06Z",
+        "Microsoft.VSTS.Common.ActivatedBy": {
+          "displayName": "Person B",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+            }
+          },
+          "id": "00000006-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "Microsoft.VSTS.Common.ResolvedDate": "2026-07-07T09:00:09.06Z",
+        "Microsoft.VSTS.Common.ResolvedBy": {
+          "displayName": "Person B",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+            }
+          },
+          "id": "00000006-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "Microsoft.VSTS.Common.ClosedDate": "2026-07-09T07:32:26.173Z",
+        "Microsoft.VSTS.Common.ClosedBy": {
+          "displayName": "Person C",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000007-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.NGFlNTQ4YjYtM2M3NC03MmRjLWEyMjMtM2RkZmQxMTI3MjM2"
+            }
+          },
+          "id": "00000007-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "Microsoft.VSTS.Common.Priority": 4,
+        "Microsoft.VSTS.Common.StackRank": 224.0,
+        "Microsoft.VSTS.Common.ValueArea": "Business",
+        "WEF_93F3859023A244B092BDF27AB15AE736_Kanban.Column": "Closed",
+        "WEF_93F3859023A244B092BDF27AB15AE736_Kanban.Column.Done": false,
+        "System.Tags": "IDP; SSA; To Refine",
+        "System.Parent": 865189
+      },
+      "multilineFieldsFormat": {},
+      "relations": [
+        {
+          "rel": "System.LinkTypes.Hierarchy-Reverse",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/wit/workItems/865189",
+          "attributes": {
+            "isLocked": false,
+            "name": "Parent"
+          }
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/PullRequestId/00000003-0000-0000-0000-000000000000%2f00000008-0000-0000-0000-000000000000%2f248657",
+          "attributes": {
+            "authorizedDate": "2026-07-06T16:07:29.3Z",
+            "id": 28275229,
+            "resourceCreatedDate": "2026-07-06T16:07:29.3Z",
+            "resourceModifiedDate": "2026-07-06T16:07:29.3Z",
+            "revisedDate": "9999-01-01T00:00:00Z",
+            "name": "Pull Request"
+          }
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/PullRequestId/00000003-0000-0000-0000-000000000000%2f00000008-0000-0000-0000-000000000000%2f248674",
+          "attributes": {
+            "authorizedDate": "2026-07-06T18:39:38.07Z",
+            "id": 28275920,
+            "resourceCreatedDate": "2026-07-06T18:39:38.07Z",
+            "resourceModifiedDate": "2026-07-06T18:39:38.07Z",
+            "revisedDate": "9999-01-01T00:00:00Z",
+            "name": "Pull Request"
+          }
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/Commit/00000003-0000-0000-0000-000000000000%2f00000008-0000-0000-0000-000000000000%2fd2b482fde50a0dba56c85d24022cd92fa56077ce",
+          "attributes": {
+            "authorizedDate": "2026-07-06T11:19:21.9Z",
+            "id": 28269096,
+            "resourceCreatedDate": "2026-07-06T11:19:21.9Z",
+            "resourceModifiedDate": "2026-07-06T11:19:21.9Z",
+            "revisedDate": "9999-01-01T00:00:00Z",
+            "name": "Fixed in Commit"
+          }
+        }
+      ],
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/wit/workItems/865173"
+    }
+  ]
+}

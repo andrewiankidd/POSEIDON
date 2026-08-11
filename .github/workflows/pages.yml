@@ -1,0 +1,58 @@
+name: Deploy landing + web client → GitHub Pages
+
+# Publishes the static bundle in `frontend/web/` to GitHub Pages on every push
+# to main:
+#   /            → landing page (index.html) - project info + downloads + launch
+#   /app.html    → the web client (repoint it at your instance in Settings)
+#
+# POSEIDEN's frontend is pure static (no WASM / build step), so this is just an
+# upload - no toolchain needed. Pages must be set to "GitHub Actions" build mode
+# once (Settings → Pages → Build and deployment → Source: GitHub Actions).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Upload static bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Bundle docs into the web assets
+        # The in-app docs viewer fetches assets/docs/*.md by relative URL. The
+        # Tauri build does this copy via build.rs; for the static Pages bundle we
+        # do it here so the source of truth stays /docs.
+        run: |
+          # Recursive copy so docs/features/*.md (+ screenshots) reach the site,
+          # matching the Tauri build.rs copy. A flat `cp docs/*.md` would leave
+          # every feature page 404ing in the deployed docs viewer.
+          mkdir -p frontend/web/assets/docs
+          cp -r docs/. frontend/web/assets/docs/
+          ls -lhR frontend/web/assets/docs/
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/web
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

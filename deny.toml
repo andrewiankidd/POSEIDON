@@ -1,0 +1,62 @@
+# cargo-deny config - license, advisory, banned-crate, and source policy.
+# Run: `cargo deny check` (all sections) or e.g. `cargo deny check licenses`.
+#
+# The allow-list is "common permissive licenses POSEIDEN's stack uses today";
+# expanding it should be deliberate. Banned crates is empty - add entries as
+# real problems surface.
+
+[graph]
+# Match what CI actually builds - the three desktop targets plus the Linux
+# musl target the Docker image is built against.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+# Kept in sync with `.cargo/audit.toml`. Empty to start - POSEIDEN's core
+# stack (reqwest/rustls, axum, sqlx, tokio, serde) has no standing advisories.
+# Tauri's Linux webview backend (the GTK3 cluster) is the likely source of
+# future transitive advisories; add them here WITH a justification when they
+# land, don't blanket-ignore.
+ignore = []
+
+[licenses]
+# SPDX IDs from https://spdx.org/licenses/. Union of what the current graph
+# uses plus conservative permissive additions.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Duplicate transitive versions are common and usually harmless - warn so we
+# notice bloat without failing the build.
+multiple-versions = "warn"
+# Internal `{ path = "..." }` deps have no `version =` and cargo-deny treats
+# them as wildcards; opt them out so the real "wildcard from crates.io" check
+# still fires.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []

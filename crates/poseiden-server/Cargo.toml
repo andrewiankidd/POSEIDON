@@ -1,0 +1,45 @@
+[package]
+name = "poseiden-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDEN server - the shared Service (business logic over Store + Providers), the tokio poll scheduler, and the axum HTTP API. Runs as the Docker web instance; embedded as a library inside the Tauri shell."
+
+[lib]
+name = "poseiden_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "poseiden-server"
+path = "src/main.rs"
+
+[dependencies]
+poseiden-core = { workspace = true }
+poseiden-telemetry = { workspace = true }
+poseiden-paths = { workspace = true }
+poseiden-rules = { workspace = true }
+poseiden-reports = { workspace = true }
+poseiden-ai = { workspace = true }
+poseiden-providers = { workspace = true }
+poseiden-store = { workspace = true }
+poseiden-doctor = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+jsonwebtoken = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_norway = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+# Forward the embedded-model GPU build to poseiden-ai (off by default; CPU build
+# runs anywhere). Build a GPU desktop binary with `--features cuda`.
+cuda = ["poseiden-ai/cuda"]

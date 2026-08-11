@@ -1,0 +1,25 @@
+# Keep the build context small + reproducible.
+target/
+.git/
+.github/
+.portable/
+**/.portable/
+*.db
+*.db-wal
+*.db-shm
+crates/poseiden-app/gen/
+deploy/
+# Not needed to build the server image - and excluding them keeps a source edit
+# from busting the cargo build layer (see the cargo-chef split in the Dockerfile).
+tests/
+tenants/
+tools/
+.githooks/
+.toolbox/
+poseiden.sh
+skaffold.yaml
+# NOTE: docs/ is NOT excluded - the builder copies docs/*.md into the web bundle
+# for the in-app docs viewer (see Dockerfile). Root-level *.md is dropped, but
+# docs/*.md is force-kept below.
+*.md
+!docs/

@@ -1,0 +1,8 @@
+# Pinned toolchain for reproducible builds - host, CI, and the Docker images all
+# compile with exactly this version (rustup honours this file over any default
+# toolchain a CI action installs). Bump deliberately, and keep the Dockerfile's
+# RUST_VERSION arg in step. This is the *build* toolchain; the crates' MSRV floor
+# is the separate `rust-version` in Cargo.toml.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

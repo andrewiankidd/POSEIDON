@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POSEIDEN - Product Owner support tool</title>
+  <meta name="description" content="POSEIDEN is a Product Owner support tool: it keeps your backlog legible - hygiene rules, pipeline observation, and velocity in one place. Connects to your work tracker (Azure DevOps, GitHub, or GitLab); runs standalone or against a shared backend." />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="stylesheet" href="landing.css" />
+</head>
+<body>
+  <!--
+    Landing page. This is what GitHub Pages / Cloudflare Pages serve at `/`.
+    It's pure static - no backend, no API calls - so it works on any static
+    host. The actual application lives at `app.html`; "Launch in browser"
+    below opens it. On a hosted POSEIDEN instance (the Docker image) the app
+    talks to that instance's own API; on a static host it prompts you to
+    connect to your instance URL (repoint).
+
+    Download links point at the GitHub Releases "latest" assets by stable
+    filename, so they resolve the same URL release-to-release.
+  -->
+  <header class="hero">
+    <div class="hero-inner">
+      <img class="hero-logo" src="assets/logo.png" alt="POSEIDEN logo - a trident over a wave" width="112" height="112" />
+      <div class="wordmark"><span class="po">PO</span><span class="rest">SEIDEN</span></div>
+      <p class="tagline">The backlog hygiene your Product Owner used to keep - automated and self-hosted.</p>
+      <p class="lede">
+        Work comes in never-ending waves. POSEIDEN helps you see them, sort them,
+        and show what's adrift: it polls your work tracker (Azure DevOps,
+        GitHub, or GitLab) and your CI pipelines on a
+        schedule, validates work items against configurable tag &amp; state
+        rules, surfaces what needs attention, and reports on work-item + pipeline
+        flow over time.
+      </p>
+      <div class="cta-row">
+        <a id="launch-btn" class="btn btn-primary" href="app.html">Launch in browser →</a>
+        <a class="btn" href="#download">Download</a>
+        <a class="btn btn-ghost" href="https://github.com/andrewiankidd/POSEIDEN" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+      <p id="launch-fineprint" class="fineprint">
+        The browser client needs a running POSEIDEN instance. On a hosted
+        instance it just works; on this static site, launch it and set your
+        instance URL in <em>Settings</em>.
+      </p>
+    </div>
+  </header>
+
+  <main>
+    <section class="features">
+      <div class="feature">
+        <h3>Hygiene rules in config</h3>
+        <p>Required tags, allowed / denied lists, untagged detection, and
+           per-state staleness ("In Progress &gt; 5 days is stale") - all
+           defined in TOML, not code.</p>
+      </div>
+      <div class="feature">
+        <h3>Pipeline health</h3>
+        <p>Pass / fail / running counts, last-failure timestamps, and quick
+           links to logs for the pipelines your team owns.</p>
+      </div>
+      <div class="feature">
+        <h3>Flow reporting</h3>
+        <p>Work items opened &amp; closed per period grouped by tag, and pipeline
+           success rate over any date range.</p>
+      </div>
+      <div class="feature">
+        <h3>One app, everywhere</h3>
+        <p>The same UI ships as a web instance, a desktop app, and a mobile
+           app. Repoint any client at your hosted instance in one setting.</p>
+      </div>
+      <div class="feature">
+        <h3>Provider-agnostic</h3>
+        <p>Azure DevOps, GitHub, and GitLab are supported today; Jira and Linear
+           are the next provider plug-ins away. The core doesn't care where a
+           work item came from.</p>
+      </div>
+      <div class="feature">
+        <h3>Portable &amp; self-hosted</h3>
+        <p>A token with read scopes is all it needs. Runs standalone, in a
+           container, or fully portable from a USB stick - never writing outside
+           its own paths.</p>
+      </div>
+    </section>
+
+    <section id="download" class="download">
+      <h2>Download</h2>
+      <p class="download-note">
+        Pick a build below, or run the web version as a container
+        (<code>ghcr.io/andrewiankidd/poseiden</code>). Latest builds come from
+        the <a href="https://github.com/andrewiankidd/POSEIDEN/releases" target="_blank" rel="noopener">Releases page</a>.
+      </p>
+      <div class="dl-grid">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-windows-setup.exe">
+          <span class="dl-os">Windows</span><span class="dl-kind">Desktop installer (.exe)</span>
+        </a>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-macos-setup.dmg">
+          <span class="dl-os">macOS</span><span class="dl-kind">Desktop app (.dmg)</span>
+        </a>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-linux-portable.AppImage">
+          <span class="dl-os">Linux</span><span class="dl-kind">Desktop (AppImage)</span>
+        </a>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-mobile-android.apk">
+          <span class="dl-os">Android</span><span class="dl-kind">Mobile app (.apk)</span>
+        </a>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest">
+          <span class="dl-os">CLI</span><span class="dl-kind">poseiden - poll / lint / report</span>
+        </a>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/pkgs/container/poseiden">
+          <span class="dl-os">Container</span><span class="dl-kind">Web instance image (GHCR)</span>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <b>&copy; <script>document.write(new Date().getFullYear())</script>++</b>
+    <span class="foot-mid">POSEIDEN - a Product Owner support tool. Dual-licensed MIT / Apache-2.0.</span>
+    <a href="https://andrewkidd.co.uk" target="_blank" rel="noopener" title="andrewkidd.co.uk">
+      <svg class="personal-logo" xmlns="http://www.w3.org/2000/svg" viewBox="-15 -15 230 230">
+        <!-- Outer circle -->
+        <circle cx="100" cy="100" r="90" fill="none" stroke="currentColor" stroke-width="8" />
+        <!-- Base lines (always visible) -->
+        <g stroke="currentColor" stroke-width="6.4" stroke-linecap="round">
+          <line x1="163.6" y1="36.4" x2="36.4" y2="163.6" />
+          <line x1="36.4" y1="163.6" x2="100" y2="10" />
+          <line x1="100" y1="100" x2="163.6" y2="163.6" />
+          <line x1="100" y1="10" x2="100" y2="190" />
+        </g>
+        <!-- Punk: extensions past the circle edge, revealed on hover -->
+        <g class="punk" stroke="currentColor" stroke-width="6.4" stroke-linecap="round">
+          <line x1="163.6" y1="36.4" x2="177.7" y2="22.3" />
+          <line x1="36.4" y1="163.6" x2="22.3" y2="177.7" />
+          <line x1="36.4" y1="163.6" x2="28.7" y2="182.1" />
+          <line x1="100" y1="10" x2="107.7" y2="-8.5" />
+          <line x1="163.6" y1="163.6" x2="177.7" y2="177.7" />
+          <line x1="100" y1="10" x2="100" y2="-10" />
+          <line x1="100" y1="190" x2="100" y2="210" />
+        </g>
+      </svg>
+    </a>
+  </footer>
+
+  <script>
+    // Static-host detection (same pattern the sibling projects use). GitHub
+    // Pages has no POSEIDEN backend, so the browser client can't load real
+    // data there - "Launch in browser" would dead-end at a connect prompt.
+    // On Pages, turn it into "View Demo", which opens the app in demo mode
+    // (client-side sample data). Anywhere else (a hosted instance, localhost)
+    // the button stays a normal launch.
+    (function () {
+      var onPages = window.location.hostname.indexOf('github.io') !== -1;
+      if (!onPages) return;
+      document.body.classList.add('on-pages');
+      var launch = document.getElementById('launch-btn');
+      if (launch) { launch.textContent = 'View Demo →'; launch.setAttribute('href', 'app.html?demo=1'); }
+      var fine = document.getElementById('launch-fineprint');
+      if (fine) {
+        fine.innerHTML = 'This is the public demo, running on built-in sample data - no backend needed. '
+          + 'To use POSEIDEN for real, download a build or run the container and point it at your own instance.';
+      }
+    })();
+  </script>
+</body>
+</html>

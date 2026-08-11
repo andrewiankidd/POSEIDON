@@ -1,0 +1,12 @@
+[package]
+name = "poseiden-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDEN hygiene rules engine - evaluates work items against a RuleSet and emits Flags. Pure functions, no IO; the ideal test-first target."
+
+[dependencies]
+poseiden-core = { workspace = true }
+chrono = { workspace = true }

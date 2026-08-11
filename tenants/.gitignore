@@ -1,0 +1,5 @@
+# Tenant config bundles hold real org/team configuration and are private by
+# default. Only the offline demo bundle is committed; every other
+# *.import.yaml (e.g. azuredevops.poseiden.import.yaml) stays local.
+*.import.yaml
+!demo-data.poseiden.import.yaml

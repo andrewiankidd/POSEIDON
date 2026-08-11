@@ -1,0 +1,41 @@
+{{- if and (eq .Values.auth.provider "dex") .Values.auth.dex.bundled.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "poseiden.dex.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Issuer is the EXTERNAL URL (browser-reachable via the ingress /dex path), so
+    # the token `iss` matches what oauth2-proxy validates. Dex serves its /dex/*
+    # endpoints on :5556; oauth2-proxy reaches token/jwks in-cluster (split-horizon).
+    issuer: {{ include "poseiden.baseUrl" . }}/dex
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+    oauth2:
+      skipApprovalScreen: true
+    staticClients:
+      - id: {{ include "poseiden.oauth2proxy.fullname" . }}
+        name: POSEIDEN
+        secretEnv: DEX_CLIENT_SECRET
+        redirectURIs:
+          - {{ include "poseiden.baseUrl" . }}/oauth2/callback
+    {{- with .Values.auth.dex.bundled.staticPasswords }}
+    enablePasswordDB: true
+    staticPasswords:
+    {{- range . }}
+      # Dex requires a bcrypt hash, not plaintext - the chart hashes it here.
+      - email: {{ .email | quote }}
+        hash: {{ htpasswd .username .password | splitList ":" | last | quote }}
+        username: {{ .username | quote }}
+        userID: {{ .email | sha256sum | trunc 32 | quote }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.auth.dex.bundled.connectors }}
+    connectors:
+    {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}

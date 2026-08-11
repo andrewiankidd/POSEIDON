@@ -1,0 +1,140 @@
+{
+  "value": [
+    {
+      "repository": {
+        "id": "00000009-0000-0000-0000-000000000000",
+        "name": "repo-a",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/00000009-0000-0000-0000-000000000000",
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "state": "unchanged",
+          "visibility": "unchanged",
+          "lastUpdateTime": "0001-01-01T00:00:00"
+        }
+      },
+      "pullRequestId": 253141,
+      "codeReviewId": 253141,
+      "status": "active",
+      "createdBy": {
+        "displayName": "Person D",
+        "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/0000000a-0000-0000-0000-000000000000",
+        "_links": {
+          "avatar": {
+            "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.NWFlZDIxOTYtMmM4Yi03YWFiLWE3YWUtMzU3NzY2M2Q1YWI3"
+          }
+        },
+        "id": "0000000a-0000-0000-0000-000000000000",
+        "uniqueName": "person@example.com",
+        "imageUrl": "https://example/avatar",
+        "descriptor": "aad.00000000000000000000000000000000"
+      },
+      "creationDate": "2026-07-30T13:38:06.0369359Z",
+      "title": "Example pull request title",
+      "description": "Example description.",
+      "sourceRefName": "refs/heads/feature/example",
+      "targetRefName": "refs/heads/main",
+      "mergeStatus": "succeeded",
+      "isDraft": true,
+      "mergeId": "0000000b-0000-0000-0000-000000000000",
+      "lastMergeSourceCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/00000009-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "lastMergeTargetCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/00000009-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "lastMergeCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/00000009-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "reviewers": [],
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/00000009-0000-0000-0000-000000000000/pullRequests/253141",
+      "supportsIterations": true
+    },
+    {
+      "repository": {
+        "id": "0000000c-0000-0000-0000-000000000000",
+        "name": "repo-b",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000",
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "state": "unchanged",
+          "visibility": "unchanged",
+          "lastUpdateTime": "0001-01-01T00:00:00"
+        }
+      },
+      "pullRequestId": 253115,
+      "codeReviewId": 253115,
+      "status": "completed",
+      "createdBy": {
+        "displayName": "Person B",
+        "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000006-0000-0000-0000-000000000000",
+        "_links": {
+          "avatar": {
+            "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ODc5ZGMyMDAtNmE4Ny03NmMxLWJmMjUtOTMzZWRhNTFiMDkx"
+          }
+        },
+        "id": "00000006-0000-0000-0000-000000000000",
+        "uniqueName": "person@example.com",
+        "imageUrl": "https://example/avatar",
+        "descriptor": "aad.00000000000000000000000000000000"
+      },
+      "creationDate": "2026-07-30T12:24:28.3087652Z",
+      "closedDate": "2026-07-30T12:43:42.4086868Z",
+      "title": "Example pull request title",
+      "description": "Example description.",
+      "sourceRefName": "refs/heads/feature/example",
+      "targetRefName": "refs/heads/main",
+      "mergeStatus": "succeeded",
+      "isDraft": false,
+      "mergeId": "0000000d-0000-0000-0000-000000000000",
+      "lastMergeSourceCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "lastMergeTargetCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "lastMergeCommit": {
+        "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+      },
+      "reviewers": [
+        {
+          "reviewerUrl": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000/pullRequests/253115/reviewers/0000000e-0000-0000-0000-000000000000",
+          "vote": 0,
+          "hasDeclined": false,
+          "isRequired": true,
+          "isFlagged": false,
+          "displayName": "Person E",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/0000000e-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/vssgp.Uy0xLTktMTU1MTM3NDI0NS0xNzA3MDI5NDE4LTI4ODM4NjA1NDQtMjE2Mjg0MjIyMi0yMjk0MDM4MDIxLTEtNzk2ODA1MzA4LTEzODQ1MzkyMDItMjY3NzcwMDU1NS0yMTUxMDY1MzMx"
+            }
+          },
+          "id": "0000000e-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "isContainer": true
+        }
+      ],
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/git/repositories/0000000c-0000-0000-0000-000000000000/pullRequests/253115",
+      "completionOptions": {
+        "mergeCommitMessage": "Merged PR 253115: docs(cache): add Azure Managed Redis to CacheV1 reference\n\n## Summary\n\n- **cache.mdx**: AMR added as the default tab (Memcached moved to second). Documents connection secret keys (host, port, url, connection-string), .NET (StackExchange.Redis) and Node.js (ioredis) code examples, and AMR constraints (shared keyspace, no multi-db, OSS Cluster CROSSSLOT, port 10000 + mandatory TLS).\n- **connect_to_managed_redis.md**: replaces the \"there is no CacheV1 claim\" note with a tip pointing to the CacheV1 managed provider as the preferred consumption path.\n\nCompanion to CrossplaneCompositions [PR #252823](https://dev.azure.com/contoso/Example%20Project/_git/CrossplaneCompositions/pullrequest/252823) which delivers the \u0007mr-redis-cache-v1 composition.\n\nAB#864829\n\nRelated work items: #864829",
+        "deleteSourceBranch": true,
+        "mergeStrategy": "noFastForward",
+        "bypassPolicy": true,
+        "bypassReason": " ",
+        "autoCompleteIgnoreConfigIds": []
+      },
+      "supportsIterations": true,
+      "completionQueueTime": "2026-07-30T12:43:41.0862579Z"
+    }
+  ],
+  "count": 3
+}

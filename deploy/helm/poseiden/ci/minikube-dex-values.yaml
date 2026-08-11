@@ -1,0 +1,59 @@
+# Local minikube POC: nginx ingress + bundled Dex, plain HTTP (no external
+# accounts, no TLS). Enable the ingress addon first:
+#   minikube addons enable ingress
+#   helm install poseiden deploy/helm/poseiden -f ci/minikube-dex-values.yaml
+#   echo "$(minikube ip) poseiden.localhost" | sudo tee -a /etc/hosts
+ingress:
+  type: nginx
+  className: nginx
+  host: poseiden.localhost
+  annotations:
+    # The first offline-AI run downloads a model (hundreds of MB) inside the
+    # request; without this nginx's default 60s read timeout 504s mid-download.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+
+# Offline AI models run in-process (candle, CPU) and need real RAM AND CPU. The base
+# chart caps CPU at 500m (right for the lightweight read-only web workload, wrong for
+# in-process inference) - at half a core the offline tagger takes tens of minutes/query.
+# Dev boxes have headroom, so lift both: RAM (a 0.5-1.5B model OOMs under 1Gi) and CPU
+# (let it burst across the node's cores). Node is 8 CPUs; leave ~2 for system/auth pods.
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    # Memory only (incompressible) - a runaway model shouldn't OOM the node. NO cpu
+    # limit on purpose: CPU is compressible, so let inference burst across the node's
+    # cores and just share fairly under contention rather than being CFS-throttled.
+    memory: 4Gi
+# Bound candle's CPU thread pool. The pod SEES the node's 16 logical CPUs, so without
+# this rayon spawns 16 threads; 6 keeps the offline tagger fast while leaving the node
+# headroom for the auth/system pods during a burst.
+aiCpuThreads: "6"
+
+# Add a PAT (or existingSecret) to actually poll Azure DevOps.
+azureDevOps:
+  pat: ""
+
+auth:
+  enabled: true
+  provider: dex
+  cookieSecure: false          # minikube serves plain HTTP
+  dex:
+    bundled:
+      enabled: true
+      # Local logins. Each maps to a tenant (owner) seeded from tenants/ by
+      # poseiden.sh. Password is "password" for all (bcrypted by the chart).
+      staticPasswords:
+        - email: admin@example.com
+          password: password
+          username: admin
+        - email: poseiden+demo-data@example.com
+          password: password
+          username: demo
+      # Private per-tenant logins (e.g. a real Azure DevOps org) are NOT committed
+      # here - they'd leak an org/email into source. poseiden.sh appends one static
+      # password per extra tenants/*.import.yaml bundle at deploy time (owner ->
+      # email, "password"), so private logins come from the gitignored bundles, not
+      # this file. Add a bundle under tenants/ and it logs in without editing this.

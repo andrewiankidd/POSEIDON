@@ -1,0 +1,32 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: poseiden
+# The minikube live-reload loop, run via `./poseiden.sh dev` (= `skaffold dev`):
+# watch the source, rebuild the image, redeploy the Helm chart, stream logs - on
+# every save. The rebuild is fast because the Dockerfile's cargo-chef split caches
+# the dependency compile, so only our crates recompile. Uses the current kubectl
+# context (point it at minikube). Ctrl-C tears the release down again.
+build:
+  artifacts:
+    - image: poseiden
+      docker:
+        dockerfile: Dockerfile
+        target: runtime
+  local:
+    push: false            # build into the local Docker daemon; minikube uses it directly
+  tagPolicy:
+    inputDigest: {}        # tag by content hash so a redeploy only happens on a real change
+deploy:
+  helm:
+    releases:
+      - name: poseiden
+        chartPath: deploy/helm/poseiden
+        valuesFiles:
+          - deploy/helm/poseiden/ci/minikube-dex-values.yaml
+        setValues:
+          image.pullPolicy: IfNotPresent
+        # Skaffold injects the freshly-built image reference for the `poseiden` artifact.
+        setValueTemplates:
+          image.repository: "{{.IMAGE_REPO_poseiden}}"
+          image.tag: "{{.IMAGE_TAG_poseiden}}"

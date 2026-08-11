@@ -1,0 +1,72 @@
+name: Helm chart → GHCR
+
+# Packages the POSEIDEN Helm chart and pushes it to the GitHub Container Registry
+# as an OCI artifact, so a released version installs without a checkout:
+#
+#   helm install poseiden oci://ghcr.io/andrewiankidd/charts/poseiden --version X.Y.Z
+#
+# Tag-driven: a `v*` tag publishes the chart at that version (chart version +
+# appVersion both set to the tag), matching the image docker.yml pushes on the
+# same tag - so the chart always deploys the image built alongside it. The chart
+# is only published on tags (not rolling `main`); day-to-day it's installed from
+# the `deploy/helm/poseiden` checkout.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Chart version to publish (no leading v, e.g. 0.2.0)"
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: chart-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Package + push chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Derive version (tag → X.Y.Z, or the dispatch input)
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Lint + render (gate before publishing)
+        run: |
+          helm lint deploy/helm/poseiden
+          helm template poseiden deploy/helm/poseiden --set azureDevOps.pat=dummy > /dev/null
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login "${{ env.REGISTRY }}" \
+                --username "${{ github.actor }}" --password-stdin
+
+      - name: Package
+        # Override both the chart version and appVersion (the default image tag)
+        # to the release version, so `oci://…/poseiden:X.Y.Z` deploys image :X.Y.Z.
+        run: |
+          helm package deploy/helm/poseiden \
+            --version "${{ steps.ver.outputs.version }}" \
+            --app-version "${{ steps.ver.outputs.version }}"
+
+      - name: Push to GHCR (OCI)
+        run: |
+          helm push "poseiden-${{ steps.ver.outputs.version }}.tgz" \
+            "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts"

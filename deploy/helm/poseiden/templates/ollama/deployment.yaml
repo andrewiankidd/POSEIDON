@@ -1,0 +1,128 @@
+{{- if and .Values.ai.enabled .Values.ai.bundled.enabled }}
+# Bundled Ollama: a local model server so the AI tag suggester works with zero
+# external setup. The container starts `ollama serve`, waits for it, then pulls
+# the configured model (cached on a PVC so restarts don't re-download). The app is
+# pointed here automatically (see deployment.yaml). Item titles never leave the
+# cluster. This needs CPU + RAM for the model - keep `ai.model` small.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "poseiden.ollama.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate           # single writer over the model-cache PVC (RWO)
+  selector:
+    matchLabels:
+      {{- include "poseiden.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "poseiden.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.ai.bundled.gpu .Values.ai.bundled.gpu.enabled .Values.ai.bundled.gpu.runtimeClassName }}
+      # GPU passthrough for the bundled Ollama (some runtimes need a runtime class).
+      runtimeClassName: {{ .Values.ai.bundled.gpu.runtimeClassName }}
+      {{- end }}
+      containers:
+        - name: ollama
+          image: {{ .Values.ai.bundled.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Serve on all interfaces, then pull the model once serve is up (CLI
+          # talks to localhost). A failed pull isn't fatal - Ollama also pulls
+          # on first use, just slower.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              ollama serve &
+              pid=$!
+              echo "[ollama] waiting for server..."
+              until OLLAMA_HOST=127.0.0.1:11434 ollama list >/dev/null 2>&1; do sleep 1; done
+              echo "[ollama] pulling {{ .Values.ai.model }} ..."
+              OLLAMA_HOST=127.0.0.1:11434 ollama pull "{{ .Values.ai.model }}" || echo "[ollama] pull failed; will pull on first use"
+              echo "[ollama] ready"
+              wait "$pid"
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+          ports:
+            - name: http
+              containerPort: 11434
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- with .Values.ai.bundled.resources.requests }}
+            requests:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- $gpu := and .Values.ai.bundled.gpu .Values.ai.bundled.gpu.enabled }}
+            {{- if or .Values.ai.bundled.resources.limits $gpu }}
+            limits:
+              {{- with .Values.ai.bundled.resources.limits }}
+              {{- toYaml . | nindent 14 }}
+              {{- end }}
+              {{- if $gpu }}
+              # Runs the model on an NVIDIA GPU (~100x faster). Needs the NVIDIA
+              # device plugin + a GPU node (minikube: `minikube start --gpus all`).
+              nvidia.com/gpu: {{ .Values.ai.bundled.gpu.count | default 1 }}
+              {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+      volumes:
+        - name: models
+          {{- if .Values.ai.bundled.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "poseiden.ollama.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "poseiden.ollama.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  selector:
+    {{- include "poseiden.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+      protocol: TCP
+{{- if .Values.ai.bundled.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "poseiden.ollama.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.ai.bundled.persistence.size | quote }}
+  {{- with .Values.ai.bundled.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end }}

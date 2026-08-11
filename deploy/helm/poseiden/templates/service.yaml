@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "poseiden.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  # Component-scoped: the shared selectorLabels (name only) also match the bundled
+  # dex / oauth2-proxy pods, so the app Service would round-robin across all three
+  # (serving CSS/JS from oauth2-proxy's static "Authenticated" response). Pin to the
+  # app pods.
+  selector:
+    {{- include "poseiden.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

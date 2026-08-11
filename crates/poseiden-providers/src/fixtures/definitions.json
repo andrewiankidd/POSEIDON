@@ -1,0 +1,703 @@
+{
+  "count": 3,
+  "value": [
+    {
+      "_links": {
+        "self": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/4984?revision=3"
+        },
+        "web": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/definition?definitionId=4984"
+        },
+        "editor": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/designer?id=4984&_a=edit-build-definition"
+        },
+        "badge": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/4984"
+        }
+      },
+      "latestBuild": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1025717"
+          },
+          "web": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/results?buildId=1025717"
+          },
+          "sourceVersionDisplayUri": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/sources"
+          },
+          "timeline": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/Timeline"
+          },
+          "badge": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/4984"
+          }
+        },
+        "properties": {},
+        "tags": [],
+        "validationResults": [],
+        "plans": [
+          {
+            "planId": "00000015-0000-0000-0000-000000000000"
+          }
+        ],
+        "triggerInfo": {},
+        "id": 1025717,
+        "buildNumber": "20260101.1",
+        "status": "completed",
+        "result": "succeeded",
+        "queueTime": "2025-09-25T10:06:13.1002648Z",
+        "startTime": "2025-09-25T10:06:26.9590327Z",
+        "finishTime": "2025-09-25T10:08:02.3380193Z",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1025717",
+        "definition": {
+          "drafts": [],
+          "id": 4984,
+          "name": "repo-d",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/4984?revision=3",
+          "uri": "vstfs:///Build/Definition/4984",
+          "path": "\\kristiantestharness",
+          "type": "build",
+          "queueStatus": "enabled",
+          "revision": 3,
+          "project": {
+            "id": "00000003-0000-0000-0000-000000000000",
+            "name": "Example Project",
+            "description": "Example description.",
+            "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+            "state": "wellFormed",
+            "revision": 1019,
+            "visibility": "private",
+            "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+          }
+        },
+        "buildNumberRevision": 67,
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "description": "Example description.",
+          "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+          "state": "wellFormed",
+          "revision": 1019,
+          "visibility": "private",
+          "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+        },
+        "uri": "vstfs:///Build/Build/1025717",
+        "sourceBranch": "refs/heads/main",
+        "sourceVersion": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "queue": {
+          "id": 627,
+          "name": "Azure Pipelines",
+          "pool": {
+            "id": 12,
+            "name": "Azure Pipelines",
+            "isHosted": true
+          }
+        },
+        "priority": "normal",
+        "reason": "manual",
+        "requestedFor": {
+          "displayName": "Person 11",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+            }
+          },
+          "id": "00000016-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "requestedBy": {
+          "displayName": "Person 11",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+            }
+          },
+          "id": "00000016-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "lastChangedDate": "2025-09-25T10:08:02.803Z",
+        "lastChangedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "orchestrationPlan": {
+          "planId": "00000015-0000-0000-0000-000000000000"
+        },
+        "logs": {
+          "id": 0,
+          "type": "Container",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/logs"
+        },
+        "repository": {
+          "id": "00000018-0000-0000-0000-000000000000",
+          "type": "TfsGit",
+          "name": "KristianTestHarness",
+          "url": "https://dev.azure.com/contoso/Example%20Project/_git/KristianTestHarness",
+          "clean": null,
+          "checkoutSubmodules": false
+        },
+        "retainedByRelease": false,
+        "triggeredByBuild": null,
+        "appendCommitMessageToRunName": true
+      },
+      "latestCompletedBuild": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1025717"
+          },
+          "web": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/results?buildId=1025717"
+          },
+          "sourceVersionDisplayUri": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/sources"
+          },
+          "timeline": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/Timeline"
+          },
+          "badge": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/4984"
+          }
+        },
+        "properties": {},
+        "tags": [],
+        "validationResults": [],
+        "plans": [
+          {
+            "planId": "00000015-0000-0000-0000-000000000000"
+          }
+        ],
+        "triggerInfo": {},
+        "id": 1025717,
+        "buildNumber": "20260101.1",
+        "status": "completed",
+        "result": "succeeded",
+        "queueTime": "2025-09-25T10:06:13.1002648Z",
+        "startTime": "2025-09-25T10:06:26.9590327Z",
+        "finishTime": "2025-09-25T10:08:02.3380193Z",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1025717",
+        "definition": {
+          "drafts": [],
+          "id": 4984,
+          "name": "repo-d",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/4984?revision=3",
+          "uri": "vstfs:///Build/Definition/4984",
+          "path": "\\kristiantestharness",
+          "type": "build",
+          "queueStatus": "enabled",
+          "revision": 3,
+          "project": {
+            "id": "00000003-0000-0000-0000-000000000000",
+            "name": "Example Project",
+            "description": "Example description.",
+            "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+            "state": "wellFormed",
+            "revision": 1019,
+            "visibility": "private",
+            "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+          }
+        },
+        "buildNumberRevision": 67,
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "description": "Example description.",
+          "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+          "state": "wellFormed",
+          "revision": 1019,
+          "visibility": "private",
+          "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+        },
+        "uri": "vstfs:///Build/Build/1025717",
+        "sourceBranch": "refs/heads/main",
+        "sourceVersion": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "queue": {
+          "id": 627,
+          "name": "Azure Pipelines",
+          "pool": {
+            "id": 12,
+            "name": "Azure Pipelines",
+            "isHosted": true
+          }
+        },
+        "priority": "normal",
+        "reason": "manual",
+        "requestedFor": {
+          "displayName": "Person 11",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+            }
+          },
+          "id": "00000016-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "requestedBy": {
+          "displayName": "Person 11",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+            }
+          },
+          "id": "00000016-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "lastChangedDate": "2025-09-25T10:08:02.803Z",
+        "lastChangedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "orchestrationPlan": {
+          "planId": "00000015-0000-0000-0000-000000000000"
+        },
+        "logs": {
+          "id": 0,
+          "type": "Container",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1025717/logs"
+        },
+        "repository": {
+          "id": "00000018-0000-0000-0000-000000000000",
+          "type": "TfsGit",
+          "name": "KristianTestHarness",
+          "url": "https://dev.azure.com/contoso/Example%20Project/_git/KristianTestHarness",
+          "clean": null,
+          "checkoutSubmodules": false
+        },
+        "retainedByRelease": false,
+        "triggeredByBuild": null,
+        "appendCommitMessageToRunName": true
+      },
+      "quality": "definition",
+      "authoredBy": {
+        "displayName": "Person 11",
+        "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+        "_links": {
+          "avatar": {
+            "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+          }
+        },
+        "id": "00000016-0000-0000-0000-000000000000",
+        "uniqueName": "person@example.com",
+        "imageUrl": "https://example/avatar",
+        "descriptor": "aad.00000000000000000000000000000000"
+      },
+      "drafts": [],
+      "queue": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/_apis/build/Queues/627"
+          }
+        },
+        "id": 627,
+        "name": "Azure Pipelines",
+        "url": "https://dev.azure.com/contoso/_apis/build/Queues/627",
+        "pool": {
+          "id": 12,
+          "name": "Azure Pipelines",
+          "isHosted": true
+        }
+      },
+      "id": 4984,
+      "name": "repo-d",
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/4984?revision=3",
+      "uri": "vstfs:///Build/Definition/4984",
+      "path": "\\kristiantestharness",
+      "type": "build",
+      "queueStatus": "enabled",
+      "revision": 3,
+      "createdDate": "2025-03-24T13:28:19.677Z",
+      "project": {
+        "id": "00000003-0000-0000-0000-000000000000",
+        "name": "Example Project",
+        "description": "Example description.",
+        "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+        "state": "wellFormed",
+        "revision": 1019,
+        "visibility": "private",
+        "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+      }
+    },
+    {
+      "_links": {
+        "self": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/7082?revision=2"
+        },
+        "web": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/definition?definitionId=7082"
+        },
+        "editor": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/designer?id=7082&_a=edit-build-definition"
+        },
+        "badge": {
+          "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/7082"
+        }
+      },
+      "latestBuild": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1398824"
+          },
+          "web": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/results?buildId=1398824"
+          },
+          "sourceVersionDisplayUri": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/sources"
+          },
+          "timeline": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/Timeline"
+          },
+          "badge": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/7082"
+          }
+        },
+        "properties": {},
+        "tags": [],
+        "validationResults": [],
+        "plans": [
+          {
+            "planId": "00000019-0000-0000-0000-000000000000"
+          }
+        ],
+        "triggerInfo": {
+          "scheduleName": "Daily 2AM update"
+        },
+        "id": 1398824,
+        "buildNumber": "20260101.1",
+        "status": "completed",
+        "result": "succeeded",
+        "queueTime": "2026-07-25T02:00:37.6772154Z",
+        "startTime": "2026-07-25T02:03:09.7071354Z",
+        "finishTime": "2026-07-25T02:06:45.7088759Z",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1398824",
+        "definition": {
+          "drafts": [],
+          "id": 7082,
+          "name": "repo-e",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/7082?revision=2",
+          "uri": "vstfs:///Build/Definition/7082",
+          "path": "\\idp",
+          "type": "build",
+          "queueStatus": "enabled",
+          "revision": 2,
+          "project": {
+            "id": "00000003-0000-0000-0000-000000000000",
+            "name": "Example Project",
+            "description": "Example description.",
+            "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+            "state": "wellFormed",
+            "revision": 1019,
+            "visibility": "private",
+            "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+          }
+        },
+        "buildNumberRevision": 1,
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "description": "Example description.",
+          "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+          "state": "wellFormed",
+          "revision": 1019,
+          "visibility": "private",
+          "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+        },
+        "uri": "vstfs:///Build/Build/1398824",
+        "sourceBranch": "refs/heads/main",
+        "sourceVersion": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "queue": {
+          "id": 627,
+          "name": "Azure Pipelines",
+          "pool": {
+            "id": 12,
+            "name": "Azure Pipelines",
+            "isHosted": true
+          }
+        },
+        "priority": "normal",
+        "reason": "schedule",
+        "requestedFor": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "requestedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "lastChangedDate": "2026-07-25T02:06:46.23Z",
+        "lastChangedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "orchestrationPlan": {
+          "planId": "00000019-0000-0000-0000-000000000000"
+        },
+        "logs": {
+          "id": 0,
+          "type": "Container",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/logs"
+        },
+        "repository": {
+          "id": "00000008-0000-0000-0000-000000000000",
+          "type": "TfsGit",
+          "name": "IDP",
+          "url": "https://dev.azure.com/contoso/Example%20Project/_git/IDP",
+          "clean": null,
+          "checkoutSubmodules": false
+        },
+        "retainedByRelease": false,
+        "triggeredByBuild": null,
+        "appendCommitMessageToRunName": true
+      },
+      "latestCompletedBuild": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1398824"
+          },
+          "web": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_build/results?buildId=1398824"
+          },
+          "sourceVersionDisplayUri": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/sources"
+          },
+          "timeline": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/Timeline"
+          },
+          "badge": {
+            "href": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/status/7082"
+          }
+        },
+        "properties": {},
+        "tags": [],
+        "validationResults": [],
+        "plans": [
+          {
+            "planId": "00000019-0000-0000-0000-000000000000"
+          }
+        ],
+        "triggerInfo": {
+          "scheduleName": "Daily 2AM update"
+        },
+        "id": 1398824,
+        "buildNumber": "20260101.1",
+        "status": "completed",
+        "result": "succeeded",
+        "queueTime": "2026-07-25T02:00:37.6772154Z",
+        "startTime": "2026-07-25T02:03:09.7071354Z",
+        "finishTime": "2026-07-25T02:06:45.7088759Z",
+        "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Builds/1398824",
+        "definition": {
+          "drafts": [],
+          "id": 7082,
+          "name": "repo-e",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/7082?revision=2",
+          "uri": "vstfs:///Build/Definition/7082",
+          "path": "\\idp",
+          "type": "build",
+          "queueStatus": "enabled",
+          "revision": 2,
+          "project": {
+            "id": "00000003-0000-0000-0000-000000000000",
+            "name": "Example Project",
+            "description": "Example description.",
+            "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+            "state": "wellFormed",
+            "revision": 1019,
+            "visibility": "private",
+            "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+          }
+        },
+        "buildNumberRevision": 1,
+        "project": {
+          "id": "00000003-0000-0000-0000-000000000000",
+          "name": "Example Project",
+          "description": "Example description.",
+          "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+          "state": "wellFormed",
+          "revision": 1019,
+          "visibility": "private",
+          "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+        },
+        "uri": "vstfs:///Build/Build/1398824",
+        "sourceBranch": "refs/heads/main",
+        "sourceVersion": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        "queue": {
+          "id": 627,
+          "name": "Azure Pipelines",
+          "pool": {
+            "id": 12,
+            "name": "Azure Pipelines",
+            "isHosted": true
+          }
+        },
+        "priority": "normal",
+        "reason": "schedule",
+        "requestedFor": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "requestedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "lastChangedDate": "2026-07-25T02:06:46.23Z",
+        "lastChangedBy": {
+          "displayName": "Person 12",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000017-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/s2s.MDAwMDAwMDItMDAwMC04ODg4LTgwMDAtMDAwMDAwMDAwMDAwQDJjODk1OTA4LTA0ZTAtNDk1Mi04OWZkLTU0YjAwNDZkNjI4OA"
+            }
+          },
+          "id": "00000017-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "descriptor": "aad.00000000000000000000000000000000"
+        },
+        "orchestrationPlan": {
+          "planId": "00000019-0000-0000-0000-000000000000"
+        },
+        "logs": {
+          "id": 0,
+          "type": "Container",
+          "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/builds/1398824/logs"
+        },
+        "repository": {
+          "id": "00000008-0000-0000-0000-000000000000",
+          "type": "TfsGit",
+          "name": "IDP",
+          "url": "https://dev.azure.com/contoso/Example%20Project/_git/IDP",
+          "clean": null,
+          "checkoutSubmodules": false
+        },
+        "retainedByRelease": false,
+        "triggeredByBuild": null,
+        "appendCommitMessageToRunName": true
+      },
+      "quality": "definition",
+      "authoredBy": {
+        "displayName": "Person 11",
+        "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000016-0000-0000-0000-000000000000",
+        "_links": {
+          "avatar": {
+            "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZTllMzk4NmMtOTdlMS03NzhhLWFiY2MtNzcwMTc4MmVmNmY3"
+          }
+        },
+        "id": "00000016-0000-0000-0000-000000000000",
+        "uniqueName": "person@example.com",
+        "imageUrl": "https://example/avatar",
+        "descriptor": "aad.00000000000000000000000000000000"
+      },
+      "drafts": [],
+      "queue": {
+        "_links": {
+          "self": {
+            "href": "https://dev.azure.com/contoso/_apis/build/Queues/627"
+          }
+        },
+        "id": 627,
+        "name": "Azure Pipelines",
+        "url": "https://dev.azure.com/contoso/_apis/build/Queues/627",
+        "pool": {
+          "id": 12,
+          "name": "Azure Pipelines",
+          "isHosted": true
+        }
+      },
+      "id": 7082,
+      "name": "repo-e",
+      "url": "https://dev.azure.com/contoso/00000003-0000-0000-0000-000000000000/_apis/build/Definitions/7082?revision=2",
+      "uri": "vstfs:///Build/Definition/7082",
+      "path": "\\idp",
+      "type": "build",
+      "queueStatus": "enabled",
+      "revision": 2,
+      "createdDate": "2026-02-04T17:23:17.897Z",
+      "project": {
+        "id": "00000003-0000-0000-0000-000000000000",
+        "name": "Example Project",
+        "description": "Example description.",
+        "url": "https://dev.azure.com/contoso/_apis/projects/00000003-0000-0000-0000-000000000000",
+        "state": "wellFormed",
+        "revision": 1019,
+        "visibility": "private",
+        "lastUpdateTime": "2026-05-07T08:36:47.217Z"
+      }
+    }
+  ]
+}

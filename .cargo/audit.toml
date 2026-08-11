@@ -1,0 +1,12 @@
+# cargo-audit configuration.
+#
+# Kept in sync with the `ignore` list in `deny.toml`. Empty to start -
+# POSEIDEN's core dependency stack has no standing RustSec advisories.
+#
+# When a NEW advisory lands on a crate we actually use, prefer to upgrade
+# the dependency. Only add an entry here (with an explicit justification
+# comment) when the advisory is a non-actionable transitive - e.g. a crate
+# pulled in by Tauri's Linux webview backend that has no upstream fix yet.
+
+[advisories]
+ignore = []

@@ -1,0 +1,34 @@
+/target/
+**/*.rs.bk
+
+# Tauri-generated artifacts (once `cargo tauri init/android init/ios init` runs)
+/crates/poseiden-app/gen/
+/crates/poseiden-app/target/
+
+# Portable-mode data dir - SQLite DB, logs, config overrides, cache live
+# here when POSEIDEN_PORTABLE_MODE=true / a `.portable` sentinel exists.
+/.portable/
+**/.portable/
+
+# Local SQLite databases + WAL/SHM sidecars (dev runs)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Frontend vendored build artifacts (if any generated)
+/frontend/web/dist/
+/frontend/node_modules/
+# Docs bundled into the web assets by the app's build.rs / CI (source of truth
+# is /docs). Regenerated every build, so kept out of version control.
+/frontend/web/assets/docs/
+
+# Claude Code local settings (machine-specific; settings.json IS committed)
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/

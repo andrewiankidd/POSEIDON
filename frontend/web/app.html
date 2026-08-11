@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POSEIDEN</title>
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Runtime environment (window.__POSEIDEN_ENV__): a static default file that a
+       server deployment overrides via its dynamic /env.js route. Classic (not
+       module) script so it runs synchronously here, before app.js's module. -->
+  <script src="env.js"></script>
+</head>
+<body>
+  <!-- Sidebar navigation. Hash-routed single page - no build step, no
+       framework, same bundle whether GitHub-style static hosting, the Docker
+       server, or the Tauri webview serves it. -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="assets/logo.png" alt="POSEIDEN" width="28" height="28" />
+      <div class="brand-text">
+        <span class="brand-name">POSEIDEN</span>
+        <!-- Random nautical motto, set on boot (see initMotd in app.js). -->
+        <span class="brand-motd" id="brand-motd"></span>
+      </div>
+      <!-- Button 1: hamburger menu (right-aligned in the brand row). -->
+      <button id="menu-btn" class="icon-btn" title="Menu" aria-label="Menu">☰</button>
+    </div>
+    <!-- Team scope selector. Filters every view; "All teams" is the roll-up. -->
+    <div class="team-scope">
+      <label for="team-select">Team</label>
+      <div class="team-row">
+        <select id="team-select">
+          <option value="">All teams</option>
+        </select>
+        <!-- Button 2: manage teams (right-aligned beside the dropdown). -->
+        <button id="team-edit-btn" class="icon-btn" title="Manage teams" aria-label="Manage teams">✎</button>
+      </div>
+    </div>
+    <nav>
+      <!-- Group 1: the at-a-glance overview. -->
+      <a href="#dashboard" data-route="dashboard">Dashboard</a>
+      <div class="nav-sep"></div>
+      <!-- Group 2: the data views. -->
+      <a href="#work-items" data-route="work-items">Work Items</a>
+      <a href="#pull-requests" data-route="pull-requests">Pull Requests</a>
+      <a href="#pipelines" data-route="pipelines">Pipelines</a>
+      <div class="nav-sep"></div>
+      <!-- Group 3: cross-cutting policy. -->
+      <a href="#rules" data-route="rules">Rules</a>
+      <div class="nav-sep"></div>
+      <!-- Group 4: shareable outputs. -->
+      <a href="#reports" data-route="reports">Reports</a>
+      <a href="#recap" data-route="recap">Recap</a>
+    </nav>
+    <div class="sidebar-foot">
+      <button id="refresh-btn" class="btn btn-ghost" title="Poll now">↻ Refresh</button>
+      <span id="mode-badge" class="mode-badge" title="Where data is coming from"></span>
+      <!-- Documentation - opens the embedded docs modal (same pill style as the
+           doctor indicator, with a book icon instead of a status dot). -->
+      <button id="docs-btn" class="foot-item" type="button" title="Documentation">
+        <span class="foot-icon">📖</span>
+        <span>Documentation</span>
+      </button>
+      <!-- Settings - opens the global settings modal (connection, display, LLM
+           integrations, config import/export). Same foot-item pill style. -->
+      <button id="settings-btn" class="foot-item" type="button" title="Settings">
+        <span class="foot-icon">⚙️</span>
+        <span>Settings</span>
+      </button>
+      <!-- Doctor health indicator - traffic light + link to the Doctor panel. -->
+      <a href="#doctor" id="doctor-indicator" class="doctor-indicator foot-item" title="System health">
+        <span class="foot-icon"><span id="doctor-dot" class="doctor-dot unknown"></span></span>
+        <span id="doctor-label">Checking…</span>
+      </a>
+      <!-- Signed-in user / dev tenant switcher. Populated by renderUserMenu():
+           the real proxy identity (name + logout) when authenticated, or a
+           "Connect as (dev)" owner switcher in an auth-off playground. -->
+      <div id="user-menu" class="user-menu" hidden></div>
+      <!-- Build/version stamp (git sha in CI/prod, build timestamp locally) - set
+           from window.__POSEIDEN_ENV__.version by app.js. -->
+      <div id="version-stamp" class="version-stamp"></div>
+    </div>
+  </aside>
+
+  <main id="main" class="content">
+    <div class="loading">Loading…</div>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

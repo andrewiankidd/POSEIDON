@@ -1,0 +1,45 @@
+# Demo tenant - the committed, offline showcase configuration.
+#
+# This is a POSEIDEN config bundle (the same YAML `poseiden config import`
+# consumes). It provisions ONE team backed by the built-in `stub` provider, so it
+# needs no Azure, no credential, and no network. The actual work items, pipelines
+# and pull requests are SYNTHESISED by the StubProvider (crates/poseiden-providers
+# /src/stub.rs) on poll - deterministic every run - so this file carries config
+# only, never data.
+#
+# Used by:
+#   - the e2e tests (imported under a throwaway owner, asserted, torn down)
+#   - documentation screenshots (imported under the `poseiden+demo-data@example.com` owner)
+#   - a new dev who wants populated screens before wiring their real tracker
+#
+# Seed it into a running instance (or a local data dir) with:
+#   poseiden config import tenants/demo-data.poseiden.import.yaml --replace
+#   poseiden poll
+#
+# The stub returns 14 work items (3 tripping hygiene rules: one untagged, one
+# missing a required tag, one carrying a disallowed tag; plus 8 recently-closed
+# items tagged with the area:/source:/internal-external taxonomy so Recap and the
+# flow reports have real history), 3 pipelines (one never run), 5 runs, and 3
+# pull requests - so assertions against it are exact.
+poseiden:
+  schema: 1
+  # Target tenant for a trusted/system import (honored by the CLI + poseiden.sh;
+  # ignored by the public HTTP import, which uses the caller's own identity).
+  owner: poseiden+demo-data@example.com
+team:
+  - name: Platform
+    provider: stub
+    organization: https://stub.example
+    project: Platform
+rules:
+  required_tags: ["team:*", "type:*"]
+  # Wildcard patterns drive the hygiene rules; the concrete tags below are the
+  # canonical set the AI tag suggester proposes from (it ignores the `*` patterns).
+  allowed_tags: ["team:*", "type:*", "priority:*", "area:*", "source:*", "internal", "external",
+    "team:platform", "type:bug", "type:task", "type:story", "type:feature",
+    "priority:high", "priority:medium", "priority:low",
+    "area:backend", "area:frontend", "area:kubernetes", "area:observability",
+    "area:dev-platform", "area:idp", "area:azuredevops",
+    "source:roadmap", "source:support", "source:incident", "source:request"]
+  disallowed_tags: ["wip", "temp"]
+  untagged_is_error: true

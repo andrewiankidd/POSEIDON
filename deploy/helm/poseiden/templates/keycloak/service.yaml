@@ -1,0 +1,19 @@
+{{- if and (eq .Values.auth.provider "keycloak") .Values.auth.keycloak.bundled.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "poseiden.keycloak.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "poseiden.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+{{- end }}

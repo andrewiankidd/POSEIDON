@@ -1,0 +1,1 @@
+{"name":"pipeline-success-rate","render":"stat","series":[{"label":"Success rate","percent":true,"points":[{"label":"","value":0.75}]}]}

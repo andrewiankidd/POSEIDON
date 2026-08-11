@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# POSEIDEN pre-push hook.
+#
+# Fast static-analysis checks before code leaves the machine - faster failure
+# than waiting for CI to flag the same issues. Mirrors CI's static-analysis
+# gate, trimmed to what's worth blocking a push on.
+#
+# Tools run:
+#   cargo fmt --all -- --check
+#   cargo clippy --workspace --all-targets -- -D warnings
+#   cargo machete                                  (Cargo.toml unused-deps)
+#   cargo audit                                    (RustSec advisory DB)
+#
+# Deliberately NOT run here:
+#   cargo deny check    - slower; covered by CI
+#   cargo test          - too slow for every push; CI's job
+#
+# One-time setup on a fresh clone:
+#   git config core.hooksPath .githooks
+#   cargo install cargo-audit cargo-machete cargo-deny
+#
+# CI runs an equivalent gate regardless of whether this hook ran - the hook
+# is a fast-failure convenience, not a security boundary.
+
+set -e
+
+# Only run for pushes that include Rust or Cargo-config changes. Doc-only /
+# frontend-only / workflow-only pushes skip the heavy stuff.
+RUST_CHANGED=false
+if git diff --name-only @{push}..HEAD 2>/dev/null | grep -qE '\.(rs|toml)$'; then
+    RUST_CHANGED=true
+elif git diff --name-only HEAD~1..HEAD 2>/dev/null | grep -qE '\.(rs|toml)$'; then
+    RUST_CHANGED=true
+fi
+
+if [ "$RUST_CHANGED" = false ]; then
+    echo "[pre-push] no Rust/TOML changes detected - skipping checks"
+    exit 0
+fi
+
+run_if_available() {
+    local tool="$1"
+    shift
+    if command -v "$tool" >/dev/null 2>&1; then
+        echo "[pre-push] $tool $*"
+        if ! "$tool" "$@"; then
+            echo
+            echo "[pre-push] $tool failed. Fix the issues above and re-commit."
+            return 1
+        fi
+    else
+        echo "[pre-push] $tool not installed - skipping (install: cargo install ${tool})"
+    fi
+}
+
+# rustfmt + clippy ship with rustup so they're always present in a working
+# toolchain. No `command -v` guard.
+echo "[pre-push] cargo fmt --all -- --check"
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "[pre-push] fmt check failed. Run \`cargo fmt --all\` and re-commit."
+    exit 1
+fi
+
+echo "[pre-push] cargo clippy --workspace --all-targets -- -D warnings"
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo
+    echo "[pre-push] clippy found lints. Fix them or add a targeted #[allow]."
+    exit 1
+fi
+
+# Optional tools - install via `cargo install <name>`. Each guards itself so a
+# half-installed dev env still pushes.
+run_if_available cargo-machete || exit 1
+run_if_available cargo-audit audit || exit 1
+
+echo "[pre-push] ok"

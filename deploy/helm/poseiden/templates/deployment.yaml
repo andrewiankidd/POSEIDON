@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "poseiden.fullname" . }}
+  labels:
+    {{- include "poseiden.labels" . | nindent 4 }}
+spec:
+  # Single replica - SQLite is a single writer on a ReadWriteOnce volume.
+  replicas: 1
+  # Recreate (not RollingUpdate) so the old pod releases the RWO volume before
+  # the new one tries to mount it.
+  strategy:
+    type: Recreate
+  selector:
+    # Include the component so this Deployment (and `kubectl … deploy/poseiden`,
+    # which resolves a pod via this selector) matches ONLY the app pods, not the
+    # bundled dex / oauth2-proxy pods that share the name label. NOTE: a Deployment
+    # selector is immutable, so changing it on an existing release needs a fresh
+    # install (delete the Deployment / `down` then `up`), not an in-place upgrade.
+    matchLabels:
+      {{- include "poseiden.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "poseiden.selectorLabels" . | nindent 8 }}
+        # Distinguishes the app pods from the bundled dex / oauth2-proxy pods, which
+        # share the name label; the app Service selects on this so it never routes
+        # to them. (matchLabels stays name-only - a valid subset - so this is an
+        # additive, upgrade-safe change, no immutable-selector conflict.)
+        app.kubernetes.io/component: server
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: poseiden
+          image: {{ include "poseiden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+          # Instance config is env-only (no config file); per-owner config
+          # (teams/rules/reports) lives in the DB on the volume - set via the UI
+          # or `poseiden config import`. See values.yaml `telemetry` for OTLP.
+          env:
+            - name: POSEIDEN_DATA_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: POSEIDEN_BIND_ADDR
+              value: "0.0.0.0"
+            - name: POSEIDEN_PORT
+              value: {{ .Values.service.targetPort | quote }}
+            - name: POSEIDEN_POLL_INTERVAL
+              value: {{ .Values.pollInterval | quote }}
+            {{- if .Values.telemetry.otlpEndpoint }}
+            - name: POSEIDEN_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            {{- end }}
+            {{- if or .Values.azureDevOps.pat .Values.azureDevOps.existingSecret }}
+            - name: {{ .Values.azureDevOps.patEnv }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "poseiden.patSecretName" . }}
+                  key: {{ include "poseiden.patSecretKey" . }}
+            {{- end }}
+            {{- if .Values.auth.tokenVerification.enabled }}
+            # Defence-in-depth: verify the oauth2-proxy-forwarded access token
+            # (X-Auth-Request-Access-Token) against the IdP JWKS, rather than only
+            # trusting the identity header. Requests without a valid token then 401.
+            - name: POSEIDEN_AUTH_JWKS_URL
+              value: {{ required "auth.tokenVerification.jwksUrl is required when tokenVerification.enabled" .Values.auth.tokenVerification.jwksUrl | quote }}
+            {{- with .Values.auth.tokenVerification.issuer }}
+            - name: POSEIDEN_AUTH_ISSUER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.tokenVerification.audience }}
+            - name: POSEIDEN_AUTH_AUDIENCE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.auth.tokenVerification.emailClaim }}
+            - name: POSEIDEN_AUTH_EMAIL_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.ai.enabled }}
+            # AI tag suggester (advisory). Bundled -> the in-cluster Ollama the
+            # chart deploys; otherwise an external OpenAI-compatible endpoint.
+            - name: POSEIDEN_AI_ENDPOINT
+              {{- if .Values.ai.bundled.enabled }}
+              value: "http://{{ include "poseiden.ollama.fullname" . }}:11434/v1/chat/completions"
+              {{- else }}
+              value: {{ required "ai.endpoint is required when ai.enabled and ai.bundled.enabled=false" .Values.ai.endpoint | quote }}
+              {{- end }}
+            - name: POSEIDEN_AI_MODEL
+              value: {{ required "ai.model is required when ai.enabled" .Values.ai.model | quote }}
+            {{- if not .Values.ai.bundled.enabled }}
+            {{- if .Values.ai.existingSecret }}
+            - name: POSEIDEN_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ai.existingSecret }}
+                  key: {{ .Values.ai.existingSecretKey }}
+            {{- else if .Values.ai.apiKey }}
+            - name: POSEIDEN_AI_API_KEY
+              value: {{ .Values.ai.apiKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            # Offline AI models (hf-hub) need a WRITABLE cache: the rootfs is
+            # read-only and HOME is /nonexistent, so the default ~/.cache path
+            # fails with EROFS. Point HF_HOME at a roomy ephemeral volume (below).
+            # Models re-download after a pod restart - fine for a cache; back
+            # /models with a PVC if you want them to persist.
+            - name: HF_HOME
+              value: /models
+            {{- with .Values.aiCpuThreads }}
+            # Cap candle/rayon's CPU thread pool. The pod sees the node's logical CPUs
+            # (not its cgroup CPU limit), so without this it oversubscribes the limit.
+            - name: RAYON_NUM_THREADS
+              value: {{ . | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "poseiden.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        # Writable, roomy scratch for the offline AI model cache (HF_HOME). Kept
+        # off the data PVC so a multi-GB model can't fill the DB volume; sizeLimit
+        # caps node-disk use. Ephemeral by design - re-downloads after a restart.
+        - name: models
+          emptyDir:
+            sizeLimit: {{ .Values.ai.modelCacheSize | default "4Gi" }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

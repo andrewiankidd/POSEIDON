@@ -1,0 +1,216 @@
+{
+  "repository": {
+    "id": "00000005-0000-0000-0000-000000000000",
+    "name": "repo-c",
+    "url": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000",
+    "project": {
+      "id": "00000004-0000-0000-0000-000000000000",
+      "name": "Second Project",
+      "description": "Example description.",
+      "url": "https://dev.azure.com/contoso/_apis/projects/00000004-0000-0000-0000-000000000000",
+      "state": "wellFormed",
+      "revision": 945,
+      "visibility": "private",
+      "lastUpdateTime": "2026-03-13T15:42:06.38Z"
+    },
+    "size": 4307029,
+    "remoteUrl": "https://person@example.com/contoso/Second Project/_git/repo-c",
+    "sshUrl": "person@example.com:v3/contoso/Second Project/repo-c",
+    "webUrl": "https://dev.azure.com/contoso/Second Project/_git/repo-c",
+    "isDisabled": false,
+    "isInMaintenance": false
+  },
+  "pullRequestId": 252573,
+  "codeReviewId": 252573,
+  "status": "completed",
+  "createdBy": {
+    "displayName": "Person A",
+    "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+    "_links": {
+      "avatar": {
+        "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+      }
+    },
+    "id": "00000002-0000-0000-0000-000000000000",
+    "uniqueName": "person@example.com",
+    "imageUrl": "https://example/avatar",
+    "descriptor": "aad.00000000000000000000000000000000"
+  },
+  "creationDate": "2026-07-28T09:37:24.0061069Z",
+  "closedDate": "2026-07-28T13:06:58.6987171Z",
+  "title": "Example pull request title",
+  "description": "Example description.",
+  "sourceRefName": "refs/heads/feature/example",
+  "targetRefName": "refs/heads/main",
+  "mergeStatus": "succeeded",
+  "isDraft": false,
+  "mergeId": "0000000f-0000-0000-0000-000000000000",
+  "lastMergeSourceCommit": {
+    "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "url": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+  },
+  "lastMergeTargetCommit": {
+    "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "url": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+  },
+  "lastMergeCommit": {
+    "commitId": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "author": {
+      "name": "Person A",
+      "email": "person@example.com",
+      "date": "2026-07-28T13:06:57Z"
+    },
+    "committer": {
+      "name": "Person A",
+      "email": "person@example.com",
+      "date": "2026-07-28T13:06:57Z"
+    },
+    "comment": "Merged PR 252573: remove Dapr consumers",
+    "commentTruncated": true,
+    "url": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/commits/da39a3ee5e6b4b0d3255bfef95601890afd80709"
+  },
+  "reviewers": [
+    {
+      "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000010-0000-0000-0000-000000000000",
+      "vote": 10,
+      "votedFor": [
+        {
+          "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000011-0000-0000-0000-000000000000",
+          "vote": 0,
+          "displayName": "Person F",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000011-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/vssgp.Uy0xLTktMTU1MTM3NDI0NS0xNzI5NjE3NjA0LTQxNTgyNTIxMDktMjQ3Mjc4OTQwMy0yMDU0MjAzMjI2LTEtMjYyNTM2MjY0NS0xMzMzMTQ4ODctMjE1OTk0OTk0NS0zOTQ0ODg4MDg5"
+            }
+          },
+          "id": "00000011-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "isContainer": true
+        }
+      ],
+      "hasDeclined": false,
+      "isFlagged": false,
+      "displayName": "Person G",
+      "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000010-0000-0000-0000-000000000000",
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MjZkNGNkMWMtYjA1OC03ZThiLWJmOTctM2I5YTcyNTQ4MTM5"
+        }
+      },
+      "id": "00000010-0000-0000-0000-000000000000",
+      "uniqueName": "person@example.com",
+      "imageUrl": "https://example/avatar"
+    },
+    {
+      "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000011-0000-0000-0000-000000000000",
+      "vote": 10,
+      "hasDeclined": false,
+      "isRequired": true,
+      "isFlagged": false,
+      "displayName": "Person F",
+      "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000011-0000-0000-0000-000000000000",
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/vssgp.Uy0xLTktMTU1MTM3NDI0NS0xNzI5NjE3NjA0LTQxNTgyNTIxMDktMjQ3Mjc4OTQwMy0yMDU0MjAzMjI2LTEtMjYyNTM2MjY0NS0xMzMzMTQ4ODctMjE1OTk0OTk0NS0zOTQ0ODg4MDg5"
+        }
+      },
+      "id": "00000011-0000-0000-0000-000000000000",
+      "uniqueName": "person@example.com",
+      "imageUrl": "https://example/avatar",
+      "isContainer": true
+    },
+    {
+      "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000012-0000-0000-0000-000000000000",
+      "vote": 10,
+      "votedFor": [
+        {
+          "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000013-0000-0000-0000-000000000000",
+          "vote": 0,
+          "displayName": "Person H",
+          "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000013-0000-0000-0000-000000000000",
+          "_links": {
+            "avatar": {
+              "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/vssgp.Uy0xLTktMTU1MTM3NDI0NS0xNzA3MDI5NDE4LTI4ODM4NjA1NDQtMjE2Mjg0MjIyMi0yMjk0MDM4MDIxLTEtMTE1NzM3MDU0Ny01MDMxMjI3NjQtMjE3MzYxNDE0Ny05MjM2Mjk5Mjc"
+            }
+          },
+          "id": "00000013-0000-0000-0000-000000000000",
+          "uniqueName": "person@example.com",
+          "imageUrl": "https://example/avatar",
+          "isContainer": true
+        }
+      ],
+      "hasDeclined": false,
+      "isFlagged": false,
+      "displayName": "Person I",
+      "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000012-0000-0000-0000-000000000000",
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.ZjYyYTFkOWYtYTQwYy03OGRjLWJjNzEtOTc5MTQ1YjNjNDhk"
+        }
+      },
+      "id": "00000012-0000-0000-0000-000000000000",
+      "uniqueName": "person@example.com",
+      "imageUrl": "https://example/avatar"
+    },
+    {
+      "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000013-0000-0000-0000-000000000000",
+      "vote": 10,
+      "hasDeclined": false,
+      "isFlagged": false,
+      "displayName": "Person H",
+      "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000013-0000-0000-0000-000000000000",
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/vssgp.Uy0xLTktMTU1MTM3NDI0NS0xNzA3MDI5NDE4LTI4ODM4NjA1NDQtMjE2Mjg0MjIyMi0yMjk0MDM4MDIxLTEtMTE1NzM3MDU0Ny01MDMxMjI3NjQtMjE3MzYxNDE0Ny05MjM2Mjk5Mjc"
+        }
+      },
+      "id": "00000013-0000-0000-0000-000000000000",
+      "uniqueName": "person@example.com",
+      "imageUrl": "https://example/avatar",
+      "isContainer": true
+    },
+    {
+      "reviewerUrl": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573/reviewers/00000014-0000-0000-0000-000000000000",
+      "vote": 10,
+      "hasDeclined": false,
+      "isFlagged": false,
+      "displayName": "Person J",
+      "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000014-0000-0000-0000-000000000000",
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/svc.MjQ2OGNkMDYtN2RhMS00ZTMxLWEwZTktNDcwYjU5MWJjYWRlOkJ1aWxkOjY5NmQzNDZmLWRiMTktNDU3Mi04ZDlhLTE4ZTEyMDExMGQxNg"
+        }
+      },
+      "id": "00000014-0000-0000-0000-000000000000",
+      "uniqueName": "person@example.com",
+      "imageUrl": "https://example/avatar"
+    }
+  ],
+  "url": "https://dev.azure.com/contoso/00000004-0000-0000-0000-000000000000/_apis/git/repositories/00000005-0000-0000-0000-000000000000/pullRequests/252573",
+  "completionOptions": {
+    "mergeCommitMessage": "Merged PR 252573: remove Dapr consumers\n\nremove Dapr consumers\n\nRelated work items: #889554, #889555",
+    "deleteSourceBranch": true,
+    "squashMerge": true,
+    "mergeStrategy": "squash",
+    "transitionWorkItems": true,
+    "autoCompleteIgnoreConfigIds": []
+  },
+  "supportsIterations": true,
+  "completionQueueTime": "2026-07-28T13:06:57.1994626Z",
+  "closedBy": {
+    "displayName": "Person A",
+    "url": "https://spsprodweu2.vssps.visualstudio.com/A00000001-0000-0000-0000-000000000000/_apis/Identities/00000002-0000-0000-0000-000000000000",
+    "_links": {
+      "avatar": {
+        "href": "https://dev.azure.com/contoso/_apis/GraphProfile/MemberAvatars/aad.MDMyMWIzNGUtNzg0OC03ZTczLTg1NjEtYTBjY2YxMDQyM2Jm"
+      }
+    },
+    "id": "00000002-0000-0000-0000-000000000000",
+    "uniqueName": "person@example.com",
+    "imageUrl": "https://example/avatar",
+    "descriptor": "aad.00000000000000000000000000000000"
+  },
+  "artifactId": "vstfs:///Git/PullRequestId/00000004-0000-0000-0000-000000000000%2f00000005-0000-0000-0000-000000000000%2f252573"
+}

@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/poseiden-core",
+    "crates/poseiden-telemetry",
+    "crates/poseiden-paths",
+    "crates/poseiden-rules",
+    "crates/poseiden-reports",
+    "crates/poseiden-ai",
+    "crates/poseiden-providers",
+    "crates/poseiden-store",
+    "crates/poseiden-doctor",
+    "crates/poseiden-server",
+    "crates/poseiden-cli",
+    "crates/poseiden-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Andrew Kidd"]
+repository = "https://github.com/andrewiankidd/POSEIDEN"
+
+[workspace.dependencies]
+# Errors
+anyhow = "1"
+thiserror = "2"
+
+# Async runtime + HTTP
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "process", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# JWT/JWKS verification for the optional defence-in-depth token check (verifies
+# the oauth2-proxy-forwarded access token instead of blindly trusting the header).
+jsonwebtoken = "9"
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "cors", "set-header"] }
+
+# Serde + config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# YAML for config import/export. A maintained fork of the (RustSec-flagged
+# unmaintained) `serde_yaml`, so it keeps `cargo audit`/`deny` green.
+serde_norway = "0.9"
+
+# Persistence
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros", "migrate"] }
+
+# Time
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Paths
+directories = "5"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async helpers
+async-trait = "0.1"
+futures = "0.3"
+
+# Internal crates
+poseiden-core = { path = "crates/poseiden-core" }
+poseiden-telemetry = { path = "crates/poseiden-telemetry" }
+poseiden-doctor = { path = "crates/poseiden-doctor" }
+poseiden-paths = { path = "crates/poseiden-paths" }
+poseiden-rules = { path = "crates/poseiden-rules" }
+poseiden-reports = { path = "crates/poseiden-reports" }
+poseiden-ai = { path = "crates/poseiden-ai" }
+poseiden-providers = { path = "crates/poseiden-providers" }
+poseiden-store = { path = "crates/poseiden-store" }
+poseiden-server = { path = "crates/poseiden-server" }
+
+# Slim release binary for the Docker image + desktop installers. Kept
+# conservative (thin LTO, no panic=abort) so the Tauri shell + test
+# harness behave normally; the win here is `strip` + size-optimised
+# codegen for the container, not squeezing the last byte.
+[profile.release]
+opt-level = "z"
+lto = "thin"
+strip = true

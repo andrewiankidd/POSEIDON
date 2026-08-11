@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: Check + fmt + clippy (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps (Tauri webview)
+        # Needed to compile poseiden-app (Tauri/wry) on Linux. The server, CLI,
+        # and library crates don't need these, but `--workspace` builds all.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            build-essential
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+  lint:
+    name: Audit + deny + machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-audit (RustSec advisories)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: cargo-deny (license + ban + dup + advisories)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - name: Install cargo-machete (prebuilt binary)
+        run: |
+          VERSION=0.7.0
+          curl -sL "https://github.com/bnjbvr/cargo-machete/releases/download/v${VERSION}/cargo-machete-v${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz
+          sudo mv "cargo-machete-v${VERSION}-x86_64-unknown-linux-musl/cargo-machete" /usr/local/bin/
+          cargo-machete --version
+      - name: cargo-machete (unused dependencies)
+        run: cargo-machete
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps (Tauri webview)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      # Exclude the Tauri app from the test run - it has no unit tests and
+      # pulls the full webview toolchain; the `check` job already compiles it.
+      - run: cargo test --workspace --exclude poseiden-app
+
+  helm:
+    name: Helm lint + render + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint (also validates values against values.schema.json)
+        run: helm lint deploy/helm/poseiden
+      - name: Install kubeconform
+        run: |
+          VERSION=0.6.7
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+      - name: Render + schema-validate every scenario
+        # Templates the chart with the default values AND each documented
+        # scenario (nginx/dex, nginx/github, istio-azure, istio-external), then
+        # pipes the manifests through kubeconform in strict mode. `-strict`
+        # rejects unknown fields; the datree CRD catalog resolves the Istio kinds
+        # (VirtualService, AuthorizationPolicy) so nothing is silently skipped.
+        run: |
+          set -euo pipefail
+          scenarios=(
+            ""  # default values
+            "-f deploy/helm/poseiden/ci/minikube-dex-values.yaml"
+            "-f deploy/helm/poseiden/ci/nginx-github-values.yaml"
+            "-f deploy/helm/poseiden/ci/istio-azure-values.yaml"
+            "-f deploy/helm/poseiden/ci/istio-external-values.yaml"
+          )
+          for s in "${scenarios[@]}"; do
+            echo "::group::render + validate ${s:-<defaults>}"
+            helm template poseiden deploy/helm/poseiden --set azureDevOps.pat=dummy $s \
+              | kubeconform -strict -summary \
+                  -kubernetes-version 1.30.0 \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+      - name: Selector isolation (app must not select the bundled IdP pods)
+        # Regression guard: the app Service selector was name-only, so it also
+        # matched the bundled dex + oauth2-proxy pods (which share the name label)
+        # and round-robined across all three - serving CSS/JS from oauth2-proxy's
+        # static "Authenticated" response. Assert the app Service selector AND the
+        # Deployment's (immutable) matchLabels are component-scoped, so they can
+        # only ever pick app pods.
+        run: |
+          set -euo pipefail
+          vals="-f deploy/helm/poseiden/ci/minikube-dex-values.yaml"
+          svc=$(helm template poseiden deploy/helm/poseiden $vals --set azureDevOps.pat=dummy -s templates/service.yaml)
+          echo "$svc" | grep -q 'app.kubernetes.io/component: server' \
+            || { echo "FAIL: app Service selector is not component-scoped"; echo "$svc"; exit 1; }
+          dep=$(helm template poseiden deploy/helm/poseiden $vals --set azureDevOps.pat=dummy -s templates/deployment.yaml)
+          echo "$dep" | grep -A5 'matchLabels:' | grep -q 'app.kubernetes.io/component: server' \
+            || { echo "FAIL: app Deployment matchLabels is not component-scoped"; echo "$dep"; exit 1; }
+          echo "OK: app Service + Deployment select only app pods"
