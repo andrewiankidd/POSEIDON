@@ -60,13 +60,34 @@ pub enum AiError {
     Http(String),
 }
 
+/// Per-tag disambiguation keywords, keyed by the tag's lowercased spelling. Sourced
+/// from the team's keyword rules (`tag_keywords`) and shown next to each candidate
+/// so the model knows what a tag actually denotes - e.g. `area:platform-deployment`
+/// keys on the phrase "platform deployment", NOT any mention of "platform" (which an
+/// org that puts "platform" in everything makes ambiguous). Empty = no hints.
+pub type TagHints = std::collections::HashMap<String, Vec<String>>;
+
+/// How many keyword hints to show per tag - enough to disambiguate, capped so a
+/// tag with a long keyword list doesn't blow up the prompt.
+pub(crate) const MAX_HINTS_PER_TAG: usize = 6;
+
 /// A backend that proposes tags for a work item from an allowed set.
+///
+/// `allowed` is the full concrete candidate set; `required` is the subset of the
+/// team's required-tag PATTERNS (e.g. `["area:*", "source:*"]`). A required
+/// pattern the item does not yet satisfy is a must-fill slot: the model is asked
+/// to best-effort pick a value for it even on weak signal, while everything else
+/// keeps the precision-first "omit when unsure" behaviour. `hints` carries optional
+/// per-tag keyword glosses (see [`TagHints`]) so the model can disambiguate what
+/// each candidate means.
 #[async_trait]
 pub trait AiTagger: Send + Sync {
     async fn suggest(
         &self,
         item: &TaggerInput,
         allowed: &[String],
+        required: &[String],
+        hints: &TagHints,
     ) -> Result<Vec<TagSuggestion>, AiError>;
 }
 
@@ -195,14 +216,28 @@ fn env_nonempty(key: &str) -> Option<String> {
 
 /// What the current runtime can actually do. The server fills this for its own
 /// resolution; the browser client computes its own (for WebGPU) on the frontend.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct PlatformCaps {
     /// Can run the in-process embedded engine (candle). False for a browser client.
+    #[serde(default)]
     pub embedded: bool,
     /// A CUDA GPU is available to the embedded engine (cuda build + a live device).
+    #[serde(default)]
     pub gpu: bool,
     /// Can run a model in-browser via WebGPU (client-side only).
+    #[serde(default)]
     pub webgpu: bool,
+    /// Best-effort GPU/accelerator VRAM in MB, when the platform can report it (a
+    /// native CUDA probe; WebGPU can't expose total VRAM, so this stays None there
+    /// and the WebGPU tier falls back to a safe default). Drives model sizing.
+    #[serde(default)]
+    pub vram_mb: Option<u32>,
+    /// Best-effort system RAM in MB (browser `deviceMemory` is coarse + capped).
+    #[serde(default)]
+    pub ram_mb: Option<u32>,
+    /// Logical CPU cores, when known. Sizes the CPU-only model tier.
+    #[serde(default)]
+    pub cpu_cores: Option<u32>,
 }
 
 impl PlatformCaps {
@@ -212,7 +247,58 @@ impl PlatformCaps {
             embedded: true,
             gpu: embedded::cuda_available(),
             webgpu: false,
+            vram_mb: None,
+            ram_mb: None,
+            cpu_cores: std::thread::available_parallelism()
+                .ok()
+                .map(|n| n.get() as u32),
         }
+    }
+
+    /// Merge browser-supplied caps over this (server) set: the browser is the only
+    /// place that knows WebGPU availability + client RAM/cores, so those win; the
+    /// server keeps its own embedded/gpu truth. Used by the autotune endpoint.
+    pub fn merged_with_browser(self, browser: &PlatformCaps) -> Self {
+        Self {
+            embedded: self.embedded,
+            gpu: self.gpu || browser.gpu,
+            webgpu: browser.webgpu,
+            vram_mb: browser.vram_mb.or(self.vram_mb),
+            ram_mb: browser.ram_mb.or(self.ram_mb),
+            cpu_cores: browser.cpu_cores.or(self.cpu_cores),
+        }
+    }
+}
+
+/// The best offline model id to run for an integration of `kind`/`device` given the
+/// platform's `caps` - "highest reasonably runnable", so a strong box gets a strong
+/// model out of the box and a weak one stays fast. VRAM tiers apply when a real
+/// number is known; WebGPU can't report total VRAM, so it defaults to a safe strong
+/// model (3B, ~2GB) that any discrete GPU handles - the benchmark "tune" is the
+/// reliable path higher. See [`OFFLINE_MODELS`] for the ids.
+pub fn recommend_model(kind: &str, device: &str, caps: &PlatformCaps) -> &'static str {
+    let by_vram = |v: u32| {
+        if v >= 12000 {
+            "qwen2.5-7b"
+        } else if v >= 7000 {
+            "qwen2.5-3b"
+        } else if v >= 4000 {
+            "qwen2.5-1.5b"
+        } else {
+            "qwen2.5-0.5b"
+        }
+    };
+    match kind {
+        "webgpu" => match caps.vram_mb {
+            Some(v) => by_vram(v),
+            None => "qwen2.5-3b", // safe strong default; benchmark tunes higher
+        },
+        "offline" if device == "gpu" => caps.vram_mb.map(by_vram).unwrap_or("qwen2.5-3b"),
+        "offline" => match caps.cpu_cores {
+            Some(c) if c >= 8 => "qwen2.5-1.5b",
+            _ => "qwen2.5-0.5b",
+        },
+        _ => "qwen2.5-0.5b",
     }
 }
 
@@ -303,6 +389,12 @@ impl LlmIntegration {
 pub struct LlmConfig {
     #[serde(default)]
     pub integrations: Vec<LlmIntegration>,
+    /// True when this registry was auto-configured for the platform (by the autotune
+    /// endpoint) rather than hand-edited. Auto registries may be re-tuned as the
+    /// detected capabilities change; the moment a user saves from Settings it flips
+    /// false and is never machine-touched again.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 impl LlmConfig {
@@ -326,6 +418,7 @@ impl LlmConfig {
                 offline_model: cfg.offline_model,
                 device: "cpu".to_string(),
             }],
+            auto: false,
         }
     }
 
@@ -378,7 +471,27 @@ impl LlmConfig {
                 cloud("gemini", "Gemini (Google)", "gemini"),
                 cloud("openai", "ChatGPT (OpenAI)", "openai"),
             ],
+            auto: false,
         }
+    }
+
+    /// The seeded catalog, but with each local backend's model sized to `caps` via
+    /// [`recommend_model`] - so a fresh owner on a strong box gets a strong model out
+    /// of the box and a weak one stays fast. Marked `auto` so it can be re-tuned until
+    /// the user hand-edits. Order (priority) is unchanged from [`Self::seeded`].
+    pub fn seeded_for(caps: &PlatformCaps) -> Self {
+        let mut cfg = Self::seeded();
+        for integ in &mut cfg.integrations {
+            match integ.kind.as_str() {
+                "offline" | "webgpu" => {
+                    integ.offline_model =
+                        Some(recommend_model(&integ.kind, &integ.device, caps).to_string());
+                }
+                _ => {}
+            }
+        }
+        cfg.auto = true;
+        cfg
     }
 
     /// The effective tagger for this platform: the first compatible + configured
@@ -402,32 +515,117 @@ impl LlmConfig {
 }
 
 pub(crate) const SYSTEM_PROMPT: &str = "You tag software work items for a backlog-hygiene tool. \
-You are given one work item and a list of ALLOWED tags. Pick only the FEW most \
-applicable tags - AT MOST 3, and only ones you are confident CLEARLY apply. Favour \
-precision over coverage: when in doubt, leave a tag out, and prefer returning fewer \
-(or none) over a long list. Never pick tags that contradict each other (e.g. two \
-different types like bug and enhancement, or opposites like internal and external). \
-Never invent tags or use any tag not in the ALLOWED list. Reply with ONLY a JSON \
-object, no prose, no code fences: \
+You are given one work item, a list of ALLOWED tags, and possibly some REQUIRED \
+categories. For each REQUIRED category you MUST choose exactly ONE value from the \
+options listed for it - make your BEST GUESS from the title/type/description even \
+when you are not fully certain; a reasonable guess is better than leaving a required \
+category empty, so never skip one. List the required picks FIRST. For all OTHER \
+(optional) ALLOWED tags, favour precision: add one only when it CLEARLY applies, and \
+prefer returning fewer (or none) over a long list. Never pick tags that contradict \
+each other (e.g. two different types like bug and enhancement, or opposites like \
+internal and external). Some tags show example keywords in parentheses - e.g. \
+`area:foo (e.g. bar, baz)` - which clarify what that tag MEANS; use them to pick \
+the right tag, but output ONLY the tag itself (`area:foo`), never the examples. \
+Never invent tags or use any tag not in the ALLOWED list. \
+Reply with ONLY a JSON object, no prose, no code fences: \
 {\"tags\": [\"<allowed tag>\", ...], \"rationale\": \"<one short sentence>\"}. \
-If none clearly apply, reply {\"tags\": [], \"rationale\": \"none apply\"}.";
+If there are no required categories and nothing else clearly applies, reply \
+{\"tags\": [], \"rationale\": \"none apply\"}.";
 
 /// Hard cap on suggestions per item, enforced after validation regardless of what
 /// the model returns - a backstop for over-eager models that ignore "at most 3".
 pub(crate) const MAX_SUGGESTIONS: usize = 3;
 
-/// The user message: the item plus the allowed set, one tag per line.
-pub fn build_prompt(input: &TaggerInput, allowed: &[String]) -> String {
+/// Match a tag against a required-tag pattern: trailing `*` is a prefix wildcard,
+/// otherwise exact - both case-insensitive. (poseiden-ai doesn't depend on
+/// poseiden-rules, so this mirrors `poseiden_rules::tag_matches` in miniature.)
+fn pattern_matches(pattern: &str, tag: &str) -> bool {
+    let p = pattern.trim().to_ascii_lowercase();
+    let t = tag.trim().to_ascii_lowercase();
+    match p.strip_suffix('*') {
+        Some(prefix) => t.starts_with(prefix),
+        None => p == t,
+    }
+}
+
+/// Render a candidate tag, appending its keyword hints as `tag (e.g. kw1, kw2)`
+/// when the team configured any - the disambiguation signal that stops the model
+/// grabbing a tag on a surface-word match.
+fn annotate(tag: &str, hints: &TagHints) -> String {
+    match hints.get(&tag.to_lowercase()) {
+        Some(kw) if !kw.is_empty() => {
+            let shown = kw
+                .iter()
+                .filter(|k| !k.trim().is_empty())
+                .take(MAX_HINTS_PER_TAG)
+                .map(|k| k.trim())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if shown.is_empty() {
+                tag.to_string()
+            } else {
+                format!("{tag} (e.g. {shown})")
+            }
+        }
+        _ => tag.to_string(),
+    }
+}
+
+/// The user message: the item, the tags it must still be given (grouped by
+/// required category, each with its concrete options), and the remaining optional
+/// tags. `required` holds the team's required-tag patterns; a pattern the item
+/// already satisfies is dropped (no need to ask), and one with no options left in
+/// `allowed` is skipped (nothing to offer). Everything in `allowed` that isn't
+/// claimed by a listed required category is offered as optional. `hints` annotates
+/// each candidate with its keyword gloss.
+pub fn build_prompt(
+    input: &TaggerInput,
+    allowed: &[String],
+    required: &[String],
+    hints: &TagHints,
+) -> String {
     let current = if input.current_tags.is_empty() {
         "(none)".to_string()
     } else {
         input.current_tags.join(", ")
     };
-    let allowed_list = allowed
+
+    // Required categories still to fill: an unsatisfied required pattern plus the
+    // allowed values that match it. Keep the pattern's own order.
+    let mut required_blocks: Vec<String> = Vec::new();
+    let mut claimed: HashSet<String> = HashSet::new();
+    for pat in required {
+        let pat = pat.trim();
+        if pat.is_empty() {
+            continue;
+        }
+        // Already satisfied by a current tag? Then it's not a must-fill slot.
+        if input.current_tags.iter().any(|t| pattern_matches(pat, t)) {
+            continue;
+        }
+        let options: Vec<&String> = allowed.iter().filter(|a| pattern_matches(pat, a)).collect();
+        if options.is_empty() {
+            continue; // nothing to offer for this slot
+        }
+        for o in &options {
+            claimed.insert(o.to_lowercase());
+        }
+        let label = pat.strip_suffix('*').unwrap_or(pat);
+        let opts = options
+            .iter()
+            .map(|o| annotate(o, hints))
+            .collect::<Vec<_>>()
+            .join(", ");
+        required_blocks.push(format!("- {label} (choose one): {opts}"));
+    }
+
+    // Optional = everything in allowed not already claimed by a required category.
+    let optional: Vec<String> = allowed
         .iter()
-        .map(|t| format!("- {t}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .filter(|a| !claimed.contains(&a.to_lowercase()))
+        .map(|a| format!("- {}", annotate(a, hints)))
+        .collect();
+
     // Body/description, if the owner opted in - trimmed + truncated to keep the prompt
     // bounded. Omitted entirely when absent (title-only, the old behaviour).
     let description = input
@@ -440,10 +638,30 @@ pub fn build_prompt(input: &TaggerInput, allowed: &[String]) -> String {
             format!("\n- Description: {text}")
         })
         .unwrap_or_default();
-    format!(
-        "Work item:\n- Title: {}\n- Type: {}{}\n- Current tags: {}\n\nALLOWED tags:\n{}\n\nReturn the JSON now.",
-        input.title, input.work_item_type, description, current, allowed_list
-    )
+
+    let mut out = format!(
+        "Work item:\n- Title: {}\n- Type: {}{}\n- Current tags: {}\n",
+        input.title, input.work_item_type, description, current
+    );
+    if !required_blocks.is_empty() {
+        out.push_str(
+            "\nREQUIRED categories - pick exactly ONE value for EACH (best guess even if unsure):\n",
+        );
+        out.push_str(&required_blocks.join("\n"));
+        out.push('\n');
+    }
+    if !optional.is_empty() {
+        let header = if required_blocks.is_empty() {
+            "\nALLOWED tags:\n"
+        } else {
+            "\nOPTIONAL tags (only if they CLEARLY apply):\n"
+        };
+        out.push_str(header);
+        out.push_str(&optional.join("\n"));
+        out.push('\n');
+    }
+    out.push_str("\nReturn the JSON now.");
+    out
 }
 
 #[derive(Deserialize, Default)]
@@ -516,6 +734,8 @@ impl AiTagger for ChatTagger {
         &self,
         item: &TaggerInput,
         allowed: &[String],
+        required: &[String],
+        hints: &TagHints,
     ) -> Result<Vec<TagSuggestion>, AiError> {
         if allowed.is_empty() {
             return Ok(vec![]); // nothing to choose from
@@ -526,7 +746,7 @@ impl AiTagger for ChatTagger {
             "stream": false,
             "messages": [
                 { "role": "system", "content": SYSTEM_PROMPT },
-                { "role": "user", "content": build_prompt(item, allowed) },
+                { "role": "user", "content": build_prompt(item, allowed, required, hints) },
             ],
         });
         let mut req = self.http.post(&self.endpoint).json(&body);
@@ -591,6 +811,7 @@ mod tests {
         cloud.api_key = Some("k".into()); // a cloud preset needs a key to be configured
         let cfg = LlmConfig {
             integrations: vec![gpu, cloud],
+            ..Default::default()
         };
 
         // Embedded but no GPU: the gpu-offline entry is incompatible -> cloud wins.
@@ -598,6 +819,7 @@ mod tests {
             embedded: true,
             gpu: false,
             webgpu: false,
+            ..Default::default()
         };
         assert_eq!(cfg.active_id(&cpu), Some("cloud"));
         // GPU present: the higher-priority gpu-offline entry wins.
@@ -605,6 +827,7 @@ mod tests {
             embedded: true,
             gpu: true,
             webgpu: false,
+            ..Default::default()
         };
         assert_eq!(cfg.active_id(&gpu_caps), Some("gpu"));
         // Browser client (no in-process embedded): only the online entry works.
@@ -612,6 +835,7 @@ mod tests {
             embedded: false,
             gpu: false,
             webgpu: false,
+            ..Default::default()
         };
         assert_eq!(cfg.active_id(&browser), Some("cloud"));
     }
@@ -624,6 +848,7 @@ mod tests {
             embedded: true,
             gpu: false,
             webgpu: false,
+            ..Default::default()
         };
         let by = |id: &str| cfg.integrations.iter().find(|i| i.id == id).unwrap();
         assert!(
@@ -644,18 +869,69 @@ mod tests {
     }
 
     #[test]
+    fn recommend_model_scales_with_capability() {
+        let none = PlatformCaps::default();
+        // WebGPU with no VRAM number -> safe strong default (benchmark tunes higher).
+        assert_eq!(recommend_model("webgpu", "", &none), "qwen2.5-3b");
+        // WebGPU with a real big VRAM number -> the top tier.
+        let big = PlatformCaps {
+            vram_mb: Some(16000),
+            ..Default::default()
+        };
+        assert_eq!(recommend_model("webgpu", "", &big), "qwen2.5-7b");
+        // CPU-only scales by cores.
+        let many = PlatformCaps {
+            cpu_cores: Some(16),
+            ..Default::default()
+        };
+        let few = PlatformCaps {
+            cpu_cores: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(recommend_model("offline", "cpu", &many), "qwen2.5-1.5b");
+        assert_eq!(recommend_model("offline", "cpu", &few), "qwen2.5-0.5b");
+    }
+
+    #[test]
+    fn seeded_for_sizes_local_models_and_marks_auto() {
+        // A beefy WebGPU box: the webgpu entry gets bumped to 7B; ordering unchanged.
+        let caps = PlatformCaps {
+            webgpu: true,
+            vram_mb: Some(16000),
+            cpu_cores: Some(16),
+            ..Default::default()
+        };
+        let cfg = LlmConfig::seeded_for(&caps);
+        assert!(cfg.auto, "auto-configured registries are flagged");
+        let by = |id: &str| cfg.integrations.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(by("webgpu").offline_model.as_deref(), Some("qwen2.5-7b"));
+        assert_eq!(
+            by("local-cpu").offline_model.as_deref(),
+            Some("qwen2.5-1.5b")
+        );
+        // Same integrations, same order as the plain catalog.
+        let plain = LlmConfig::seeded();
+        assert_eq!(
+            cfg.integrations.iter().map(|i| &i.id).collect::<Vec<_>>(),
+            plain.integrations.iter().map(|i| &i.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn webgpu_is_only_compatible_on_a_webgpu_platform() {
         let mut wg = integ("wg", "webgpu");
         wg.model = Some("qwen2.5-0.5b-q4f16".into());
         assert!(!wg.compatible(&PlatformCaps {
             embedded: true,
             gpu: true,
-            webgpu: false
+            webgpu: false,
+            ..Default::default()
         }));
         assert!(wg.compatible(&PlatformCaps {
             embedded: false,
             gpu: false,
-            webgpu: true
+            webgpu: true,
+            ..Default::default()
         }));
         // The server can't build a webgpu tagger (the browser runs it).
         assert!(wg.build().is_none());
@@ -811,7 +1087,7 @@ mod tests {
             &["team:platform"],
             None,
         ));
-        let prompt = build_prompt(&input, &allowed());
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
         assert!(prompt.contains("- Title: Wire up ingress"));
         assert!(prompt.contains("- Type: User Story"));
         assert!(prompt.contains("- Current tags: team:platform"));
@@ -823,22 +1099,26 @@ mod tests {
     #[test]
     fn build_prompt_uses_none_placeholder_for_untagged() {
         let input = TaggerInput::from(&work_item("t", "Task", &[], None));
-        assert!(build_prompt(&input, &allowed()).contains("- Current tags: (none)"));
+        assert!(build_prompt(&input, &allowed(), &[], &Default::default())
+            .contains("- Current tags: (none)"));
     }
 
     #[test]
     fn build_prompt_omits_description_when_absent_or_blank() {
         let none = TaggerInput::from(&work_item("t", "Task", &[], None));
-        assert!(!build_prompt(&none, &allowed()).contains("Description:"));
+        assert!(!build_prompt(&none, &allowed(), &[], &Default::default()).contains("Description:"));
         // A whitespace-only body is treated as absent (trimmed, then filtered out).
         let blank = TaggerInput::from(&work_item("t", "Task", &[], Some("   \n\t ")));
-        assert!(!build_prompt(&blank, &allowed()).contains("Description:"));
+        assert!(
+            !build_prompt(&blank, &allowed(), &[], &Default::default()).contains("Description:")
+        );
     }
 
     #[test]
     fn build_prompt_includes_description_when_present() {
         let input = TaggerInput::from(&work_item("t", "Task", &[], Some("crashes on retry")));
-        assert!(build_prompt(&input, &allowed()).contains("- Description: crashes on retry"));
+        assert!(build_prompt(&input, &allowed(), &[], &Default::default())
+            .contains("- Description: crashes on retry"));
     }
 
     #[test]
@@ -847,7 +1127,88 @@ mod tests {
         // title/type/tags never contain so the count is unambiguous.
         let body = "Z".repeat(MAX_DESC_CHARS + 500);
         let input = TaggerInput::from(&work_item("t", "Task", &[], Some(&body)));
-        let prompt = build_prompt(&input, &allowed());
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
         assert_eq!(prompt.matches('Z').count(), MAX_DESC_CHARS);
+    }
+
+    #[test]
+    fn build_prompt_groups_unsatisfied_required_slots_with_their_options() {
+        // area:* is already satisfied by a current tag -> not asked again.
+        // source:* is unsatisfied -> a REQUIRED category listing only source values.
+        let input = TaggerInput::from(&work_item(
+            "Provision staging environment",
+            "Feature",
+            &["area:kube"],
+            None,
+        ));
+        let allowed = vec![
+            "area:kube".to_string(),
+            "area:auth".to_string(),
+            "source:support".to_string(),
+            "source:incident".to_string(),
+            "enhancement".to_string(),
+        ];
+        let required = vec!["area:*".to_string(), "source:*".to_string()];
+        let prompt = build_prompt(&input, &allowed, &required, &Default::default());
+
+        assert!(
+            prompt.contains("REQUIRED categories"),
+            "has a required block"
+        );
+        assert!(prompt.contains("- source: (choose one): source:support, source:incident"));
+        // area:* is satisfied, so it must NOT appear as a required category to fill.
+        assert!(!prompt.contains("- area: (choose one)"));
+        // The source values are claimed by the required block, so they are not
+        // repeated in the optional list; the ungoverned tag still is.
+        let optional = prompt.split("OPTIONAL tags").nth(1).unwrap_or("");
+        assert!(optional.contains("- enhancement"));
+        assert!(!optional.contains("source:support"));
+    }
+
+    #[test]
+    fn build_prompt_annotates_candidates_with_their_keyword_hints() {
+        let input = TaggerInput::from(&work_item(
+            "Regional infrastructure rollout",
+            "Epic",
+            &[],
+            None,
+        ));
+        let allowed = vec![
+            "area:platform-deployment".to_string(),
+            "area:kubernetes".to_string(),
+        ];
+        let required = vec!["area:*".to_string()];
+        let mut hints = TagHints::new();
+        hints.insert(
+            "area:platform-deployment".into(),
+            vec!["platform deployment".into(), "platformdeployment".into()],
+        );
+        let prompt = build_prompt(&input, &allowed, &required, &hints);
+        // The hinted tag shows its keywords; the un-hinted one is bare.
+        assert!(prompt
+            .contains("area:platform-deployment (e.g. platform deployment, platformdeployment)"));
+        assert!(prompt.contains("area:kubernetes"));
+        assert!(!prompt.contains("area:kubernetes (e.g."));
+    }
+
+    #[test]
+    fn build_prompt_caps_keyword_hints_per_tag() {
+        let input = TaggerInput::from(&work_item("t", "Task", &[], None));
+        let allowed = vec!["area:kubernetes".to_string()];
+        let many: Vec<String> = (0..20).map(|i| format!("kw{i}")).collect();
+        let mut hints = TagHints::new();
+        hints.insert("area:kubernetes".into(), many);
+        let prompt = build_prompt(&input, &allowed, &["area:*".to_string()], &hints);
+        // Only MAX_HINTS_PER_TAG examples are shown.
+        assert_eq!(prompt.matches("kw").count(), MAX_HINTS_PER_TAG);
+    }
+
+    #[test]
+    fn build_prompt_without_required_matches_the_plain_allowed_layout() {
+        // No required patterns -> the old "ALLOWED tags:" layout, no required block.
+        let input = TaggerInput::from(&work_item("t", "Task", &[], None));
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
+        assert!(prompt.contains("ALLOWED tags:"));
+        assert!(!prompt.contains("REQUIRED categories"));
     }
 }

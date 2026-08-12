@@ -4,6 +4,49 @@ All notable changes to POSEIDEN are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Required-aware AI tagging** — the tagger is told which tag categories a team
+  requires (e.g. `area:*`, `source:*`) and makes a best-effort pick for any the
+  item doesn't yet satisfy, instead of staying silent; everything else keeps the
+  precision-first "omit when unsure" behaviour.
+- **Wildcard candidate expansion** — an open-vocabulary required slot (`area:*`)
+  expands into concrete candidate values drawn from the team's keyword/alias
+  taxonomy and the values already used across its backlog, so the AI can actually
+  fill it rather than being handed a bare pattern it can't match.
+- **Keyword hints in the AI prompt** — each candidate carries its configured
+  keywords (`area:foo (e.g. bar, baz)`) so the model picks on meaning, not on a
+  surface word.
+- **Capability-tiered AI auto-configuration** — on first load the platform
+  (WebGPU / CPU / CUDA, RAM, cores) is detected and each local model is sized to
+  it out of the box, via a new `POST /api/llm-config/autotune`; a hand-edited LLM
+  registry is never overwritten.
+- **WebGPU model-load fallback ladder** — if the chosen model won't fit in VRAM,
+  it steps down (7B → 3B → 1.5B → 0.5B) and retries, so an optimistic pick is safe.
+- **Underspecified detection** — an item with too little body to tag from gets a
+  configurable refine tag suggested and is skipped by the AI (so it can't invent
+  an area from nothing), tuned by `refine_tag` / `refine_min_chars`.
+- **Per-column checkbox filters** — a funnel dropdown with *Select all* and a
+  search box, on the work-item (State, Type, Team, Assignee, Tags), pull-request
+  (Repo, Status, Author, Target) and pipeline (Status) tables — no need to learn
+  the `!exclude` syntax.
+- **Reload nudge on redeploy** — a long-open tab notices a new build (via the
+  `/api/health` version stamp) and offers a one-click reload.
+
+### Fixed
+- **Azure DevOps bug bodies** — bugs carry their body in *Repro Steps*, not
+  *Description* (which is empty for them); the provider now falls back to it, so a
+  detailed bug is no longer mis-detected as empty-bodied.
+- **Stale AI suggestions** — an item that has become underspecified no longer
+  surfaces its old model-guessed tags, and they are pruned from storage on the
+  next run.
+- Bulk apply-suggestions failures now log full detail to the browser console.
+
+### Changed
+- The seeded LLM registry sizes its on-device models to the detected platform
+  instead of a fixed small default.
+
 ## [0.1.0] - 2026-08-11
 
 Initial public release. POSEIDEN is a Product Owner support tool that keeps a

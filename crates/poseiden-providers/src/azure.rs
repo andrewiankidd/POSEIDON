@@ -627,6 +627,11 @@ struct AdoFields {
     story_points: Option<f64>,
     #[serde(rename = "System.Description")]
     description: Option<String>,
+    /// Bugs carry their body in Repro Steps, NOT Description (which is empty for
+    /// them). Fall back to this so a bug with full repro steps isn't seen as
+    /// empty-bodied by the tagger / underspecified check.
+    #[serde(rename = "Microsoft.VSTS.TCM.ReproSteps")]
+    repro_steps: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -756,11 +761,18 @@ fn normalise_work_item(
         closed_at: f.closed_date,
         iteration_path: f.iteration_path,
         story_points: f.story_points,
+        // Description first; for bugs it's empty, so fall back to Repro Steps.
         description: f
             .description
             .as_deref()
             .map(strip_html)
-            .filter(|s| !s.is_empty()),
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                f.repro_steps
+                    .as_deref()
+                    .map(strip_html)
+                    .filter(|s| !s.is_empty())
+            }),
         url,
         linked_pr_ids,
         linked_prs: Vec::new(),
@@ -1104,6 +1116,34 @@ mod tests {
         let raw: AdoWorkItem = serde_json::from_str(json).unwrap();
         let wi = normalise_work_item(raw, "Platform", "https://dev.azure.com/acme", "Platform");
         assert_eq!(wi.description.as_deref(), Some("Retry & backoff"));
+    }
+
+    #[test]
+    fn normalise_work_item_falls_back_to_repro_steps_for_bugs() {
+        // Bugs have an empty Description; their body is in Repro Steps. The normaliser
+        // must fall back to it so the item isn't seen as empty-bodied.
+        let json = r#"{
+            "id": 8,
+            "fields": {
+                "System.WorkItemType": "Bug",
+                "System.Title": "Pipeline broken",
+                "System.Description": "",
+                "Microsoft.VSTS.TCM.ReproSteps": "<div>Error: invalid <b>for_each</b> argument</div>"
+            }
+        }"#;
+        let raw: AdoWorkItem = serde_json::from_str(json).unwrap();
+        let wi = normalise_work_item(raw, "Platform", "https://dev.azure.com/acme", "Platform");
+        assert_eq!(
+            wi.description.as_deref(),
+            Some("Error: invalid for_each argument")
+        );
+        // A real Description still wins over Repro Steps when both are present.
+        let both = r#"{ "id": 9, "fields": {
+            "System.Description": "<p>real body</p>",
+            "Microsoft.VSTS.TCM.ReproSteps": "<p>steps</p>" } }"#;
+        let raw2: AdoWorkItem = serde_json::from_str(both).unwrap();
+        let wi2 = normalise_work_item(raw2, "Platform", "https://dev.azure.com/acme", "Platform");
+        assert_eq!(wi2.description.as_deref(), Some("real body"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ import { el, clear, esc, ago, shortDate, toast } from './lib/dom.js';
 import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
-import { webgpuAvailable, runWebGpuTagging, prepareModel, isModelCached } from './lib/webgpu.js';
+import { webgpuAvailable, runWebGpuTagging, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
 import { renderDeck } from './lib/recap-slides.js';
 
 const main = document.getElementById('main');
@@ -190,11 +190,47 @@ function updateDoctorIndicator() {
   if (link) link.title = failing.length ? ('Needs attention: ' + failing.map((c) => c.label).join(', ')) : 'All checks passing';
 }
 
+// The build stamp this tab booted with (from env.js, loaded before app.js). A
+// long-open SPA keeps running the JS it loaded, so an HTTP no-cache header alone
+// can't save it from a mid-session redeploy - we compare against the live stamp.
+const BOOT_VERSION = (window.__POSEIDEN_ENV__ && window.__POSEIDEN_ENV__.version) || '';
+let updateNudged = false;
+
+// Detect a redeploy: the server's build stamp no longer matches the one this tab
+// booted with. Nudge a reload once. Skipped for dev/empty stamps (comparison is
+// meaningless) and while offline (any fetch error is ignored).
+async function checkForUpdate() {
+  if (updateNudged || !BOOT_VERSION || BOOT_VERSION === 'dev') return;
+  let live;
+  try { live = (await api.health()).version; } catch { return; }
+  if (live && live !== BOOT_VERSION) { updateNudged = true; showUpdateBanner(); }
+}
+
+function showUpdateBanner() {
+  if (document.getElementById('update-banner')) return;
+  // The whole banner is the reload affordance (it reads as a notification, so a click
+  // anywhere on it should act) - the ✕ dismisses without reloading.
+  const bar = el('div', {
+    id: 'update-banner', class: 'update-banner', role: 'button', tabindex: '0',
+    title: 'Reload to get the latest version',
+    onclick: () => location.reload(),
+  },
+    el('span', {}, '✨ A new version of POSEIDEN is available — '),
+    el('span', { class: 'update-banner-cta' }, 'Reload'),
+    el('button', {
+      class: 'update-banner-x', title: 'Dismiss',
+      onclick: (e) => { e.stopPropagation(); bar.remove(); },
+    }, '✕'));
+  document.body.appendChild(bar);
+}
+
 function startDoctorPolling() {
   refreshDoctor();
+  checkForUpdate();
   if (doctorTimer) clearInterval(doctorTimer);
-  // Keep the light current, like crosspose's background monitor.
-  doctorTimer = setInterval(refreshDoctor, 45000);
+  // Keep the light current, like crosspose's background monitor. Piggyback the
+  // version check on the same cadence so a redeploy is noticed within ~45s.
+  doctorTimer = setInterval(() => { refreshDoctor(); checkForUpdate(); }, 45000);
 }
 
 async function renderDoctor() {
@@ -519,6 +555,17 @@ async function renderWorkItems() {
     ...(rules.allowed_tags || []).filter((t) => !t.includes('*')),
     ...(rules.tag_keywords || []).map((tk) => tk.tag).filter(Boolean),
   ])];
+  // The AI candidate set (superset of tagOptions): expands wildcard-required slots
+  // (`area:*`/`source:*`) into the concrete values in use across the loaded scope,
+  // so the in-browser model can actually satisfy them. Mirrors the server.
+  const aiCandidates = aiCandidateTags(rules, items.flatMap((it) => it.tags || []));
+  // Per-tag keyword hints (tag -> keywords), so the model knows what each candidate
+  // means (e.g. area:platform-deployment keys on "platform deployment"). Mirrors the
+  // server's tag_hints; keyed lowercase to match webgpu.js annotate().
+  const aiHints = Object.fromEntries(
+    (rules.tag_keywords || [])
+      .filter((k) => k.tag && (k.keywords || []).length)
+      .map((k) => [k.tag.toLowerCase(), k.keywords]));
   // Pre-filter to rule-breaks (or one specific flag) when arrived from a
   // dashboard tile / Health-check row.
   const flagCode = routeParams().get('flag');
@@ -553,11 +600,11 @@ async function renderWorkItems() {
 
   const columns = [
     { label: 'ID', sort: 'number', value: (it) => it.id, render: (it) => linkOut('#' + it.id, it.url) },
-    showTeam ? { label: 'Team', value: (it) => it.team || '' } : null,
+    showTeam ? { label: 'Team', filterChoices: true, value: (it) => it.team || '' } : null,
     { label: 'Title', class: 'wrap', value: (it) => it.title || '', render: (it) => it.title || '(untitled)' },
-    { label: 'Type', value: (it) => it.work_item_type || '' },
+    { label: 'Type', filterChoices: true, value: (it) => it.work_item_type || '' },
     {
-      label: 'State', value: (it) => it.state || '',
+      label: 'State', filterChoices: true, value: (it) => it.state || '',
       render: (it) => el('span', { class: 'pill muted' }, it.state || ''),
       // Editable: pick a state; commit writes it back to Azure DevOps.
       edit: {
@@ -571,20 +618,13 @@ async function renderWorkItems() {
         },
       },
     },
-    { label: 'Assignee', value: (it) => it.assigned_to || '', render: (it) => it.assigned_to || el('span', { class: 'muted' }, '-') },
+    { label: 'Assignee', filterChoices: true, value: (it) => it.assigned_to || '', render: (it) => it.assigned_to || el('span', { class: 'muted' }, '-') },
     {
       label: 'Tags', class: 'wrap', value: (it) => (it.tags || []).join(' '),
-      // Space/comma-separated terms are ANDed; the keyword "untagged" (or "none")
-      // matches items with no tags - replacing what the old tag cloud offered.
-      filterPlaceholder: 'tags, or "untagged"',
-      filterMatch: (it, q) => {
-        const tags = (it.tags || []).map((t) => t.toLowerCase());
-        const terms = q.split(/[\s,]+/).filter(Boolean);
-        return terms.every((term) =>
-          (term === 'untagged' || term === 'none' || term === '[untagged]')
-            ? tags.length === 0
-            : tags.some((t) => t.includes(term)));
-      },
+      // Multi-value checkbox filter: pick tags to keep items carrying ANY of them.
+      // The dropdown has a search box (backlogs have many tags) and a "(blank)"
+      // entry for untagged items.
+      filterChoices: true, choiceValues: (it) => it.tags || [],
       render: (it) => {
         const tags = it.tags || [];
         if (!tags.length) return el('span', { class: 'muted' }, '-');
@@ -694,12 +734,29 @@ async function renderWorkItems() {
                   rowsForTagging = rows.map((r) => ({ ...r, description: descs[r.id] ?? null }));
                 }
               } catch { /* body optional - fall back to title-only */ }
+              // Skip underspecified items (too little body to tag from): they get the
+              // deterministic "to refine" suggestion server-side; don't let the model
+              // guess an area from nothing. Mirrors poseiden-rules::is_underspecified.
+              const refineTag = (rules.refine_tag || '').trim();
+              if (refineTag) {
+                const min = rules.refine_min_chars ?? 40;
+                const before = rowsForTagging.length;
+                rowsForTagging = rowsForTagging.filter((r) => (r.description || '').trim().length >= min);
+                const skipped = before - rowsForTagging.length;
+                // Don't claim a "to refine" suggestion was made - the server only adds
+                // it when the item is missing a required tag AND isn't already tagged
+                // (an item already carrying it, like one flagged "To Refine", gets
+                // nothing). Just state honestly why these were left out of the AI run.
+                if (skipped) toast(`Skipped ${skipped} item${skipped === 1 ? '' : 's'} too sparse to AI-tag - needs refinement.`);
+              }
+              if (!rowsForTagging.length) { await refreshRows(); return; }
               // In-browser inference on the user's GPU, then POST results to the
               // server which re-validates + stores them (trust boundary).
               const results = await runWebGpuTagging(
-                webgpuInteg.offline_model, rowsForTagging, tagOptions,
+                webgpuInteg.offline_model, rowsForTagging, aiCandidates,
                 (s) => { b.textContent = s || 'Loading…'; },
-                (done, total) => { b.textContent = `Suggesting… ${done}/${total}`; });
+                (done, total) => { b.textContent = `Suggesting… ${done}/${total}`; },
+                rules.required_tags || [], aiHints);
               b.textContent = 'Storing…';
               const sum = await api.storeTagSuggestions(getTeamScope(), results);
               toast(`WebGPU: tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} items (${sum.suggestions ?? 0} tags)`);
@@ -780,7 +837,13 @@ async function renderWorkItems() {
         afterEdit(it, res);
         ok++;
       } catch (err) {
-        failed.push(`#${it.id}: ${err?.message || err}`);
+        const detail = err?.message || String(err);
+        // The toast can only show the first failure, truncated - log the full
+        // detail per item so the real reason survives (e.g. an unrelated
+        // required-field validation error on the work item makes ADO reject the
+        // whole PATCH with a 400, which is otherwise invisible).
+        console.error(`[${label}] #${it.id} failed:`, detail);
+        failed.push(`#${it.id}: ${detail}`);
       }
     }
     setBulkBusy(false);
@@ -788,7 +851,10 @@ async function renderWorkItems() {
     // Re-fetch when asked (apply-suggestions) so consumed suggestions + cleared flags
     // settle; otherwise a light in-place refresh. Both keep the filter/selection.
     if (opts.refetch) { await refreshRows(); } else { table.refresh(); }
-    if (failed.length) toast(`${label}: ${ok} updated, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
+    if (failed.length) {
+      console.error(`[${label}] ${ok} updated, ${failed.length} failed:\n${failed.join('\n')}`);
+      toast(`${label}: ${ok} updated, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
+    }
     else toast(`${label}: ${ok} work item${ok === 1 ? '' : 's'} updated.`);
   }
 
@@ -868,6 +934,44 @@ async function renderWorkItems() {
   wrap.appendChild(bulkBar);
   wrap.appendChild(table);
   return wrap;
+}
+
+// Mirror of poseiden-rules::tag_matches - trailing-`*` prefix wildcard, else
+// exact match, case-insensitive.
+function tagMatches(pattern, tag) {
+  const p = (pattern || '').trim().toLowerCase();
+  const t = (tag || '').trim().toLowerCase();
+  return p.endsWith('*') ? t.startsWith(p.slice(0, -1)) : t === p;
+}
+
+// Mirror of the server's candidate_tags: the concrete tags the AI may pick from
+// for this scope. Literal required/allowed patterns are candidates as-is;
+// wildcard patterns (`area:*`) are open-vocabulary slots with no literal to
+// offer, so they're expanded into concrete values already in the taxonomy (each
+// keyword's canonical tag, each alias's canonical target) and every tag observed
+// on the backlog. Everything is filtered back through the approved patterns (so a
+// stray tag outside the taxonomy is never offered) and de-duped case-insensitively.
+// This is what lets the in-browser (WebGPU) model fill a wildcard-required slot
+// with a real value; the server re-validates against the same expansion.
+function aiCandidateTags(rules, observed) {
+  const patterns = [...(rules?.required_tags || []), ...(rules?.allowed_tags || [])]
+    .map((t) => (t || '').trim())
+    .filter(Boolean);
+  if (!patterns.length) return [];
+  const pool = [
+    ...patterns,
+    ...(rules?.tag_keywords || []).map((k) => (k.tag || '').trim()),
+    ...(rules?.tag_aliases || []).map((a) => (a.to || '').trim()),
+    ...(observed || []).map((t) => (t || '').trim()),
+  ].filter((t) => t && !t.includes('*'));
+  const seen = new Set();
+  const out = [];
+  for (const t of pool) {
+    if (!patterns.some((p) => tagMatches(p, t))) continue;
+    const key = t.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push(t); }
+  }
+  return out;
 }
 
 // Classify a tag against a ruleset (mirrors poseiden-rules: trailing-`*`
@@ -1084,7 +1188,7 @@ async function renderPipelines() {
     },
     { label: 'Team', value: (p) => p.team || '' },
     {
-      label: 'Status', value: (p) => p.last_status || '',
+      label: 'Status', filterChoices: true, value: (p) => p.last_status || '',
       render: (p) => p.last_run_at
         ? el('div', {}, [statusPill(p.last_status), el('div', { class: 'pipe-lastrun', title: p.last_run_at }, ago(p.last_run_at))])
         : statusPill(p.last_status),
@@ -1170,10 +1274,10 @@ async function renderPulls() {
         },
       },
     },
-    { label: 'Repo', value: (p) => p.repository || '' },
-    { label: 'Status', value: (p) => (p.is_draft ? 'draft' : (p.status || '')), render: (p) => prPill(p) },
-    { label: 'Author', value: (p) => p.author || '', render: (p) => p.author || el('span', { class: 'muted' }, '-') },
-    { label: 'Target', value: (p) => p.target_branch || '', render: (p) => (p.target_branch ? el('span', { class: 'mono' }, p.target_branch) : el('span', { class: 'muted' }, '-')) },
+    { label: 'Repo', filterChoices: true, value: (p) => p.repository || '' },
+    { label: 'Status', filterChoices: true, value: (p) => (p.is_draft ? 'draft' : (p.status || '')), render: (p) => prPill(p) },
+    { label: 'Author', filterChoices: true, value: (p) => p.author || '', render: (p) => p.author || el('span', { class: 'muted' }, '-') },
+    { label: 'Target', filterChoices: true, value: (p) => p.target_branch || '', render: (p) => (p.target_branch ? el('span', { class: 'mono' }, p.target_branch) : el('span', { class: 'muted' }, '-')) },
     { label: 'Reviewers', sort: 'number', filter: false, align: 'right', value: (p) => p.reviewer_count },
     { label: 'Created', filter: false, value: (p) => p.created_at || '', render: (p) => (p.created_at ? el('span', { title: p.created_at }, ago(p.created_at)) : el('span', { class: 'muted' }, '-')) },
     { label: 'Flags', class: 'wrap', value: (p) => (p.flags || []).map((f) => f.code).join(' ') || 'ok', render: (p) => entityFlagChips(p.flags) },
@@ -3209,6 +3313,19 @@ function finishBoot() {
   Promise.all([refreshAuth(), initTeamSelector()]).finally(route);
   startDoctorPolling();
   renderUserMenu();
+  autotuneAi();
+}
+
+// Best-effort, fire-and-forget: detect this browser's capabilities (WebGPU + coarse
+// RAM/cores the server can't see) and let the server size the AI models to the
+// platform. No-ops server-side on a hand-edited registry, so it never fights a
+// choice the user made in Settings. Silent on failure - AI auto-config is a nicety,
+// not load-bearing.
+async function autotuneAi() {
+  try {
+    const caps = await detectBrowserCaps();
+    await api.autotuneLlm(caps);
+  } catch { /* AI autotune is best-effort */ }
 }
 
 // The signed-in user block in the sidebar foot. Shown only for an authenticated

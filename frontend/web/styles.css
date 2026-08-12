@@ -472,6 +472,35 @@ th.dt-active { color: var(--accent); }
 }
 .dt-filter-input::placeholder { color: var(--ink-soft); opacity: 0.55; }
 .dt-filter-input:focus { outline: none; border-color: var(--accent); }
+/* Choice (checkbox-dropdown) filter for enumerable columns. */
+.dt-choice { display: inline-flex; }
+.dt-filter-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 22px; padding: 0; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--panel-2); color: var(--ink-soft); cursor: pointer;
+}
+.dt-filter-btn:hover { color: var(--ink); border-color: var(--accent); }
+.dt-filter-btn-on { color: #fff; background: var(--accent); border-color: var(--accent); }
+.dt-choice-panel {
+  position: fixed; z-index: 80; min-width: 180px; max-width: 280px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 6px; font-size: 13px; color: var(--ink);
+}
+.dt-choice-opt {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px;
+  cursor: pointer; white-space: nowrap;
+}
+.dt-choice-opt:hover { background: var(--panel-2); }
+.dt-choice-opt span { overflow: hidden; text-overflow: ellipsis; }
+.dt-choice-all { font-weight: 600; }
+.dt-choice-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+.dt-choice-list { max-height: 280px; overflow-y: auto; }
+.dt-choice-search {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 5px 8px;
+  margin-bottom: 4px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-2); color: var(--ink);
+}
+.dt-choice-search:focus { outline: none; border-color: var(--accent); }
 .dt-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 12px; font-size: 13px; color: var(--ink-soft); }
 .dt-page-btn { padding: 5px 12px; }
 .dt-page-btn:disabled { opacity: 0.4; cursor: default; }
@@ -560,6 +589,23 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   box-shadow: var(--shadow); z-index: 50; font-weight: 500; max-width: 80vw;
 }
 .toast.err { background: var(--err); color: #fff; }
+
+/* Redeploy nudge: a long-open tab noticed a newer build stamp on the server. The
+   whole banner is clickable (reload); the ✕ dismisses. */
+.update-banner {
+  position: fixed; bottom: 20px; right: 20px; z-index: 60;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--ink); color: var(--bg);
+  padding: 10px 12px 10px 16px; border-radius: 10px; box-shadow: var(--shadow);
+  font-weight: 500; max-width: 90vw; cursor: pointer;
+}
+.update-banner:hover { filter: brightness(1.1); }
+.update-banner-cta { text-decoration: underline; font-weight: 700; }
+.update-banner-x {
+  background: transparent; border: none; color: inherit; cursor: pointer;
+  opacity: 0.6; font-size: 13px; line-height: 1; padding: 2px 4px;
+}
+.update-banner-x:hover { opacity: 1; }
 
 .device-flow { display: flex; flex-direction: column; gap: 8px; }
 .device-row { display: flex; align-items: center; gap: 12px; }

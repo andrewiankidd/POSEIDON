@@ -263,6 +263,16 @@ pub struct RuleSet {
     /// Work-item types exempt from all hygiene checks (`["Task"]` if you only
     /// govern stories/bugs).
     pub ignore_types: Vec<String>,
+    /// When set, an item with too little descriptive body to tag from (see
+    /// `refine_min_chars`) gets THIS tag suggested - and the AI tagger is skipped for
+    /// it - instead of a model guessing an area/source from nothing. Reuse an existing
+    /// "needs work" tag like `"to refine"`. None/empty = the feature is off.
+    #[serde(default)]
+    pub refine_tag: Option<String>,
+    /// Description length (trimmed chars) below which an item counts as
+    /// underspecified. Defaults to 40 when `refine_tag` is set; ignored otherwise.
+    #[serde(default)]
+    pub refine_min_chars: Option<usize>,
     /// Pipeline hygiene checks (a sub-policy of the same ruleset, so it inherits
     /// / overrides per-team exactly like the work-item rules above).
     pub pipelines: PipelineRules,

@@ -220,7 +220,10 @@ impl Service {
                 return cfg;
             }
         }
-        let mut cfg = poseiden_ai::LlmConfig::seeded();
+        // No saved registry: size the seeded catalog to THIS process's caps (CPU
+        // cores, CUDA) so a desktop/CLI auto-picks a sensible model; the web client
+        // refines it (adding WebGPU + client caps) via the autotune endpoint.
+        let mut cfg = poseiden_ai::LlmConfig::seeded_for(&poseiden_ai::PlatformCaps::server());
         let env = poseiden_ai::AiConfig::from_env();
         if env.enabled() {
             let mut env_reg = poseiden_ai::LlmConfig::from_single(env).integrations;
@@ -228,6 +231,41 @@ impl Service {
             cfg.integrations = env_reg;
         }
         cfg
+    }
+
+    /// Auto-configure this owner's LLM registry for the detected platform, sizing each
+    /// local model to capability ([`poseiden_ai::recommend_model`]). Only (re)writes
+    /// when the registry is unsaved or was itself auto-configured - a hand-edited
+    /// registry (`auto = false`) is never touched. `browser` carries client-only caps
+    /// (WebGPU availability, client RAM/cores) merged over the server's own. Returns
+    /// the effective registry view (same shape as [`Self::llm_config_view`]).
+    pub async fn autotune_llm_config(
+        &self,
+        browser: poseiden_ai::PlatformCaps,
+    ) -> serde_json::Value {
+        let stored = self
+            .store
+            .get_meta(&self.owner, "llm_config")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|j| serde_json::from_str::<poseiden_ai::LlmConfig>(&j).ok());
+        let is_manual = stored.as_ref().map(|c| !c.auto).unwrap_or(false);
+        if !is_manual {
+            let caps = poseiden_ai::PlatformCaps::server().merged_with_browser(&browser);
+            let mut tuned = poseiden_ai::LlmConfig::seeded_for(&caps);
+            let env = poseiden_ai::AiConfig::from_env();
+            if env.enabled() {
+                let mut env_reg = poseiden_ai::LlmConfig::from_single(env).integrations;
+                env_reg.append(&mut tuned.integrations);
+                tuned.integrations = env_reg;
+            }
+            if let Ok(json) = serde_json::to_string(&tuned) {
+                let _ = self.store.set_meta(&self.owner, "llm_config", &json).await;
+                self.invalidate_ai();
+            }
+        }
+        self.llm_config_view().await
     }
 
     /// This owner's tagger, built from their registry and cached. Resolution picks
@@ -307,6 +345,9 @@ impl Service {
     /// on an integration keeps its previously stored key (matched by id), so "leave
     /// blank to keep" works per integration.
     pub async fn set_llm_config(&self, mut cfg: poseiden_ai::LlmConfig) -> anyhow::Result<()> {
+        // A hand-edited save is by definition manual - clear the auto flag so autotune
+        // never overwrites the user's choice afterwards.
+        cfg.auto = false;
         let stored = self.stored_llm_config().await;
         for i in &mut cfg.integrations {
             if i.api_key.as_deref().unwrap_or("").is_empty() {
@@ -445,8 +486,11 @@ impl Service {
                     );
                 };
                 let start = Instant::now();
-                let outcome =
-                    tokio::time::timeout(PER_BACKEND, tagger.suggest(&item, &allowed)).await;
+                let outcome = tokio::time::timeout(
+                    PER_BACKEND,
+                    tagger.suggest(&item, &allowed, &[], &Default::default()),
+                )
+                .await;
                 let ms = start.elapsed().as_millis() as u64;
                 match outcome {
                     Err(_) => base("timeout", Some(ms), vec![], None),
@@ -1149,7 +1193,14 @@ impl Service {
         for it in &mut items {
             let rules = rules_for_team(&cfg, &it.team);
             let mut suggestions = poseiden_rules::suggest_tags(it, rules, use_desc);
-            if let Some(extra) = ai.get(&it.id) {
+            // Stored AI suggestions are a CACHE, not truth. Never surface them for an
+            // item that is now underspecified: those are exactly the from-nothing
+            // guesses (`area:ssa` on an empty body) this classification suppresses, so
+            // showing a stale one would contradict the "refine first" signal. The
+            // deterministic keyword/refine suggestions still apply. (The next AI run
+            // prunes the stale rows from the store; see generate_tag_suggestions_with.)
+            let stale_ai = poseiden_rules::is_underspecified(it, rules);
+            if let Some(extra) = ai.get(&it.id).filter(|_| !stale_ai) {
                 let applied: std::collections::HashSet<String> =
                     it.tags.iter().map(|t| t.to_lowercase()).collect();
                 let mut have: std::collections::HashSet<String> =
@@ -1215,17 +1266,44 @@ impl Service {
         let use_desc = self.tag_use_description().await;
         let total = items.len();
 
+        // Concrete tag values actually in use, grouped by team, so wildcard slots
+        // (`area:*`/`source:*`) can be filled from real values already on the
+        // backlog rather than invented fresh. Harvested from the full scope once.
+        let mut observed: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for it in &items {
+            observed
+                .entry(it.team.clone())
+                .or_default()
+                .extend(it.tags.iter().cloned());
+        }
+        let no_tags: Vec<String> = Vec::new();
+
         let mut summary = AiSuggestSummary::default();
         for (i, it) in items.iter().enumerate() {
             let rules = rules_for_team(&cfg, &it.team);
-            let allowed = canonical_tags(rules);
+            // Too little body to tag from: the deterministic suggester flags it "to
+            // refine"; don't let the model confabulate an area from nothing. Also PRUNE
+            // any stale AI suggestions left from a previous run (before this item lost
+            // its body / before the rule existed) so they stop being re-shown.
+            if poseiden_rules::is_underspecified(it, rules) {
+                self.store
+                    .set_ai_suggestions(&self.owner, &it.team, it.id, &[])
+                    .await?;
+                progress(i + 1, total, summary.suggestions);
+                continue;
+            }
+            let allowed = candidate_tags(rules, observed.get(&it.team).unwrap_or(&no_tags));
             if !allowed.is_empty() {
                 summary.considered += 1;
                 let mut input = poseiden_ai::TaggerInput::from(it);
                 if !use_desc {
                     input.description = None; // owner opted out of sending bodies to the tagger
                 }
-                match ai.suggest(&input, &allowed).await {
+                match ai
+                    .suggest(&input, &allowed, &rules.required_tags, &tag_hints(rules))
+                    .await
+                {
                     Ok(sugg) => {
                         let pairs: Vec<(String, String)> = sugg
                             .iter()
@@ -1338,6 +1416,17 @@ impl Service {
     ) -> anyhow::Result<AiSuggestSummary> {
         let items = self.store.list_work_items(&self.owner, team).await?;
         let team_of: HashMap<i64, String> = items.iter().map(|i| (i.id, i.team.clone())).collect();
+        // Same wildcard-slot expansion as the server-side run: gather the concrete
+        // tags in use per team so a browser-computed `area:mobile` re-validates
+        // against the approved set instead of being dropped as a hallucination.
+        let mut observed: HashMap<String, Vec<String>> = HashMap::new();
+        for it in &items {
+            observed
+                .entry(it.team.clone())
+                .or_default()
+                .extend(it.tags.iter().cloned());
+        }
+        let no_tags: Vec<String> = Vec::new();
         let cfg = self
             .config
             .user_config(&self.owner)
@@ -1350,10 +1439,11 @@ impl Service {
             };
             summary.considered += 1;
             let rules = rules_for_team(&cfg, team_name);
-            let canon: HashMap<String, String> = canonical_tags(rules)
-                .into_iter()
-                .map(|t| (t.to_lowercase(), t))
-                .collect();
+            let canon: HashMap<String, String> =
+                candidate_tags(rules, observed.get(team_name).unwrap_or(&no_tags))
+                    .into_iter()
+                    .map(|t| (t.to_lowercase(), t))
+                    .collect();
             let mut seen = std::collections::HashSet::new();
             let mut pairs: Vec<(String, String)> = Vec::new();
             for t in entry.tags {
@@ -1949,32 +2039,73 @@ pub(crate) async fn acquire_cached_token(
     }
 }
 
-/// The approved/canonical tag set to align an item to: required + allowed tags,
-/// de-duplicated case-insensitively, keeping each tag's configured spelling.
-/// Empty means the team has no approved set to align to (AI tagging is skipped).
-fn canonical_tags(rules: &poseiden_core::RuleSet) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+/// The concrete candidate tags handed to the AI for one item's team: real,
+/// already-approved values it may pick from, built from the team's required +
+/// allowed patterns resolved to concrete tags. A literal pattern (`type:bug`) is
+/// itself a candidate. A wildcard pattern (`area:*`) is an open-vocabulary slot
+/// with no literal to offer, so it's expanded into the concrete values already in
+/// use for that prefix - drawn from the team's own configured taxonomy (each
+/// keyword rule's canonical `tag`, each alias's canonical `to`) and every tag
+/// observed across the team's backlog (`observed`).
+///
+/// Everything is filtered back through the approved patterns (so a stray backlog
+/// tag outside the taxonomy is never offered), de-duplicated case-insensitively,
+/// keeping each value's first-seen spelling. This is what lets the AI satisfy a
+/// wildcard-required slot (`area:*`/`source:*`) by choosing a real curated value -
+/// never coining a fresh one, which would fragment the taxonomy the aliases exist
+/// to keep tidy. Empty means the team has nothing concrete to offer (no literals,
+/// and no observed/configured values behind its wildcards), so AI tagging is
+/// skipped for it.
+/// Per-tag keyword hints for the AI prompt, from the team's keyword rules: the
+/// canonical tag (lowercased) -> its configured keywords. Lets the model see what
+/// each candidate actually means (e.g. `area:platform-deployment` keys on "platform
+/// deployment", not any "platform" mention). See [`poseiden_ai::TagHints`].
+fn tag_hints(rules: &poseiden_core::RuleSet) -> poseiden_ai::TagHints {
     rules
+        .tag_keywords
+        .iter()
+        .filter(|k| !k.tag.trim().is_empty() && !k.keywords.is_empty())
+        .map(|k| (k.tag.trim().to_lowercase(), k.keywords.clone()))
+        .collect()
+}
+
+fn candidate_tags(rules: &poseiden_core::RuleSet, observed: &[String]) -> Vec<String> {
+    let patterns: Vec<&str> = rules
         .required_tags
         .iter()
         .chain(rules.allowed_tags.iter())
         .map(|t| t.trim())
-        // Drop wildcard patterns (`type:*`): they're rule matchers, not literal
-        // tags to suggest. A team with only patterns has no concrete set to align
-        // to, so AI suggestion is skipped for it (needs a concrete approved list).
+        .filter(|t| !t.is_empty())
+        .collect();
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+    // Pool of concrete (non-wildcard) values to draw from: the patterns
+    // themselves (literals survive the filter below; wildcards don't), the
+    // canonical tag of every keyword + alias rule, and every observed backlog
+    // tag. Filtered to only those the approved patterns actually admit.
+    let mut seen = std::collections::HashSet::new();
+    patterns
+        .iter()
+        .map(|t| t.to_string())
+        .chain(rules.tag_keywords.iter().map(|k| k.tag.trim().to_string()))
+        .chain(rules.tag_aliases.iter().map(|a| a.to.trim().to_string()))
+        .chain(observed.iter().map(|t| t.trim().to_string()))
         .filter(|t| !t.is_empty() && !t.contains('*'))
+        .filter(|t| patterns.iter().any(|p| poseiden_rules::tag_matches(p, t)))
         .filter(|t| seen.insert(t.to_lowercase()))
-        .map(str::to_string)
         .collect()
 }
 
 #[cfg(test)]
 mod ai_tests {
-    use super::canonical_tags;
-    use poseiden_core::RuleSet;
+    use super::candidate_tags;
+    use poseiden_core::{RuleSet, TagAlias, TagKeywords};
 
     #[test]
-    fn canonical_tags_drops_patterns_and_dedups() {
+    fn candidate_tags_drops_bare_wildcards_and_dedups() {
+        // With no observed/configured values behind them, wildcard patterns
+        // contribute nothing; only the concrete literals survive.
         let rules = RuleSet {
             required_tags: vec!["type:*".into(), "team:platform".into()],
             allowed_tags: vec![
@@ -1985,7 +2116,7 @@ mod ai_tests {
             ],
             ..Default::default()
         };
-        let got = canonical_tags(&rules);
+        let got = candidate_tags(&rules, &[]);
         assert_eq!(
             got,
             vec!["team:platform".to_string(), "type:bug".to_string()]
@@ -1993,21 +2124,21 @@ mod ai_tests {
     }
 
     #[test]
-    fn canonical_tags_empty_when_only_wildcards() {
-        // A team whose whole approved set is patterns has no concrete tags to align
-        // to, so canonical_tags is empty (and AI suggestion is skipped for it).
+    fn candidate_tags_empty_when_only_wildcards_and_nothing_observed() {
+        // A team whose whole approved set is patterns, with no values in use behind
+        // them, has nothing concrete to offer - AI suggestion is skipped for it.
         let rules = RuleSet {
             required_tags: vec!["type:*".into()],
             allowed_tags: vec!["team:*".into(), "  ".into()],
             ..Default::default()
         };
-        assert!(canonical_tags(&rules).is_empty());
+        assert!(candidate_tags(&rules, &[]).is_empty());
         // Nothing configured at all -> also empty.
-        assert!(canonical_tags(&RuleSet::default()).is_empty());
+        assert!(candidate_tags(&RuleSet::default(), &[]).is_empty());
     }
 
     #[test]
-    fn canonical_tags_keeps_configured_spelling_and_order() {
+    fn candidate_tags_keeps_configured_spelling_and_order() {
         // Required tags lead, then allowed; each kept in its first-seen spelling.
         let rules = RuleSet {
             required_tags: vec!["Area:Data".into()],
@@ -2017,8 +2148,58 @@ mod ai_tests {
         // "area:data" from allowed is a case-dupe of the required "Area:Data" and is
         // dropped, keeping the required spelling; "Type:Bug" survives.
         assert_eq!(
-            canonical_tags(&rules),
+            candidate_tags(&rules, &[]),
             vec!["Area:Data".to_string(), "Type:Bug".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidate_tags_expands_wildcards_from_observed_and_config() {
+        // The real-world case: open-vocabulary required slots (`area:*`/`source:*`)
+        // are filled from concrete values in the taxonomy (a keyword's canonical
+        // tag, an alias's canonical target) and values already on the backlog.
+        let rules = RuleSet {
+            required_tags: vec!["area:*".into(), "source:*".into()],
+            allowed_tags: vec!["enhancement".into()],
+            tag_keywords: vec![TagKeywords {
+                tag: "source:internal".into(),
+                keywords: vec!["internal".into()],
+            }],
+            tag_aliases: vec![TagAlias {
+                from: "fe".into(),
+                to: "area:frontend".into(),
+            }],
+            ..Default::default()
+        };
+        // Observed on the backlog: a real area value, a case-dupe of it, and a tag
+        // outside the taxonomy that must NOT be offered.
+        let observed = vec![
+            "area:mobile".to_string(),
+            "AREA:Mobile".to_string(),
+            "random".to_string(),
+        ];
+        let got = candidate_tags(&rules, &observed);
+
+        assert!(
+            got.contains(&"enhancement".to_string()),
+            "literal allowed tag"
+        );
+        assert!(got.contains(&"area:frontend".to_string()), "from alias .to");
+        assert!(
+            got.contains(&"source:internal".to_string()),
+            "from keyword .tag"
+        );
+        assert!(got.contains(&"area:mobile".to_string()), "from the backlog");
+        assert!(
+            !got.iter().any(|t| t.eq_ignore_ascii_case("random")),
+            "a tag outside the approved patterns is never offered"
+        );
+        assert_eq!(
+            got.iter()
+                .filter(|t| t.eq_ignore_ascii_case("area:mobile"))
+                .count(),
+            1,
+            "case-duplicates collapse"
         );
     }
 }
@@ -2632,6 +2813,8 @@ mod tests {
             &self,
             _item: &poseiden_ai::TaggerInput,
             allowed: &[String],
+            _required: &[String],
+            _hints: &poseiden_ai::TagHints,
         ) -> Result<Vec<poseiden_core::TagSuggestion>, poseiden_ai::AiError> {
             Ok(allowed
                 .first()
@@ -2700,7 +2883,8 @@ mod tests {
     async fn generate_tag_suggestions_skips_team_without_concrete_set() {
         let svc = test_service().await;
         let owner = svc.owner.clone();
-        // Only wildcard allowed tags -> canonical_tags empty -> item is skipped.
+        // Only a wildcard allowed tag and nothing in use behind it -> no concrete
+        // candidates -> item is skipped.
         let cfg = UserConfig {
             rules: RuleSet {
                 allowed_tags: vec!["area:*".into()],

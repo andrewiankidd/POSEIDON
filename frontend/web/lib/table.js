@@ -37,8 +37,17 @@ export function matchesFilter(value, query) {
   return pos.length === 0 || pos.some((p) => value.includes(p));
 }
 
+// Funnel glyph for choice-filter columns (theme-aware via currentColor).
+const FUNNEL_SVG =
+  '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">' +
+  '<path fill="currentColor" d="M1.4 2h13.2a.5.5 0 0 1 .38.82L10 9.2v4a.5.5 0 0 1-.72.45l-2-1A.5.5 0 0 1 7 12.2V9.2L1.02 2.82A.5.5 0 0 1 1.4 2Z"/></svg>';
+
 export function dataTable(columns, rows, opts = {}) {
   const filters = columns.map(() => '');
+  // Per-column checkbox filter (opt-in via col.filterChoices). null = no filter
+  // (all values pass); a Set of lower-cased allowed values = show only those.
+  const choiceSel = columns.map(() => null);
+  const choiceSync = []; // fns that refresh each funnel button's active state
   let sortIndex = opts.initialSort?.index ?? null;
   let sortDir = opts.initialSort?.dir ?? 1; // 1 asc, -1 desc
   let page = 0;
@@ -78,12 +87,18 @@ export function dataTable(columns, rows, opts = {}) {
 
     const fth = el('th', {});
     if (col.filter !== false) {
-      fth.appendChild(el('input', {
-        class: 'dt-filter-input', type: 'text',
-        placeholder: col.filterPlaceholder || 'filter', 'aria-label': `Filter ${col.label}`,
-        title: col.filterMatch ? undefined : 'comma = match any (active, resolved); ! = exclude (!closed)',
-        oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; render(); },
-      }));
+      // A column with an enumerable value set (State, Type, …) gets a funnel that
+      // opens a checkbox list of its unique values - no need to know the !exclude
+      // syntax. Everything else keeps the free-text filter input.
+      if (col.filterChoices) fth.appendChild(buildChoiceFilter(i, col));
+      else {
+        fth.appendChild(el('input', {
+          class: 'dt-filter-input', type: 'text',
+          placeholder: col.filterPlaceholder || 'filter', 'aria-label': `Filter ${col.label}`,
+          title: col.filterMatch ? undefined : 'comma = match any (active, resolved); ! = exclude (!closed)',
+          oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; render(); },
+        }));
+      }
     }
     filterRow.appendChild(fth);
   });
@@ -121,6 +136,137 @@ export function dataTable(columns, rows, opts = {}) {
 
   function valueOf(col, row) {
     return col.value ? col.value(row) : '';
+  }
+
+  // The choice value(s) of a row for a column. Multi-value columns (e.g. Tags)
+  // supply `col.choiceValues: (row) => [...]`; single-value columns fall back to the
+  // sort/filter `value`. An empty result collapses to [''] so blank/untagged rows are
+  // still representable + filterable.
+  function choiceValuesOf(col, row) {
+    const raw = col.choiceValues ? col.choiceValues(row) : [valueOf(col, row)];
+    const arr = (Array.isArray(raw) ? raw : [raw]).map((v) => String(v ?? '').trim());
+    return arr.length ? arr : [''];
+  }
+
+  // The distinct values of a choice column, from the CURRENT data (so it tracks
+  // setRows). Keyed by lower-case; blanks collapse to one "(blank)" entry.
+  function uniqueValues(col) {
+    const map = new Map(); // lower -> display
+    for (const row of rows) {
+      for (const raw of choiceValuesOf(col, row)) {
+        const low = raw.toLowerCase();
+        if (!map.has(low)) map.set(low, raw === '' ? '(blank)' : raw);
+      }
+    }
+    return [...map.entries()]
+      .map(([low, display]) => ({ low, display }))
+      .sort((a, b) => a.display.localeCompare(b.display));
+  }
+
+  // A funnel button that toggles a checkbox dropdown of the column's unique values.
+  // The panel is fixed-positioned on <body> so the table-wrap's overflow can't clip
+  // it; it closes on outside click, Escape, or scroll.
+  function buildChoiceFilter(i, col) {
+    const btn = el('button', {
+      type: 'button', class: 'dt-filter-btn', title: `Filter ${col.label}`,
+      'aria-label': `Filter ${col.label}`, html: FUNNEL_SVG,
+    });
+    const holder = el('div', { class: 'dt-choice' }, btn);
+    let panel = null;
+    const close = () => {
+      if (!panel) return;
+      panel.remove(); panel = null;
+      document.removeEventListener('click', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close);
+    };
+    const onDoc = (e) => {
+      if (holder.contains(e.target)) return;         // the funnel itself
+      if (panel && panel.contains(e.target)) return; // clicks inside the dropdown
+      close();
+    };
+    // Close only on PAGE/table scroll (the fixed panel would float away) - NOT when
+    // scrolling the dropdown's own value list.
+    const onScroll = (e) => { if (!panel || !panel.contains(e.target)) close(); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (panel) { close(); return; }
+      panel = buildChoicePanel(i, col);
+      document.body.appendChild(panel);
+      const r = btn.getBoundingClientRect();
+      const width = panel.offsetWidth || 200;
+      panel.style.top = `${Math.round(r.bottom + 4)}px`;
+      panel.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - width - 8)))}px`;
+      panel.querySelector('.dt-choice-search')?.focus();
+      document.addEventListener('click', onDoc, true);
+      document.addEventListener('keydown', onKey, true);
+      window.addEventListener('scroll', onScroll, true);
+      window.addEventListener('resize', close);
+    });
+    const sync = () => btn.classList.toggle('dt-filter-btn-on', choiceSel[i] != null);
+    sync();
+    choiceSync.push(sync);
+    return holder;
+  }
+
+  function buildChoicePanel(i, col) {
+    const values = uniqueValues(col);
+    const allowed = (low) => choiceSel[i] == null || choiceSel[i].has(low);
+    const panel = el('div', { class: 'dt-choice-panel', onclick: (e) => e.stopPropagation() });
+
+    const childCbs = [];
+    const allCb = el('input', { type: 'checkbox', class: 'dt-check' });
+    const refreshAll = () => {
+      const n = values.filter((v) => allowed(v.low)).length;
+      allCb.checked = n === values.length;
+      allCb.indeterminate = n > 0 && n < values.length;
+    };
+    const commit = () => { page = 0; render(); };
+
+    allCb.addEventListener('change', () => {
+      choiceSel[i] = allCb.checked ? null : new Set(); // all vs none
+      childCbs.forEach((cb) => { cb.checked = allCb.checked; });
+      allCb.indeterminate = false;
+      commit();
+    });
+    // A search box for long value lists (many assignees / tags) - filters which
+    // checkboxes are shown; it doesn't change what's selected.
+    const optRows = [];
+    if (values.length > 10) {
+      panel.appendChild(el('input', {
+        class: 'dt-choice-search', type: 'text', placeholder: 'search…', 'aria-label': 'Search values',
+        oninput: (e) => {
+          const q = e.target.value.trim().toLowerCase();
+          for (const o of optRows) o.el.style.display = (!q || o.text.includes(q)) ? '' : 'none';
+        },
+      }));
+    }
+    panel.appendChild(el('label', { class: 'dt-choice-opt dt-choice-all' },
+      [allCb, el('span', {}, 'Select all')]));
+    panel.appendChild(el('div', { class: 'dt-choice-sep' }));
+
+    const list = el('div', { class: 'dt-choice-list' });
+    for (const v of values) {
+      const cb = el('input', { type: 'checkbox', class: 'dt-check' });
+      cb.checked = allowed(v.low);
+      cb.addEventListener('change', () => {
+        const s = choiceSel[i] == null ? new Set(values.map((x) => x.low)) : choiceSel[i];
+        if (cb.checked) s.add(v.low); else s.delete(v.low);
+        // Full set == no filter (null); keeps the funnel un-highlighted when all are on.
+        choiceSel[i] = s.size === values.length ? null : s;
+        refreshAll();
+        commit();
+      });
+      childCbs.push(cb);
+      const label = el('label', { class: 'dt-choice-opt' }, [cb, el('span', {}, v.display)]);
+      optRows.push({ el: label, text: v.display.toLowerCase() });
+      list.appendChild(label);
+    }
+    panel.appendChild(list);
+    refreshAll();
+    return panel;
   }
 
   // ── Cell rendering + inline editing ──
@@ -249,7 +395,9 @@ export function dataTable(columns, rows, opts = {}) {
 
   function resetFilters() {
     filters.fill('');
-    filterRow.querySelectorAll('input').forEach((inp) => { inp.value = ''; });
+    choiceSel.fill(null);
+    filterRow.querySelectorAll('.dt-filter-input').forEach((inp) => { inp.value = ''; });
+    choiceSync.forEach((fn) => fn());
     page = 0;
     render();
   }
@@ -284,7 +432,7 @@ export function dataTable(columns, rows, opts = {}) {
   }
 
   function anyFilterActive() {
-    return filters.some((f) => f) || sortIndex != null;
+    return filters.some((f) => f) || choiceSel.some((s) => s != null) || sortIndex != null;
   }
 
   function compute() {
@@ -300,6 +448,13 @@ export function dataTable(columns, rows, opts = {}) {
           ? col.filterMatch(row, filters[i])
           : matchesFilter(String(valueOf(col, row) ?? '').toLowerCase(), filters[i]);
       }));
+    }
+    // Checkbox (choice) filters: keep a row if ANY of its value(s) for the column is
+    // in that column's allow-set (so a multi-tag item matches if it has a picked tag).
+    const activeChoice = choiceSel.map((s, i) => (s != null ? i : -1)).filter((i) => i >= 0);
+    if (activeChoice.length) {
+      out = out.filter((row) => activeChoice.every((i) =>
+        choiceValuesOf(columns[i], row).some((v) => choiceSel[i].has(v.toLowerCase()))));
     }
     if (sortIndex != null) {
       const col = columns[sortIndex];
@@ -388,6 +543,7 @@ export function dataTable(columns, rows, opts = {}) {
       count.textContent = filtered ? `${total} of ${rows.length}` : `${rows.length}`;
     }
     clearLink.style.display = anyFilterActive() ? '' : 'none';
+    choiceSync.forEach((fn) => fn()); // keep funnel highlight in sync with state
 
     // Pager visibility + state.
     pager.style.display = pageCount > 1 ? '' : 'none';
