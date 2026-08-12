@@ -21,10 +21,40 @@ use poseiden_core::{
     Severity, TagSuggestion, WorkItem,
 };
 
+/// Default underspecified threshold when `refine_tag` is set but no explicit
+/// `refine_min_chars` is given.
+pub const DEFAULT_REFINE_MIN_CHARS: usize = 40;
+
+/// True when the item has too little descriptive body to tag from - its description
+/// (trimmed) is shorter than the configured/default threshold. Only meaningful when
+/// `refine_tag` is configured (else always false). The TITLE is ignored on purpose:
+/// a title is always present; it's the BODY that carries the signal a model (or a
+/// person) needs to assign a real area/source. Callers use this to suggest the
+/// refine tag and to SKIP the AI tagger (so it can't guess an area from nothing).
+pub fn is_underspecified(item: &WorkItem, rules: &RuleSet) -> bool {
+    let has_refine = rules
+        .refine_tag
+        .as_deref()
+        .map(str::trim)
+        .map(|t| !t.is_empty())
+        .unwrap_or(false);
+    if !has_refine {
+        return false;
+    }
+    let min = rules.refine_min_chars.unwrap_or(DEFAULT_REFINE_MIN_CHARS);
+    let len = item
+        .description
+        .as_deref()
+        .map(|d| d.trim().chars().count())
+        .unwrap_or(0);
+    len < min
+}
+
 /// Suggest tags for a work item from the ruleset's `tag_keywords`: for each tag
 /// whose keyword the item matches (case-insensitive) and which the item doesn't
 /// already carry, return the tag with the matched keyword(s) as the reason. Matches
-/// the title always, plus the description when `use_description` (owner opt-in).
+/// the title always, plus the description when `use_description` (owner opt-in). Also
+/// suggests the `refine_tag` for underspecified items (see [`is_underspecified`]).
 /// Advisory only - the caller decides whether to apply. Pure + testable.
 pub fn suggest_tags(item: &WorkItem, rules: &RuleSet, use_description: bool) -> Vec<TagSuggestion> {
     let mut haystack = item.title.to_lowercase();
@@ -73,6 +103,36 @@ pub fn suggest_tags(item: &WorkItem, rules: &RuleSet, use_description: bool) -> 
                     tag: to.to_string(),
                     reasons: vec![format!("replaces \"{matched}\"")],
                     replaces: Some(matched.clone()),
+                });
+            }
+        }
+    }
+
+    // Underspecified items: too little body to tag from. Rather than let the AI
+    // guess an area from nothing, suggest the refine tag so the item is flagged for
+    // refinement first - but only when it still NEEDS a required tag and isn't
+    // already carrying the refine tag. Deterministic; no model needed.
+    if is_underspecified(item, rules) {
+        if let Some(tag) = rules
+            .refine_tag
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            let missing_required = rules.required_tags.iter().any(|p| {
+                let p = p.trim();
+                !p.is_empty() && !item.tags.iter().any(|t| tag_matches(p, t))
+            });
+            if missing_required
+                && !has.contains(&tag.to_lowercase())
+                && suggested.insert(tag.to_lowercase())
+            {
+                out.push(TagSuggestion {
+                    tag: tag.to_string(),
+                    reasons: vec![
+                        "underspecified - too little detail to tag; refine first".to_string()
+                    ],
+                    replaces: None,
                 });
             }
         }
@@ -781,5 +841,64 @@ mod tests {
             w.tags = vec!["area:kubernetes".into()];
         });
         assert!(suggest_tags(&clean, &rules, false).is_empty());
+    }
+
+    // ── Underspecified -> refine ────────────────────────────────────────
+
+    fn refine_rules() -> RuleSet {
+        RuleSet {
+            required_tags: vec!["area:*".into()],
+            refine_tag: Some("to refine".into()),
+            refine_min_chars: Some(40),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_underspecified_only_when_refine_tag_set_and_body_thin() {
+        let empty = item(|w| w.description = None);
+        let thin = item(|w| w.description = Some("scope TBC".into()));
+        let rich = item(|w| w.description = Some("x".repeat(100)));
+        assert!(is_underspecified(&empty, &refine_rules()));
+        assert!(is_underspecified(&thin, &refine_rules()));
+        assert!(!is_underspecified(&rich, &refine_rules()));
+        // Feature off (no refine_tag) -> never underspecified, whatever the body.
+        assert!(!is_underspecified(&empty, &RuleSet::default()));
+    }
+
+    #[test]
+    fn suggest_tags_flags_underspecified_item_to_refine() {
+        // Empty body + a missing required area -> suggest the refine tag.
+        let it = item(|w| {
+            w.title = "Continuity planning epic".into();
+            w.tags = vec!["enhancement".into()];
+            w.description = None;
+        });
+        let s = suggest_tags(&it, &refine_rules(), true);
+        let r = s
+            .iter()
+            .find(|x| x.tag == "to refine")
+            .expect("refine suggestion");
+        assert!(r.reasons[0].contains("underspecified"));
+    }
+
+    #[test]
+    fn suggest_tags_no_refine_when_already_tagged_or_required_satisfied() {
+        // Already carries the refine tag -> don't re-suggest it.
+        let already = item(|w| {
+            w.tags = vec!["to refine".into()];
+            w.description = None;
+        });
+        assert!(suggest_tags(&already, &refine_rules(), true)
+            .iter()
+            .all(|x| x.tag != "to refine"));
+        // Required area already satisfied -> nothing to refine toward.
+        let tagged = item(|w| {
+            w.tags = vec!["area:kubernetes".into()];
+            w.description = None;
+        });
+        assert!(suggest_tags(&tagged, &refine_rules(), true)
+            .iter()
+            .all(|x| x.tag != "to refine"));
     }
 }

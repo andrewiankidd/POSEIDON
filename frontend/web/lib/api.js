@@ -258,6 +258,9 @@ function team() {
 }
 
 export const api = {
+  /** Liveness + build stamp - { status, service, version }. The version lets a
+   *  long-open tab detect a redeploy and offer a reload. */
+  health: () => request('/health', { invokeCmd: 'get_health' }),
   /** Auth state - { signed_in, method, message } - for the sign-in banner. */
   auth: () => request('/auth', { invokeCmd: 'get_auth' }),
   /** Whether an AI tag suggester is configured ({ enabled }). */
@@ -273,6 +276,11 @@ export const api = {
    *  the refreshed view. */
   resetLlmConfig: () =>
     request('/llm-config/reset', { method: 'POST', body: {}, invokeCmd: 'reset_llm_config' }),
+  /** Auto-configure the registry for this platform, sizing each local model to
+   *  capability. `caps` = the BROWSER-detected caps the server can't see. No-ops on a
+   *  hand-edited registry. Returns the refreshed view. */
+  autotuneLlm: (caps) =>
+    request('/llm-config/autotune', { method: 'POST', body: caps, invokeCmd: 'autotune_llm_config', invokeArgs: { caps } }),
   /** Time one test query against every server-runnable configured integration.
    *  Returns { results: [{id,name,kind,status,ms,tags,error}], webgpu: [...] }.
    *  WebGPU entries are timed client-side (they run in the browser). */

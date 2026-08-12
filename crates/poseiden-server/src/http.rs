@@ -125,6 +125,7 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/ai/status", get(ai_status))
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
+        .route("/api/llm-config/autotune", post(llm_config_autotune))
         .route("/api/llm-benchmark", post(llm_benchmark))
         .route(
             "/api/tag-settings",
@@ -167,7 +168,9 @@ fn err500(e: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
 type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
 async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok", "service": "poseiden" }))
+    // `version` lets a long-open browser tab notice a redeploy (it compares this to
+    // the stamp it booted with) and offer a reload, so nobody keeps running stale JS.
+    Json(serde_json::json!({ "status": "ok", "service": "poseiden", "version": build_version() }))
 }
 
 /// Runtime environment for the browser. The frontend runs client-side and can't
@@ -177,11 +180,12 @@ async fn health() -> impl IntoResponse {
 /// Currently exposes `instanceUrl` (from `POSEIDEN_REMOTE_URL`): when set, the
 /// served frontend boots as a remote client of that instance (used by the Helm
 /// `localhost` mode's client pod). Served `no-store` so a stale cache can't pin it.
-async fn env_js() -> impl IntoResponse {
-    // Version/build stamp shown in the sidebar foot. CI passes POSEIDEN_COMMIT (git
-    // sha) + POSEIDEN_VERSION (tag); a local `poseiden.sh` build passes a timestamp
-    // as POSEIDEN_COMMIT. Prefer the commit/build stamp, else the version tag, else
-    // "dev"; a long git sha is shortened for display.
+/// The build/version stamp for this running binary. CI passes POSEIDEN_COMMIT (git
+/// sha) + POSEIDEN_VERSION (tag); a local `poseiden.sh` build passes a timestamp as
+/// POSEIDEN_COMMIT. Prefer the commit/build stamp, else the version tag, else "dev";
+/// a long git sha is shortened. Shared by env.js (sidebar foot) and /api/health (the
+/// frontend polls it to detect a redeploy and nudge a reload of a long-open tab).
+fn build_version() -> String {
     let commit = std::env::var("POSEIDEN_COMMIT").unwrap_or_default();
     let ver = std::env::var("POSEIDEN_VERSION").unwrap_or_default();
     let raw = if !commit.is_empty() && commit != "unknown" {
@@ -191,11 +195,15 @@ async fn env_js() -> impl IntoResponse {
     } else {
         "dev".to_string()
     };
-    let version = if raw.len() > 12 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+    if raw.len() > 12 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
         raw[..12].to_string() // git sha -> short form; timestamps/tags stay whole
     } else {
         raw
-    };
+    }
+}
+
+async fn env_js() -> impl IntoResponse {
+    let version = build_version();
     let env = serde_json::json!({
         "instanceUrl": std::env::var("POSEIDEN_REMOTE_URL").unwrap_or_default(),
         "version": version,
@@ -659,6 +667,17 @@ async fn llm_config_set(svc: Scoped, Json(cfg): Json<poseiden_ai::LlmConfig>) ->
 async fn llm_config_reset(svc: Scoped) -> ApiResult {
     svc.reset_llm_config().await.map_err(err500)?;
     Ok(Json(svc.llm_config_view().await))
+}
+
+/// Auto-configure the registry for the caller's platform, sizing each local model to
+/// capability. The body is the BROWSER-detected caps (WebGPU availability + client
+/// RAM/cores) the server can't see; it's merged over the server's own. No-ops on a
+/// hand-edited registry. Returns the effective registry view.
+async fn llm_config_autotune(
+    svc: Scoped,
+    Json(caps): Json<poseiden_ai::PlatformCaps>,
+) -> ApiResult {
+    Ok(Json(svc.autotune_llm_config(caps).await))
 }
 
 /// Time a fixed test query against every server-runnable configured integration.
