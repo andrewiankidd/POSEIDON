@@ -371,6 +371,26 @@ export const api = {
       invokeCmd: 'link_work_item_pr',
       invokeArgs: { team, workItemId: id, prId, link },
     }),
+  /** The provider-discovered editable fields for a work item (the editor modal).
+   *  Returns { fields: [{reference,label,kind,value,options,read_only,required,help}] }.
+   *  Type-specific on Azure DevOps; title + body on GitHub/GitLab. */
+  workItemFields: (id, team) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields', { query: { team } }),
+  /** Save edited fields - writes each changed field through to the provider and
+   *  returns { item, flags }. `changes` = [{ reference, value }] (markdown for rich
+   *  fields). */
+  updateWorkItemFields: (id, { team, changes }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields', {
+      method: 'PUT',
+      body: { team, changes },
+    }),
+  /** AI-draft (or improve) one field from the item's context. Returns { value }
+   *  (markdown) for the editor to drop in - never auto-saved. */
+  draftWorkItemField: (id, { team, reference, improve }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/draft', {
+      method: 'POST',
+      body: { team, reference, improve: !!improve },
+    }),
   /** Replace the instance-wide default ruleset. `rules` = a full RuleSet. */
   updateRules: (rules) =>
     request('/rules', { method: 'PUT', body: rules, invokeCmd: 'update_rules', invokeArgs: { rules } }),

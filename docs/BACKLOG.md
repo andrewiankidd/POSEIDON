@@ -64,6 +64,14 @@ link chips, via `Service::update_work_item` / `link_work_item_pr`). Remaining:
 - **More providers.** Jira, Linear next (GitHub and GitLab already ship). Each is
   a new `impl Provider`; the rules engine, store, server, and frontend are
   unchanged.
+- **IDP / service-catalog lookup for product tagging.** Linked-repo→tag matching
+  ships as a config-driven map (`repo_tags`), but the repo→service→product graph
+  is really owned by an internal developer portal (e.g. Port). An optional catalog
+  integration would pull that mapping live and resolve `product:*` from the repos an
+  item touches - no hand-maintained map, and the allowed product set could be
+  derived from the catalog rather than hand-listed. The static `repo_tags` map stays
+  as the offline fallback. Deferred: seeding the map from a one-off catalog export
+  covers the near-term need without the integration.
 - **Write-back beyond Azure DevOps.** Inline State/Tags edits and WI↔PR links
   currently write through the Azure DevOps provider only; the GitHub and GitLab
   providers are read-focused. Extending the write path (GitHub issue state /

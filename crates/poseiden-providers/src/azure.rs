@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use poseiden_core::{
-    Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus, TeamConfig, WorkItem, WorkItemUpdate,
+    EditableField, FieldChange, FieldKind, Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus,
+    TeamConfig, WorkItem, WorkItemUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +64,135 @@ const PATH_SEGMENT: &AsciiSet = &CONTROLS
 /// Percent-encode one URL path segment (e.g. an Azure DevOps project name).
 fn enc(segment: &str) -> String {
     utf8_percent_encode(segment, PATH_SEGMENT).to_string()
+}
+
+// ── Field editing: Azure DevOps type introspection + html<->markdown ──
+
+/// Azure DevOps rich-text fields are HTML; the editor works in markdown. Convert
+/// on the way out so the modal only ever sees markdown.
+fn html_to_md(html: &str) -> String {
+    html2md::parse_html(html)
+}
+
+/// …and back on save. Markdown -> HTML for the write-back.
+fn md_to_html(md: &str) -> String {
+    let mut out = String::new();
+    pulldown_cmark::html::push_html(&mut out, pulldown_cmark::Parser::new(md));
+    out
+}
+
+/// Map an Azure DevOps field data `type` onto a UI [`FieldKind`]. `has_options`
+/// promotes a string/integer with an allowed-value list to a `Select`. Returns
+/// `None` for types with nothing meaningful to edit (guid, history, …).
+fn map_field_kind(ftype: &str, has_options: bool) -> Option<FieldKind> {
+    Some(match ftype {
+        "html" => FieldKind::Markdown,
+        "plainText" => FieldKind::PlainText,
+        "string" | "picklistString" => {
+            if has_options {
+                FieldKind::Select
+            } else {
+                FieldKind::Text
+            }
+        }
+        "integer" | "picklistInteger" => {
+            if has_options {
+                FieldKind::Select
+            } else {
+                FieldKind::Integer
+            }
+        }
+        "double" | "picklistDouble" => FieldKind::Float,
+        "dateTime" => FieldKind::DateTime,
+        "boolean" => FieldKind::Boolean,
+        "identity" => FieldKind::Identity,
+        "treePath" => FieldKind::Text, // Area / Iteration path - edited as text in v1
+        _ => return None,
+    })
+}
+
+/// Render an Azure DevOps field value (from the item's field bag) to the string the
+/// editor seeds its control with. HTML fields come back as markdown; an identity is
+/// its display name; everything else is stringified.
+fn field_value_to_string(raw: Option<&serde_json::Value>, kind: FieldKind) -> String {
+    let v = match raw {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    match kind {
+        FieldKind::Markdown => html_to_md(v.as_str().unwrap_or("")),
+        FieldKind::Identity => v
+            .get("displayName")
+            .and_then(|d| d.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| v.as_str().unwrap_or("").to_string()),
+        FieldKind::Boolean => v.as_bool().unwrap_or(false).to_string(),
+        _ => match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            _ => String::new(),
+        },
+    }
+}
+
+/// A JSON scalar (string or number) as a string; `None` for objects/arrays/null.
+/// Used to render a field's allowed-value list into `Select` options.
+fn json_scalar_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Fields that are noise in an editor: internal bookkeeping (ids, revs, counts,
+/// area/iteration tree ids), Kanban board columns (`WEF_…`, `*Board*`/`*Kanban*`),
+/// and fields POSEIDEN already edits with a purpose-built control (State, Tags are
+/// the inline row editors; Description etc. remain). Keeps the modal to fields a
+/// person would actually write.
+fn is_noise_field(reference: &str) -> bool {
+    if reference.starts_with("WEF_") || reference.contains("Kanban") || reference.contains("Board")
+    {
+        return true;
+    }
+    const NOISE: &[&str] = &[
+        "System.Id",
+        "System.Rev",
+        "System.Watermark",
+        "System.AreaId",
+        "System.NodeName",
+        "System.IterationId",
+        "System.CommentCount",
+        "System.AuthorizedDate",
+        "System.AuthorizedAs",
+        "System.PersonId",
+        "System.RelatedLinkCount",
+        "System.ExternalLinkCount",
+        "System.HyperLinkCount",
+        "System.AttachedFileCount",
+        "System.RemoteLinkCount",
+        "System.IsDeleted",
+        "System.TeamProject",
+        "System.Tags", // edited via the row's tag-chip editor
+        // System-maintained audit fields: shown on the item but never user-edited, and
+        // often not flagged read-only by the process, so filter them explicitly.
+        "System.CreatedBy",
+        "System.CreatedDate",
+        "System.ChangedBy",
+        "System.ChangedDate",
+        "Microsoft.VSTS.Common.ActivatedBy",
+        "Microsoft.VSTS.Common.ActivatedDate",
+        "Microsoft.VSTS.Common.ClosedBy",
+        "Microsoft.VSTS.Common.ClosedDate",
+        "Microsoft.VSTS.Common.ResolvedBy",
+        "Microsoft.VSTS.Common.ResolvedDate",
+        "Microsoft.VSTS.Common.StateChangeDate",
+        "Microsoft.VSTS.Common.StackRank",
+    ];
+    NOISE.contains(&reference)
+        || reference.starts_with("System.AreaLevel")
+        || reference.starts_with("System.IterationLevel")
 }
 
 /// Build the default WIQL for a team: non-removed items in the project, most-
@@ -410,6 +540,24 @@ impl Provider for AzureDevOpsProvider {
         Ok(items)
     }
 
+    async fn fetch_origin_area(&self, id: i64) -> Result<Option<String>, ProviderError> {
+        // The FIRST (oldest) revision is where the item was created; `$top=1` returns
+        // just it, so this is one small call per item (and it never changes, so the
+        // caller caches it). `System.AreaPath` on that revision = the creating board.
+        let url = format!(
+            "{}&$top=1",
+            self.org_url(&format!("wit/workItems/{id}/revisions"))
+        );
+        let resp: RevisionsResponse = self.get_json(&url).await?;
+        Ok(resp
+            .value
+            .into_iter()
+            .next()
+            .and_then(|r| r.fields)
+            .and_then(|f| f.area_path)
+            .filter(|s| !s.trim().is_empty()))
+    }
+
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError> {
         // `includeLatestBuilds` returns each definition's most recent build
         // inline, so a pipeline's real last status survives the runs window.
@@ -539,11 +687,174 @@ impl Provider for AzureDevOpsProvider {
         })];
         self.patch_work_item(work_item_id, ops).await
     }
+
+    async fn editable_fields(&self, id: i64) -> Result<Vec<EditableField>, ProviderError> {
+        // 1. The item's current field values (full bag) + its work-item TYPE.
+        let item: serde_json::Value = self
+            .get_json(&self.project_url(&format!("wit/workitems/{id}"), ""))
+            .await?;
+        let empty = serde_json::Map::new();
+        let values = item
+            .get("fields")
+            .and_then(|f| f.as_object())
+            .unwrap_or(&empty);
+        let wit = values
+            .get("System.WorkItemType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if wit.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 2. The TYPE's fields (which fields are on this type + required/help/options).
+        let type_fields: AdoTypeFieldsResponse = self
+            .get_json(&self.project_url(
+                &format!("wit/workitemtypes/{}/fields", enc(&wit)),
+                "$expand=all",
+            ))
+            .await?;
+        // 3. The org FIELD CATALOG (each field's data type + readOnly). One call; the
+        //    type-fields endpoint doesn't carry the data type, so we cross-reference.
+        let catalog: AdoFieldCatalogResponse = self.get_json(&self.org_url("wit/fields")).await?;
+        let defs: std::collections::HashMap<String, AdoFieldDef> = catalog
+            .value
+            .into_iter()
+            .map(|d| (d.reference_name.clone(), d))
+            .collect();
+
+        let mut out: Vec<EditableField> = Vec::new();
+        for tf in type_fields.value {
+            if is_noise_field(&tf.reference_name) {
+                continue;
+            }
+            let def = defs.get(&tf.reference_name);
+            let ftype = def.map(|d| d.field_type.as_str()).unwrap_or("");
+            if def.map(|d| d.read_only).unwrap_or(false) {
+                continue; // computed / process-locked - not editable
+            }
+            // Identity fields report `type: string`; the `isIdentity` flag is the only
+            // signal. Map them to Identity (so the value is read as a display name) -
+            // otherwise the object value is lost and the field looks blank.
+            let kind = if def.map(|d| d.is_identity).unwrap_or(false) {
+                FieldKind::Identity
+            } else {
+                match map_field_kind(ftype, !tf.allowed_values.is_empty()) {
+                    Some(k) => k,
+                    None => continue, // guid, history, … - nothing to edit
+                }
+            };
+            let label = if tf.name.trim().is_empty() {
+                def.map(|d| d.name.clone())
+                    .unwrap_or_else(|| tf.reference_name.clone())
+            } else {
+                tf.name.clone()
+            };
+            out.push(EditableField {
+                reference: tf.reference_name.clone(),
+                label,
+                kind,
+                value: field_value_to_string(values.get(&tf.reference_name), kind),
+                options: tf
+                    .allowed_values
+                    .iter()
+                    .filter_map(json_scalar_string)
+                    .collect(),
+                // Identity/tree-path fields are shown for context but not edited in v1
+                // (writing them needs a resolvable identity / existing node path).
+                read_only: matches!(kind, FieldKind::Identity),
+                required: tf.always_required,
+                help: tf.help_text.filter(|s| !s.trim().is_empty()),
+            });
+        }
+        // Rich narrative fields first (what people edit + what AI drafts), then the rest
+        // alphabetically - so Description / Repro Steps / Acceptance Criteria lead.
+        out.sort_by_key(|f| (!f.kind.is_draftable(), f.label.to_lowercase()));
+        Ok(out)
+    }
+
+    async fn update_fields(
+        &self,
+        id: i64,
+        changes: &[FieldChange],
+    ) -> Result<WorkItem, ProviderError> {
+        if changes.is_empty() {
+            return Err(ProviderError::Config("no fields to update".into()));
+        }
+        // Rich fields are html on the wire; the editor sends markdown. Fetch the field
+        // catalog to know which references are html, then convert those md -> html.
+        let catalog: AdoFieldCatalogResponse = self.get_json(&self.org_url("wit/fields")).await?;
+        let html_fields: std::collections::HashSet<String> = catalog
+            .value
+            .into_iter()
+            .filter(|d| d.field_type.eq_ignore_ascii_case("html"))
+            .map(|d| d.reference_name)
+            .collect();
+        let ops: Vec<serde_json::Value> = changes
+            .iter()
+            .map(|c| {
+                let value = if html_fields.contains(&c.reference) {
+                    md_to_html(&c.value)
+                } else {
+                    c.value.clone()
+                };
+                serde_json::json!({ "op": "add", "path": format!("/fields/{}", c.reference), "value": value })
+            })
+            .collect();
+        self.patch_work_item(id, ops).await
+    }
 }
 
 // ─────────────────────────── Azure DevOps DTOs ───────────────────────────
 // Only the fields POSEIDEN consumes. `Option` everywhere the API might omit a
 // value so a sparse payload degrades gracefully rather than failing the poll.
+
+/// `wit/workitemtypes/{type}/fields?$expand=all` - the fields ON a work-item type,
+/// with per-type metadata (required?, help, allowed values). Does NOT carry the
+/// field's data type, so it's cross-referenced with the org field catalog below.
+#[derive(Debug, Deserialize)]
+struct AdoTypeFieldsResponse {
+    #[serde(default)]
+    value: Vec<AdoTypeField>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoTypeField {
+    #[serde(rename = "referenceName")]
+    reference_name: String,
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "alwaysRequired", default)]
+    always_required: bool,
+    #[serde(rename = "helpText", default)]
+    help_text: Option<String>,
+    #[serde(rename = "allowedValues", default)]
+    allowed_values: Vec<serde_json::Value>,
+}
+
+/// `wit/fields` - the org-wide field catalog. The authoritative source for each
+/// field's data `type` (html / string / integer / …) and whether it's read-only.
+#[derive(Debug, Deserialize)]
+struct AdoFieldCatalogResponse {
+    #[serde(default)]
+    value: Vec<AdoFieldDef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoFieldDef {
+    #[serde(rename = "referenceName")]
+    reference_name: String,
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "type", default)]
+    field_type: String,
+    #[serde(rename = "readOnly", default)]
+    read_only: bool,
+    /// Identity fields report `type: "string"` but carry `isIdentity: true` - the only
+    /// way to tell "Assigned To" from a plain string, and to know the value is an
+    /// identity object (displayName/uniqueName) rather than a bare string.
+    #[serde(rename = "isIdentity", default)]
+    is_identity: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct WiqlResponse {
@@ -603,6 +914,49 @@ fn pr_id_from_relation(rel: &AdoRelation) -> Option<i64> {
         .and_then(|s| s.parse::<i64>().ok())
 }
 
+/// The parent work-item id from a hierarchy relation (`Hierarchy-Reverse` points at
+/// the parent), or `None` for any other relation. The url ends `/workItems/{id}`.
+fn parent_id_from_relation(rel: &AdoRelation) -> Option<i64> {
+    if !rel
+        .rel
+        .eq_ignore_ascii_case("System.LinkTypes.Hierarchy-Reverse")
+    {
+        return None;
+    }
+    rel.url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Repo names referenced in text via Azure DevOps `/_git/{repo}/...` URLs (in a
+/// pasted link OR an `<a href>` in the raw body). De-duplicated case-insensitively,
+/// `%20`-decoded. A high-precision product/area signal.
+fn extract_repos(text: &str) -> Vec<String> {
+    const MARK: &str = "/_git/";
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(MARK) {
+        let after = &rest[pos + MARK.len()..];
+        let seg: String = after
+            .chars()
+            .take_while(|c| {
+                !matches!(
+                    c,
+                    '/' | '?' | '&' | '#' | ')' | '"' | '\'' | '<' | ' ' | '\n' | '\r' | '\t'
+                )
+            })
+            .collect();
+        let repo = seg.replace("%20", " ").trim().to_string();
+        if !repo.is_empty() && !out.iter().any(|r| r.eq_ignore_ascii_case(&repo)) {
+            out.push(repo);
+        }
+        rest = after;
+    }
+    out
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct AdoFields {
     #[serde(rename = "System.Title")]
@@ -638,6 +992,22 @@ struct AdoFields {
 struct AdoIdentity {
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+}
+
+/// Minimal shape of the work-item revisions response - just the area path of each
+/// revision (we read the first one, the creation revision).
+#[derive(Debug, Deserialize)]
+struct RevisionsResponse {
+    value: Vec<RevisionItem>,
+}
+#[derive(Debug, Deserialize)]
+struct RevisionItem {
+    fields: Option<RevisionFields>,
+}
+#[derive(Debug, Deserialize)]
+struct RevisionFields {
+    #[serde(rename = "System.AreaPath")]
+    area_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -746,6 +1116,21 @@ fn normalise_work_item(
         .iter()
         .filter_map(pr_id_from_relation)
         .collect();
+    let parent_id = raw.relations.iter().find_map(parent_id_from_relation);
+    // Repo names from git links: scan the RAW body (so href="..." URLs survive, not
+    // just visible link text) plus any Hyperlink relations.
+    let mut repo_src = format!(
+        "{} {}",
+        f.description.as_deref().unwrap_or_default(),
+        f.repro_steps.as_deref().unwrap_or_default()
+    );
+    for r in &raw.relations {
+        if r.rel.eq_ignore_ascii_case("Hyperlink") {
+            repo_src.push(' ');
+            repo_src.push_str(&r.url);
+        }
+    }
+    let linked_repos = extract_repos(&repo_src);
 
     WorkItem {
         id: raw.id,
@@ -775,6 +1160,8 @@ fn normalise_work_item(
             }),
         url,
         linked_pr_ids,
+        parent_id,
+        linked_repos,
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }
@@ -992,6 +1379,66 @@ fn normalise_pull_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_kind_mapping_covers_the_common_ado_types() {
+        assert_eq!(map_field_kind("html", false), Some(FieldKind::Markdown));
+        assert_eq!(
+            map_field_kind("plainText", false),
+            Some(FieldKind::PlainText)
+        );
+        assert_eq!(map_field_kind("string", false), Some(FieldKind::Text));
+        // A string WITH an allowed-value list becomes a Select (e.g. System.State).
+        assert_eq!(map_field_kind("string", true), Some(FieldKind::Select));
+        assert_eq!(map_field_kind("integer", false), Some(FieldKind::Integer));
+        assert_eq!(map_field_kind("double", false), Some(FieldKind::Float));
+        assert_eq!(map_field_kind("dateTime", false), Some(FieldKind::DateTime));
+        assert_eq!(map_field_kind("boolean", false), Some(FieldKind::Boolean));
+        assert_eq!(map_field_kind("identity", false), Some(FieldKind::Identity));
+        assert_eq!(map_field_kind("treePath", false), Some(FieldKind::Text));
+        // Types with nothing to edit are dropped.
+        assert_eq!(map_field_kind("history", false), None);
+        assert_eq!(map_field_kind("guid", false), None);
+    }
+
+    #[test]
+    fn noise_fields_are_filtered_but_real_ones_kept() {
+        assert!(is_noise_field("System.Id"));
+        assert!(is_noise_field("System.Tags")); // edited via the tag-chip control
+        assert!(is_noise_field("System.AreaLevel1"));
+        assert!(is_noise_field("System.ChangedBy")); // system audit field
+        assert!(is_noise_field("Microsoft.VSTS.Common.StackRank"));
+        assert!(is_noise_field("WEF_ABC123_Kanban.Column"));
+        assert!(!is_noise_field("System.Description"));
+        assert!(!is_noise_field("Microsoft.VSTS.TCM.ReproSteps"));
+        assert!(!is_noise_field("System.Title"));
+    }
+
+    #[test]
+    fn html_field_value_comes_back_as_markdown() {
+        let v = serde_json::json!("<div>Retry <b>&amp; backoff</b></div>");
+        let md = field_value_to_string(Some(&v), FieldKind::Markdown);
+        assert!(md.contains("Retry"));
+        assert!(md.contains("backoff"));
+        assert!(!md.contains("<div>")); // html stripped to markdown
+    }
+
+    #[test]
+    fn identity_field_value_is_the_display_name() {
+        let v = serde_json::json!({ "displayName": "Ada Lovelace", "uniqueName": "ada@x.io" });
+        assert_eq!(
+            field_value_to_string(Some(&v), FieldKind::Identity),
+            "Ada Lovelace"
+        );
+    }
+
+    #[test]
+    fn markdown_round_trips_back_to_html_on_save() {
+        // The save path converts the editor's markdown to html for the ADO write.
+        let html = md_to_html("**bold** and a list:\n\n- one\n- two");
+        assert!(html.contains("<strong>bold</strong>"));
+        assert!(html.contains("<li>one</li>"));
+    }
 
     #[test]
     fn split_tags_handles_joined_string_and_whitespace() {

@@ -21,6 +21,33 @@ use poseiden_core::{
     Severity, TagSuggestion, WorkItem,
 };
 
+/// Whether `needle` occurs in `haystack` as a WHOLE token, not an arbitrary
+/// substring - i.e. the characters immediately before and after the match are not
+/// ASCII alphanumeric. This stops short keywords from firing on unrelated words
+/// (e.g. `ado` in "adopted", `imm` in "immediate", `cas` in "cascade"). Both are
+/// assumed already lower-cased. Multi-word keywords ("azure devops") are matched as
+/// a whole, boundary-checked at the outer edges. Byte-based boundary checks (word
+/// chars are ASCII) avoid UTF-8 slicing panics on non-ASCII bodies.
+pub fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let nl = needle.len();
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let i = start + pos;
+        let before_ok = i == 0 || !hb[i - 1].is_ascii_alphanumeric();
+        let after = i + nl;
+        let after_ok = after >= hb.len() || !hb[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = i + 1;
+    }
+    false
+}
+
 /// Default underspecified threshold when `refine_tag` is set but no explicit
 /// `refine_min_chars` is given.
 pub const DEFAULT_REFINE_MIN_CHARS: usize = 40;
@@ -41,13 +68,48 @@ pub fn is_underspecified(item: &WorkItem, rules: &RuleSet) -> bool {
     if !has_refine {
         return false;
     }
-    let min = rules.refine_min_chars.unwrap_or(DEFAULT_REFINE_MIN_CHARS);
-    let len = item
+    // Measure the MEANINGFUL body: a description that is mostly a hyperlink to an
+    // external doc (a SharePoint/Loop URL) isn't real detail, so links are stripped
+    // before counting - otherwise a one-line "see [link]" stub reads as substantial.
+    let body = item
         .description
         .as_deref()
-        .map(|d| d.trim().chars().count())
-        .unwrap_or(0);
-    len < min
+        .map(meaningful_body)
+        .unwrap_or_default();
+    // Placeholder stubs: real words, no actionable content ("scope to be clarified",
+    // "TBD"). Length can't catch these, so match configured phrases (case-insensitive
+    // substring). Empty list = off; deterministic, no model needed.
+    let low = body.to_lowercase();
+    if rules
+        .refine_phrases
+        .iter()
+        .map(|p| p.trim())
+        .any(|p| !p.is_empty() && low.contains(&p.to_lowercase()))
+    {
+        return true;
+    }
+    let min = rules.refine_min_chars.unwrap_or(DEFAULT_REFINE_MIN_CHARS);
+    body.chars().count() < min
+}
+
+/// The descriptive body with hyperlinks removed, so a body that is mostly a link to an
+/// external doc doesn't read as substantial. Keeps ordinary words; drops URL tokens
+/// (anything with `://` or a leading `www.`) and surrounding markdown punctuation;
+/// collapses whitespace. Used by [`is_underspecified`] so the refine gate measures real
+/// prose, not the length of a pasted SharePoint URL.
+fn meaningful_body(desc: &str) -> String {
+    let mut out = String::with_capacity(desc.len());
+    for tok in desc.split_whitespace() {
+        let t = tok.trim_matches(|c: char| "()[]<>\"'`*|".contains(c));
+        if t.is_empty() || t.contains("://") || t.starts_with("www.") {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(t);
+    }
+    out.trim().to_string()
 }
 
 /// Suggest tags for a work item from the ruleset's `tag_keywords`: for each tag
@@ -75,7 +137,7 @@ pub fn suggest_tags(item: &WorkItem, rules: &RuleSet, use_description: bool) -> 
                 .keywords
                 .iter()
                 .map(|k| k.trim())
-                .filter(|k| !k.is_empty() && haystack.contains(&k.to_lowercase()))
+                .filter(|k| !k.is_empty() && contains_word(&haystack, &k.to_lowercase()))
                 .map(str::to_string)
                 .collect();
             (!reasons.is_empty()).then(|| TagSuggestion {
@@ -112,7 +174,17 @@ pub fn suggest_tags(item: &WorkItem, rules: &RuleSet, use_description: bool) -> 
     // guess an area from nothing, suggest the refine tag so the item is flagged for
     // refinement first - but only when it still NEEDS a required tag and isn't
     // already carrying the refine tag. Deterministic; no model needed.
-    if is_underspecified(item, rules) {
+    //
+    // NEVER on a DONE item (resolved/closed/ignored state): a "needs refinement" tag on
+    // finished work is contradictory - the stale-when-resolved rule would immediately
+    // flag it for removal - so refining a terminal item is nonsensical (else the tool
+    // contradicts itself: it suggests a tag it would then flag).
+    let terminal_state = is_ignored(item, rules)
+        || rules
+            .resolved_states
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&item.state));
+    if !terminal_state && is_underspecified(item, rules) {
         if let Some(tag) = rules
             .refine_tag
             .as_deref()
@@ -136,6 +208,26 @@ pub fn suggest_tags(item: &WorkItem, rules: &RuleSet, use_description: bool) -> 
                 });
             }
         }
+    }
+
+    // Final guard: on a DONE item (resolved/closed/ignored state) never suggest a tag
+    // that the stale-when-resolved rule would immediately flag as contradictory - "to
+    // refine", "to do", "in progress", "blocked", … on finished work. This catches EVERY
+    // source (keyword match, an alias rewrite like legacy "Refine" -> "to refine", or the
+    // refine nudge above): suggesting "needs more work" on completed work is always wrong.
+    let terminal = is_ignored(item, rules)
+        || rules
+            .resolved_states
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&item.state));
+    if terminal && !rules.stale_when_resolved_tags.is_empty() {
+        out.retain(|s| {
+            !rules
+                .stale_when_resolved_tags
+                .iter()
+                .map(|p| p.trim())
+                .any(|p| !p.is_empty() && tag_matches(p, &s.tag))
+        });
     }
     out
 }
@@ -393,6 +485,8 @@ mod tests {
             url: "https://example/1".to_string(),
             description: None,
             linked_pr_ids: Vec::new(),
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         };
@@ -843,6 +937,17 @@ mod tests {
         assert!(suggest_tags(&clean, &rules, false).is_empty());
     }
 
+    #[test]
+    fn contains_word_matches_whole_tokens_not_substrings() {
+        assert!(contains_word("build the ado pipeline now", "ado"));
+        assert!(!contains_word("versions are adopted here", "ado")); // no substring hit
+        assert!(!contains_word("fix this immediately please", "imm")); // "immediately" != imm
+        assert!(contains_word("deploy the imm service", "imm"));
+        assert!(!contains_word("run the cascade job", "cas"));
+        assert!(contains_word("azure devops build failed", "azure devops")); // multi-word
+        assert!(contains_word("cluster runs k8s fine", "k8s"));
+    }
+
     // ── Underspecified -> refine ────────────────────────────────────────
 
     fn refine_rules() -> RuleSet {
@@ -867,6 +972,36 @@ mod tests {
     }
 
     #[test]
+    fn underspecified_ignores_pasted_urls_when_measuring_body() {
+        // A "see the doc" stub whose only substance is a long URL is NOT substantial:
+        // stripping the link leaves a handful of words, well under the threshold.
+        let link_stub = item(|w| {
+            w.description =
+                Some("See [Project overview](https://example.com/docs/:fl:/r/verylongtoken)".into())
+        });
+        assert!(is_underspecified(&link_stub, &refine_rules()));
+    }
+
+    #[test]
+    fn underspecified_matches_placeholder_phrases_regardless_of_length() {
+        let mut rules = refine_rules();
+        rules.refine_phrases = vec!["to be clarified".into()];
+        // Real sentence, over the char threshold, but semantically a placeholder - the
+        // body literally says the scope is unresolved. The URL is stripped; the phrase
+        // still matches (the "empty stub padded by a pasted link" case).
+        let placeholder = item(|w| {
+            w.description = Some(
+                "Scope and project parameters are to be clarified: \
+                 [Project overview](https://example.com/x)"
+                    .into(),
+            )
+        });
+        assert!(is_underspecified(&placeholder, &rules));
+        // Without the phrase configured, the same body is long enough to pass.
+        assert!(!is_underspecified(&placeholder, &refine_rules()));
+    }
+
+    #[test]
     fn suggest_tags_flags_underspecified_item_to_refine() {
         // Empty body + a missing required area -> suggest the refine tag.
         let it = item(|w| {
@@ -880,6 +1015,71 @@ mod tests {
             .find(|x| x.tag == "to refine")
             .expect("refine suggestion");
         assert!(r.reasons[0].contains("underspecified"));
+    }
+
+    #[test]
+    fn refine_is_not_suggested_on_done_items() {
+        // A Resolved/Closed item is DONE - nagging it to "refine" would then trip the
+        // stale-when-resolved rule (POSEIDEN contradicting itself). So no refine there,
+        // even though the body is thin and a required tag is missing.
+        let mut rules = refine_rules();
+        rules.resolved_states = vec!["Resolved".into(), "Closed".into()];
+        let done = item(|w| {
+            w.state = "Resolved".into();
+            w.description = None;
+            w.tags = vec!["enhancement".into()];
+        });
+        assert!(is_underspecified(&done, &rules)); // still thin...
+        assert!(
+            !suggest_tags(&done, &rules, true)
+                .iter()
+                .any(|x| x.tag == "to refine"),
+            "a Resolved item must not be told to refine"
+        );
+        // The same thin item while still Active DOES get the refine nudge.
+        let active = item(|w| {
+            w.state = "Active".into();
+            w.description = None;
+            w.tags = vec!["enhancement".into()];
+        });
+        assert!(suggest_tags(&active, &rules, true)
+            .iter()
+            .any(|x| x.tag == "to refine"));
+    }
+
+    #[test]
+    fn stale_when_resolved_tags_never_suggested_on_done_items_any_source() {
+        use poseiden_core::TagAlias;
+        // Legacy "Refine" tag on a Closed item: the alias would rewrite it to canonical
+        // "to refine", but that's a stale-when-resolved marker - the same contradiction
+        // via the alias path (not the refine nudge). Dropped by the final done-item guard.
+        let rules = RuleSet {
+            resolved_states: vec!["Closed".into()],
+            stale_when_resolved_tags: vec!["to refine".into()],
+            tag_aliases: vec![TagAlias {
+                from: "refine".into(),
+                to: "to refine".into(),
+            }],
+            ..Default::default()
+        };
+        let done = item(|w| {
+            w.state = "Closed".into();
+            w.tags = vec!["Refine".into()];
+        });
+        assert!(
+            suggest_tags(&done, &rules, false)
+                .iter()
+                .all(|x| x.tag != "to refine"),
+            "a stale-when-resolved tag must not be suggested on a done item"
+        );
+        // While Active, canonicalising the legacy tag IS offered.
+        let active = item(|w| {
+            w.state = "Active".into();
+            w.tags = vec!["Refine".into()];
+        });
+        assert!(suggest_tags(&active, &rules, false)
+            .iter()
+            .any(|x| x.tag == "to refine"));
     }
 
     #[test]

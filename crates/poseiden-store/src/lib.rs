@@ -193,6 +193,65 @@ impl Store {
         Ok(rows.into_iter().map(WorkItemRow::into_domain).collect())
     }
 
+    /// Work-item ids (in `team` scope) whose origin area hasn't been fetched yet,
+    /// capped at `limit` - the backfill worklist for the "moved-in" source signal.
+    pub async fn work_item_ids_missing_origin(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<i64>> {
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT w.id FROM work_items w
+             LEFT JOIN work_item_origin o ON o.owner = w.owner AND o.work_item_id = w.id
+             WHERE w.owner = ? AND w.team = COALESCE(?, w.team) AND o.work_item_id IS NULL
+             LIMIT ?",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Record fetched origin areas (id -> first-revision area path). Immutable, so
+    /// this only ever inserts; a re-fetch of the same id is a harmless no-op.
+    pub async fn set_origins(&self, owner: &str, origins: &[(i64, String)]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for (id, area) in origins {
+            sqlx::query(
+                "INSERT INTO work_item_origin (owner, work_item_id, origin_area) VALUES (?,?,?)
+                 ON CONFLICT(owner, work_item_id) DO UPDATE SET origin_area = excluded.origin_area",
+            )
+            .bind(owner)
+            .bind(id)
+            .bind(area)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Origin area per work-item id for the given scope (id -> origin area path).
+    pub async fn origins(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT o.work_item_id, o.origin_area FROM work_item_origin o
+             JOIN work_items w ON w.owner = o.owner AND w.id = o.work_item_id
+             WHERE o.owner = ? AND w.team = COALESCE(?, w.team)",
+        )
+        .bind(owner)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Replace the AI-suggested tags for one work item. `suggestions` is
     /// `(tag, reason)` pairs; an empty slice clears the item's suggestions.
     pub async fn set_ai_suggestions(
@@ -606,12 +665,13 @@ async fn insert_work_items(
     for wi in items {
         let tags = serde_json::to_string(&wi.tags).unwrap_or_else(|_| "[]".to_string());
         let linked = serde_json::to_string(&wi.linked_pr_ids).unwrap_or_else(|_| "[]".to_string());
+        let repos = serde_json::to_string(&wi.linked_repos).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             "INSERT INTO work_items
                 (owner, provider, team, id, title, work_item_type, state, tags,
                  assigned_to, created_at, changed_at, closed_at, iteration_path,
-                 story_points, url, linked_pr_ids, description)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 story_points, url, linked_pr_ids, description, parent_id, linked_repos)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(owner, provider, team, id) DO UPDATE SET
                 title=excluded.title, work_item_type=excluded.work_item_type,
                 state=excluded.state, tags=excluded.tags,
@@ -619,7 +679,8 @@ async fn insert_work_items(
                 changed_at=excluded.changed_at, closed_at=excluded.closed_at,
                 iteration_path=excluded.iteration_path,
                 story_points=excluded.story_points, url=excluded.url,
-                linked_pr_ids=excluded.linked_pr_ids, description=excluded.description",
+                linked_pr_ids=excluded.linked_pr_ids, description=excluded.description,
+                parent_id=excluded.parent_id, linked_repos=excluded.linked_repos",
         )
         .bind(owner)
         .bind(&wi.provider)
@@ -638,6 +699,8 @@ async fn insert_work_items(
         .bind(&wi.url)
         .bind(linked)
         .bind(&wi.description)
+        .bind(wi.parent_id)
+        .bind(repos)
         .execute(&mut **tx)
         .await?;
     }
@@ -799,6 +862,8 @@ struct WorkItemRow {
     url: String,
     linked_pr_ids: String,
     description: Option<String>,
+    parent_id: Option<i64>,
+    linked_repos: Option<String>,
 }
 
 impl WorkItemRow {
@@ -819,6 +884,12 @@ impl WorkItemRow {
             story_points: self.story_points,
             url: self.url,
             linked_pr_ids: serde_json::from_str(&self.linked_pr_ids).unwrap_or_default(),
+            parent_id: self.parent_id,
+            linked_repos: self
+                .linked_repos
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
             description: self.description,
@@ -951,6 +1022,8 @@ mod tests {
             url: format!("https://example/{id}"),
             description: None,
             linked_pr_ids: Vec::new(),
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }

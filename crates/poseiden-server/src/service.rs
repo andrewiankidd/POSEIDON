@@ -26,6 +26,9 @@ use crate::config_store::ConfigStore;
 
 /// How far back pipeline health looks when folding run history into a status.
 const HEALTH_WINDOW_DAYS: i64 = 90;
+/// Max work-item origins fetched per poll (the "moved in" backfill). Caps the
+/// one-time backfill's API cost; it spreads across polls since origins are immutable.
+const ORIGIN_BACKFILL_PER_POLL: i64 = 250;
 /// Meta key holding the UI's currently-selected team, so the active-team poll
 /// knows what to fetch when `poll_all_teams` is off.
 const ACTIVE_TEAM_KEY: &str = "active_team";
@@ -57,6 +60,17 @@ pub struct PollOutcome {
 }
 
 /// What a config import changed. Counts are rows written: all of them on a
+/// The result of an AI field-draft request. Either the SERVER produced the text (an
+/// online provider ran it), or - when the only configured model is browser-run
+/// (WebGPU) - the built prompt is handed back for the BROWSER to run through the same
+/// model the tagger uses. This is what lets drafting reuse the tagger's AI without a
+/// separate "online model" requirement.
+#[derive(Debug, Clone)]
+pub enum DraftOutcome {
+    Value(String),
+    Prompt { system: String, user: String },
+}
+
 /// `replace`, only the newly-added ones on a merge.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportSummary {
@@ -488,7 +502,7 @@ impl Service {
                 let start = Instant::now();
                 let outcome = tokio::time::timeout(
                     PER_BACKEND,
-                    tagger.suggest(&item, &allowed, &[], &Default::default()),
+                    tagger.suggest(&item, &allowed, &[], &Default::default(), ""),
                 )
                 .await;
                 let ms = start.elapsed().as_millis() as u64;
@@ -817,6 +831,11 @@ impl Service {
         let mut outcome = PollOutcome::default();
         let since = Utc::now() - chrono::Duration::days(HEALTH_WINDOW_DAYS);
         let teams = self.teams_to_poll().await;
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
         tracing::debug!(teams = teams.len(), "poll cycle starting");
 
         for team in &teams {
@@ -837,6 +856,27 @@ impl Service {
                     outcome.pipelines += pl;
                     outcome.runs += runs;
                     outcome.pull_requests += prs;
+                    // Backfill work-item origins for the "moved in from another board"
+                    // source signal - only when this team uses it, capped per poll so
+                    // the one-time backfill spreads across cycles (origins never change).
+                    let rules = rules_for_team(&cfg, &team.name);
+                    if rules
+                        .moved_in_source
+                        .as_deref()
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                    {
+                        let n = self
+                            .backfill_origins(
+                                &team.name,
+                                provider.as_ref(),
+                                ORIGIN_BACKFILL_PER_POLL,
+                            )
+                            .await;
+                        if n > 0 {
+                            info!(team = %team.name, fetched = n, "backfilled work-item origins");
+                        }
+                    }
                 }
                 Err(e) => {
                     let msg = format!("team \"{}\": {e}", team.name);
@@ -865,6 +905,37 @@ impl Service {
             "poll complete"
         );
         outcome
+    }
+
+    /// Fetch + store the origin area for up to `limit` items in `team` that don't
+    /// have one yet (the "moved in" backfill). Records an empty string when the
+    /// provider can't tell, so an item is never re-fetched. Returns how many it wrote.
+    async fn backfill_origins(
+        &self,
+        team: &str,
+        provider: &dyn poseiden_providers::Provider,
+        limit: i64,
+    ) -> usize {
+        let ids = self
+            .store
+            .work_item_ids_missing_origin(&self.owner, Some(team), limit)
+            .await
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return 0;
+        }
+        let mut got: Vec<(i64, String)> = Vec::with_capacity(ids.len());
+        for id in ids {
+            match provider.fetch_origin_area(id).await {
+                Ok(area) => got.push((id, area.unwrap_or_default())),
+                Err(e) => tracing::debug!(id, "origin fetch failed: {e}"),
+            }
+        }
+        let n = got.len();
+        if let Err(e) = self.store.set_origins(&self.owner, &got).await {
+            warn!("store origins failed: {e}");
+        }
+        n
     }
 
     /// Poll every tenant once - each owner that has a config row (plus `default`
@@ -1190,9 +1261,102 @@ impl Service {
             .ai_suggestions(&self.owner, team)
             .await
             .unwrap_or_default();
+        // For the "moved in from another board" source signal: each item's origin
+        // area (where it was created) + each team's own area path, so we can tell a
+        // moved-in item from a natively-created one.
+        let origins = self
+            .store
+            .origins(&self.owner, team)
+            .await
+            .unwrap_or_default();
+        let area_of: std::collections::HashMap<String, String> = cfg
+            .teams
+            .iter()
+            .filter_map(|t| t.area_path.clone().map(|a| (t.name.clone(), a)))
+            .collect();
+        // For parent-tag inheritance: a snapshot of every item's applied tags keyed
+        // by id, taken before the mutation loop so a child can read its parent's
+        // (applied, not suggested) product:/area: tags without a borrow conflict.
+        let tags_by_id: std::collections::HashMap<i64, Vec<String>> =
+            items.iter().map(|it| (it.id, it.tags.clone())).collect();
         for it in &mut items {
             let rules = rules_for_team(&cfg, &it.team);
             let mut suggestions = poseiden_rules::suggest_tags(it, rules, use_desc);
+            // Moved in from another board -> suggest the configured source (e.g.
+            // source:sre): the item was created outside this team's area path and
+            // later moved in. Deterministic; the signal isn't in the body.
+            if let Some(src) = rules
+                .moved_in_source
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let team_area = area_of.get(&it.team).map(|s| s.as_str()).unwrap_or("");
+                let origin = origins.get(&it.id).map(|s| s.as_str()).unwrap_or("");
+                let moved_in = !team_area.is_empty()
+                    && !origin.is_empty()
+                    && !origin.to_lowercase().starts_with(&team_area.to_lowercase());
+                let have_src = it.tags.iter().any(|t| t.eq_ignore_ascii_case(src))
+                    || suggestions.iter().any(|s| s.tag.eq_ignore_ascii_case(src));
+                if moved_in && !have_src {
+                    suggestions.push(poseiden_core::TagSuggestion {
+                        tag: src.to_string(),
+                        reasons: vec![format!("moved in from \"{origin}\" - not created here")],
+                        replaces: None,
+                    });
+                }
+            }
+            // Parent inheritance: a child's product/area is almost always its
+            // parent's - inherit the parent's APPLIED product:/area: tags as
+            // suggestions (never source:; how work arrived is per-item). The
+            // strongest signal for the many thin child tasks whose Epic/Feature
+            // already defines what they're about.
+            if rules.inherit_parent_tags {
+                if let Some((pid, ptags)) = it
+                    .parent_id
+                    .and_then(|pid| tags_by_id.get(&pid).map(|t| (pid, t)))
+                {
+                    for pt in ptags {
+                        if !(pt.starts_with("product:") || pt.starts_with("area:")) {
+                            continue;
+                        }
+                        let key = pt.to_lowercase();
+                        let have = it.tags.iter().any(|t| t.to_lowercase() == key)
+                            || suggestions.iter().any(|s| s.tag.to_lowercase() == key);
+                        if !have {
+                            suggestions.push(poseiden_core::TagSuggestion {
+                                tag: pt.clone(),
+                                reasons: vec![format!("inherited from parent #{pid}")],
+                                replaces: None,
+                            });
+                        }
+                    }
+                }
+            }
+            // Linked-repo -> tag: a PR to "PlatformDeployment" implies its area/product
+            // more reliably than any keyword. Match each rule's keywords (repo names,
+            // whole-word) against the item's linked repos.
+            if !it.linked_repos.is_empty() {
+                for rule in &rules.repo_tags {
+                    let hit = rule.keywords.iter().find(|kw| {
+                        it.linked_repos
+                            .iter()
+                            .any(|repo| poseiden_rules::contains_word(repo, kw))
+                    });
+                    if let Some(kw) = hit {
+                        let key = rule.tag.to_lowercase();
+                        let have = it.tags.iter().any(|t| t.to_lowercase() == key)
+                            || suggestions.iter().any(|s| s.tag.to_lowercase() == key);
+                        if !have {
+                            suggestions.push(poseiden_core::TagSuggestion {
+                                tag: rule.tag.clone(),
+                                reasons: vec![format!("linked repo matches \"{kw}\"")],
+                                replaces: None,
+                            });
+                        }
+                    }
+                }
+            }
             // Stored AI suggestions are a CACHE, not truth. Never surface them for an
             // item that is now underspecified: those are exactly the from-nothing
             // guesses (`area:ssa` on an empty body) this classification suppresses, so
@@ -1301,12 +1465,26 @@ impl Service {
                     input.description = None; // owner opted out of sending bodies to the tagger
                 }
                 match ai
-                    .suggest(&input, &allowed, &rules.required_tags, &tag_hints(rules))
+                    .suggest(
+                        &input,
+                        &allowed,
+                        &rules.required_tags,
+                        &tag_hints(rules),
+                        rules.team_background.as_deref().unwrap_or(""),
+                    )
                     .await
                 {
                     Ok(sugg) => {
+                        // Cap to the team's configured ceiling (or the adaptive default
+                        // that scales with required axes). Required picks are listed
+                        // first by the prompt, so truncation keeps them and trims only
+                        // the optional extras.
+                        let cap = rules.max_suggestions.unwrap_or_else(|| {
+                            poseiden_ai::default_max_suggestions(rules.required_tags.len())
+                        });
                         let pairs: Vec<(String, String)> = sugg
                             .iter()
+                            .take(cap)
                             .map(|s| {
                                 (
                                     s.tag.clone(),
@@ -1641,6 +1819,127 @@ impl Service {
         let flags = self.evaluate_scoped(std::slice::from_ref(&updated)).await;
         info!(state = ?update.state, tags = ?update.tags, flags = flags.len(), "work item updated in Azure DevOps");
         Ok((updated, flags))
+    }
+
+    /// The provider-discovered set of editable fields for a work item - what the
+    /// editor modal renders. Type-specific on Azure DevOps (a Bug's Repro Steps, a
+    /// Story's Acceptance Criteria); title + body on GitHub/GitLab. Rich fields come
+    /// back as markdown. Read-only; needs the provider's read scope.
+    pub async fn work_item_fields(
+        &self,
+        team: &str,
+        id: i64,
+    ) -> anyhow::Result<Vec<poseiden_core::EditableField>> {
+        let provider = self.provider_for(team).await?;
+        Ok(provider.editable_fields(id).await?)
+    }
+
+    /// Write changed work-item fields back to the provider, then store + re-evaluate
+    /// the returned item. The editor modal's Save - explicit and user-initiated, the
+    /// same write-back contract as State/Tags edits. Needs provider write scope.
+    pub async fn update_work_item_fields(
+        &self,
+        team: &str,
+        id: i64,
+        changes: Vec<poseiden_core::FieldChange>,
+    ) -> anyhow::Result<(WorkItem, Vec<Flag>)> {
+        if changes.is_empty() {
+            anyhow::bail!("no fields to update");
+        }
+        let provider = self.provider_for(team).await?;
+        let updated = provider.update_fields(id, &changes).await?;
+        self.store
+            .upsert_work_items(&self.owner, std::slice::from_ref(&updated))
+            .await?;
+        let flags = self.evaluate_scoped(std::slice::from_ref(&updated)).await;
+        info!(fields = changes.len(), "work item fields updated");
+        Ok((updated, flags))
+    }
+
+    /// AI-draft (or improve) the text of ONE field, using the item's context (type,
+    /// title, sibling fields) + the team background. Returns markdown for the editor to
+    /// drop into the field - never written back automatically; the person reviews and
+    /// Saves. Needs an online AI backend (the keyword/embedded backends decline).
+    pub async fn draft_work_item_field(
+        &self,
+        team: &str,
+        id: i64,
+        field_reference: &str,
+        improve: bool,
+    ) -> anyhow::Result<DraftOutcome> {
+        let fields = self.provider_for(team).await?.editable_fields(id).await?;
+        let target = fields
+            .iter()
+            .find(|f| f.reference == field_reference)
+            .ok_or_else(|| anyhow::anyhow!("no editable field '{field_reference}'"))?;
+        // Item type/title from the store (fall back to the fetched Title field).
+        let items = self
+            .store
+            .list_work_items(&self.owner, Some(team))
+            .await
+            .unwrap_or_default();
+        let item = items.iter().find(|w| w.id == id);
+        let title = item
+            .map(|w| w.title.clone())
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| {
+                fields
+                    .iter()
+                    .find(|f| {
+                        f.reference.eq_ignore_ascii_case("title") || f.reference == "System.Title"
+                    })
+                    .map(|f| f.value.clone())
+            })
+            .unwrap_or_default();
+        let work_item_type = item.map(|w| w.work_item_type.clone()).unwrap_or_default();
+        // Sibling context: other non-empty narrative fields (skip the target itself).
+        let other_fields: Vec<(String, String)> = fields
+            .iter()
+            .filter(|f| {
+                f.reference != field_reference
+                    && f.kind.is_draftable()
+                    && !f.value.trim().is_empty()
+            })
+            .map(|f| (f.label.clone(), f.value.clone()))
+            .collect();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        let background = rules_for_team(&cfg, team)
+            .team_background
+            .clone()
+            .unwrap_or_default();
+        let ctx = poseiden_ai::FieldDraftContext {
+            work_item_type,
+            title,
+            field_label: target.label.clone(),
+            current_value: target.value.clone(),
+            other_fields,
+            background,
+            mode: if improve {
+                poseiden_ai::DraftMode::Improve
+            } else {
+                poseiden_ai::DraftMode::Draft
+            },
+        };
+        // Prefer a SERVER-side model (an online provider). If there's none, or it can't
+        // draft (the browser-run WebGPU tagger has no server presence, and the small
+        // embedded model declines), hand the built prompt back so the browser can run
+        // the SAME model the tagger uses there. So drafting reuses whatever AI tagging
+        // uses - no separate "online model" requirement.
+        if let Some(ai) = self.ai_tagger().await {
+            match ai.draft_field(&ctx).await {
+                Ok(value) => return Ok(DraftOutcome::Value(value)),
+                Err(poseiden_ai::AiError::Unsupported(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(DraftOutcome::Prompt {
+            system: poseiden_ai::FIELD_DRAFT_SYSTEM_PROMPT.to_string(),
+            user: poseiden_ai::build_field_draft_prompt(&ctx),
+        })
     }
 
     /// Hygiene flags for the current stored items (optionally one team),
@@ -2575,6 +2874,8 @@ mod tests {
             description: None,
             url: String::new(),
             linked_pr_ids: Vec::new(),
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
@@ -2815,6 +3116,7 @@ mod tests {
             allowed: &[String],
             _required: &[String],
             _hints: &poseiden_ai::TagHints,
+            _background: &str,
         ) -> Result<Vec<poseiden_core::TagSuggestion>, poseiden_ai::AiError> {
             Ok(allowed
                 .first()

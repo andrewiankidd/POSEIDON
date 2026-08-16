@@ -18,6 +18,9 @@ chrono = { workspace = true }
 async-trait = "0.1"
 base64 = "0.22"
 percent-encoding = "2"
+# Rich-text field round-trip: Azure DevOps stores html; the editor works in markdown.
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+html2md = "0.2"
 tokio = { workspace = true }
 tracing = { workspace = true }
 

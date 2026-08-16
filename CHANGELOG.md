@@ -33,6 +33,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the `!exclude` syntax.
 - **Reload nudge on redeploy** — a long-open tab notices a new build (via the
   `/api/health` version stamp) and offers a one-click reload.
+- **In-app work-item field editor** — a modal (opened from a pencil in the Work
+  Items title) to read and edit a work item's provider fields. On Azure DevOps the
+  editable set is discovered live from the item's type — a Bug's *Repro Steps*, a
+  Story's *Acceptance Criteria*, custom fields, priority/severity pick-lists — with
+  HTML round-tripped to markdown; GitHub and GitLab expose title + body. Rich text
+  is edited as markdown with a formatting toolbar and an Edit/Preview toggle. Only
+  changed fields are written back, explicit and user-initiated.
+- **AI field drafting** — a per-field *Draft / Improve* that writes or refines a
+  field from the item's context (type, title, sibling fields, team background). It
+  runs on the same AI backend as tagging: a server-side online model, or the
+  browser's WebGPU model when that's what's configured.
+- **Relation-driven tag suggestions** — a child inherits its parent's `product:` /
+  `area:` tags, a linked repository maps to a tag (`repo_tags`), and an item moved
+  in from another board is tagged with a configurable source — all deterministic,
+  computed on read.
+- **GitHub / GitLab field write-back** — issues and merge requests can now be
+  edited (title + body); previously these providers were read-only.
+- **Configurable AI suggestion cap** — `max_suggestions` bounds how many tags the
+  AI proposes per item, defaulting to a value that scales with the number of
+  required tag categories so a multi-axis taxonomy isn't truncated (replaces a
+  fixed cap of three).
+- **Placeholder-aware refine detection** — the "too thin to tag" check strips
+  pasted hyperlinks before measuring and matches configurable placeholder phrases
+  (e.g. "to be clarified"), so a stub padded out by a long URL is still flagged.
+- **Persistent table filters** — each table remembers its per-column filters and
+  sort across reloads (local storage).
 
 ### Fixed
 - **Azure DevOps bug bodies** — bugs carry their body in *Repro Steps*, not
@@ -42,10 +68,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   surfaces its old model-guessed tags, and they are pruned from storage on the
   next run.
 - Bulk apply-suggestions failures now log full detail to the browser console.
+- **"Apply suggestions" applies removals too** — the bulk action previously
+  applied only tag adds and rewrites, silently leaving flagged-for-removal tags
+  (e.g. a leftover "needs work" tag on a resolved item) in place.
+- **No "needs-work" tags suggested on done items** — a resolved / closed / ignored
+  item is never offered a refine or other stale-when-resolved tag from any source
+  (keyword, alias rewrite, or the refine nudge), so the tool no longer contradicts
+  itself by suggesting a tag it would immediately flag.
+- **Whole-word keyword matching** — tag keywords match on token boundaries, so a
+  short keyword no longer fires inside an unrelated word.
+- Toast notifications render above modal dialogs instead of behind them.
 
 ### Changed
 - The seeded LLM registry sizes its on-device models to the detected platform
   instead of a fixed small default.
+- **Centralized client-side AI dispatch** — the browser's "which model, run where"
+  decision lives in one module shared by tagging and field drafting, mirroring the
+  server's single AI trait.
 
 ## [0.1.0] - 2026-08-11
 

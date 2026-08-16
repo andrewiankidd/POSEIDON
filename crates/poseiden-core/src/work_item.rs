@@ -51,6 +51,16 @@ pub struct WorkItem {
     /// relations). Stored so the link survives between polls.
     #[serde(default)]
     pub linked_pr_ids: Vec<i64>,
+    /// Parent work-item id (from the provider's hierarchy relation), if any. Lets
+    /// a child inherit its parent's product/area tags - a strong signal for the many
+    /// thin child tasks whose parent Epic/Feature defines what they're about.
+    #[serde(default)]
+    pub parent_id: Option<i64>,
+    /// Repository names this item touches (from its linked PRs / commit links).
+    /// A high-precision product/area signal - a PR to "PlatformDeployment" says more
+    /// than any keyword. Provider-normalised; empty when none are linked.
+    #[serde(default)]
+    pub linked_repos: Vec<String>,
     /// The linked PRs resolved to display shape (id + status + url), filled on
     /// read by joining `linked_pr_ids` with the polled PR set. Runtime-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -120,6 +130,8 @@ mod tests {
             description: Some("a long body".into()),
             url: "https://example.com/7".into(),
             linked_pr_ids: vec![],
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: vec![],
             tag_suggestions: vec![],
         }

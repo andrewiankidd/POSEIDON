@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use poseiden_core::{
-    Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus, TeamConfig, WorkItem, WorkItemUpdate,
+    EditableField, FieldChange, FieldKind, Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus,
+    TeamConfig, WorkItem, WorkItemUpdate,
 };
 use serde::Deserialize;
 
@@ -208,6 +209,81 @@ impl Provider for GitlabProvider {
             "gitlab does not support explicit work-item<->MR links".into(),
         ))
     }
+
+    async fn editable_fields(&self, id: i64) -> Result<Vec<EditableField>, ProviderError> {
+        // A GitLab issue is title + description (markdown). Labels/state have their
+        // own row controls. `id` is the issue iid (what WorkItem.id carries).
+        let issue: GlIssue = self
+            .get_json(&self.project_url(&format!("issues/{id}"), ""))
+            .await?;
+        Ok(vec![
+            EditableField {
+                reference: "title".into(),
+                label: "Title".into(),
+                kind: FieldKind::Text,
+                value: issue.title.unwrap_or_default(),
+                options: Vec::new(),
+                read_only: false,
+                required: true,
+                help: None,
+            },
+            EditableField {
+                reference: "description".into(),
+                label: "Description".into(),
+                kind: FieldKind::Markdown,
+                value: issue.description.unwrap_or_default(),
+                options: Vec::new(),
+                read_only: false,
+                required: false,
+                help: None,
+            },
+        ])
+    }
+
+    async fn update_fields(
+        &self,
+        id: i64,
+        changes: &[FieldChange],
+    ) -> Result<WorkItem, ProviderError> {
+        if changes.is_empty() {
+            return Err(ProviderError::Config("no fields to update".into()));
+        }
+        // PUT /issues/{iid} with the changed title/description (markdown natively).
+        let mut patch = serde_json::Map::new();
+        for c in changes {
+            match c.reference.as_str() {
+                "title" | "description" => {
+                    patch.insert(
+                        c.reference.clone(),
+                        serde_json::Value::String(c.value.clone()),
+                    );
+                }
+                other => {
+                    return Err(ProviderError::Config(format!(
+                        "gitlab: field '{other}' is not editable"
+                    )))
+                }
+            }
+        }
+        let url = self.project_url(&format!("issues/{id}"), "");
+        let resp = self
+            .client
+            .put(&url)
+            .json(&serde_json::Value::Object(patch))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                url,
+                body: body.chars().take(400).collect(),
+            });
+        }
+        let raw: GlIssue = resp.json().await.map_err(ProviderError::Http)?;
+        Ok(normalise_issue(raw, &self.team))
+    }
 }
 
 /// The token string behind either credential kind. GitLab puts it in the
@@ -324,6 +400,8 @@ fn normalise_issue(raw: GlIssue, team: &str) -> WorkItem {
         description: raw.description.filter(|s| !s.is_empty()),
         url: raw.web_url.unwrap_or_default(),
         linked_pr_ids: Vec::new(),
+        parent_id: None,
+        linked_repos: Vec::new(),
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }

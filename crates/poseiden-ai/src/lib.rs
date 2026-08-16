@@ -58,6 +58,8 @@ pub const MAX_DESC_CHARS: usize = 1000;
 pub enum AiError {
     #[error("AI backend request failed: {0}")]
     Http(String),
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 /// Per-tag disambiguation keywords, keyed by the tag's lowercased spelling. Sourced
@@ -88,7 +90,105 @@ pub trait AiTagger: Send + Sync {
         allowed: &[String],
         required: &[String],
         hints: &TagHints,
+        background: &str,
     ) -> Result<Vec<TagSuggestion>, AiError>;
+
+    /// Draft or improve the text of ONE work-item field, given the item's context.
+    /// Returns markdown (the editor's rich-field format). Default: unsupported - only
+    /// the online chat backend can generate free-form prose; the keyword/embedded
+    /// backends decline so the caller can surface "connect an online model".
+    async fn draft_field(&self, _ctx: &FieldDraftContext) -> Result<String, AiError> {
+        Err(AiError::Unsupported(
+            "AI drafting needs an online model (Settings → AI)".into(),
+        ))
+    }
+}
+
+/// Whether to write a field from scratch or refine what's already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftMode {
+    /// Author the field from the item's context (title/type/other fields).
+    Draft,
+    /// Improve/expand the existing value, keeping its intent.
+    Improve,
+}
+
+/// Everything the model needs to draft one field well: what the item IS, what the
+/// target field is, what's already there, sibling fields for context, and the team's
+/// background glossary. Assembled by the service from the item + its editable fields.
+#[derive(Debug, Clone)]
+pub struct FieldDraftContext {
+    pub work_item_type: String,
+    pub title: String,
+    /// Human label of the field being drafted ("Acceptance Criteria").
+    pub field_label: String,
+    /// The field's current markdown value (may be empty).
+    pub current_value: String,
+    /// Other fields (label, markdown value) for grounding - e.g. the Description when
+    /// drafting Acceptance Criteria. Empty values are skipped by the prompt builder.
+    pub other_fields: Vec<(String, String)>,
+    /// The team background/glossary (`RuleSet.team_background`), so the model uses the
+    /// team's real terminology. May be empty.
+    pub background: String,
+    pub mode: DraftMode,
+}
+
+/// System prompt for field drafting - a different job from tagging (free-form prose
+/// vs. a constrained pick), so its own instruction set.
+pub const FIELD_DRAFT_SYSTEM_PROMPT: &str = "You help a product owner write the fields of \
+a software work item (backlog ticket). Write clear, concise, professional content for the \
+ONE requested field, appropriate to the work-item type and the field's purpose (e.g. \
+Acceptance Criteria = a checklist of testable conditions; Repro Steps = numbered steps + \
+expected vs actual; Description = the what and why). Ground everything in the provided \
+context - never invent specifics (names, ids, dates, APIs) that aren't implied by it; where \
+a detail is genuinely unknown, write a clear placeholder in [square brackets] for a human to \
+fill. Match the team's terminology from any TEAM BACKGROUND. Output ONLY the field content as \
+GitHub-flavoured markdown - no field name, no preamble, no code fences around the whole thing.";
+
+/// Build the user prompt for a field draft. Pure + testable: the item context, the
+/// target field, its current value, sibling fields, and the team background, framed
+/// by the draft vs. improve intent.
+pub fn build_field_draft_prompt(ctx: &FieldDraftContext) -> String {
+    let mut p = String::new();
+    if !ctx.background.trim().is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(ctx.background.trim());
+        p.push_str("\n\n");
+    }
+    p.push_str(&format!(
+        "WORK ITEM\n- Type: {}\n- Title: {}\n",
+        ctx.work_item_type.trim(),
+        ctx.title.trim()
+    ));
+    for (label, value) in &ctx.other_fields {
+        let v = value.trim();
+        if v.is_empty() {
+            continue;
+        }
+        // Cap sibling context so one long field can't blow the token budget.
+        let v: String = v.chars().take(MAX_DESC_CHARS).collect();
+        p.push_str(&format!("- {}: {}\n", label.trim(), v));
+    }
+    p.push('\n');
+    match ctx.mode {
+        DraftMode::Improve if !ctx.current_value.trim().is_empty() => {
+            p.push_str(&format!(
+                "Improve the \"{}\" field below - fix clarity, structure and completeness while \
+                 keeping its intent. Return the improved field only.\n\nCURRENT {}:\n{}",
+                ctx.field_label.trim(),
+                ctx.field_label.trim().to_uppercase(),
+                ctx.current_value.trim()
+            ));
+        }
+        _ => {
+            p.push_str(&format!(
+                "Draft the \"{}\" field for this work item from the context above. Return the \
+                 field content only.",
+                ctx.field_label.trim()
+            ));
+        }
+    }
+    p
 }
 
 /// Instance-level AI config: which backend suggests tags. Persisted (set via
@@ -532,9 +632,25 @@ Reply with ONLY a JSON object, no prose, no code fences: \
 If there are no required categories and nothing else clearly applies, reply \
 {\"tags\": [], \"rationale\": \"none apply\"}.";
 
-/// Hard cap on suggestions per item, enforced after validation regardless of what
-/// the model returns - a backstop for over-eager models that ignore "at most 3".
-pub(crate) const MAX_SUGGESTIONS: usize = 3;
+/// Absolute backstop on suggestions per item, enforced in [`parse_suggestions`]
+/// regardless of what the model returns - a guard against a runaway model dumping the
+/// whole allowed set. The REAL, tunable ceiling is applied downstream by the caller
+/// (the service / the browser) from the ruleset's `max_suggestions`; this is only the
+/// last-resort limit, set well above any sane per-item tag count.
+pub(crate) const MAX_SUGGESTIONS: usize = 20;
+
+/// Slack added over the required-axis count to size the default suggestion ceiling -
+/// room for extra `area:` values, a rewrite, and a few optional tags beyond the
+/// required product/area/source picks. Chosen so a 3-axis taxonomy defaults to 10.
+pub const SUGGESTION_SLACK: usize = 7;
+
+/// The adaptive default suggestion ceiling when a ruleset doesn't set `max_suggestions`:
+/// enough to fit every required category plus [`SUGGESTION_SLACK`], floored so a team
+/// with few/no required tags still gets a usable ceiling. Scales with the taxonomy so
+/// adding a required axis never silently truncates its own picks.
+pub fn default_max_suggestions(required_len: usize) -> usize {
+    required_len.saturating_add(SUGGESTION_SLACK).max(6)
+}
 
 /// Match a tag against a required-tag pattern: trailing `*` is a prefix wildcard,
 /// otherwise exact - both case-insensitive. (poseiden-ai doesn't depend on
@@ -583,6 +699,7 @@ pub fn build_prompt(
     allowed: &[String],
     required: &[String],
     hints: &TagHints,
+    background: &str,
 ) -> String {
     let current = if input.current_tags.is_empty() {
         "(none)".to_string()
@@ -639,10 +756,19 @@ pub fn build_prompt(
         })
         .unwrap_or_default();
 
-    let mut out = format!(
+    let mut out = String::new();
+    let bg = background.trim();
+    if !bg.is_empty() {
+        out.push_str(
+            "TEAM BACKGROUND (this team's systems + internal names - use it to interpret the item):\n",
+        );
+        out.push_str(bg);
+        out.push_str("\n\n");
+    }
+    out.push_str(&format!(
         "Work item:\n- Title: {}\n- Type: {}{}\n- Current tags: {}\n",
         input.title, input.work_item_type, description, current
-    );
+    ));
     if !required_blocks.is_empty() {
         out.push_str(
             "\nREQUIRED categories - pick exactly ONE value for EACH (best guess even if unsure):\n",
@@ -736,6 +862,7 @@ impl AiTagger for ChatTagger {
         allowed: &[String],
         required: &[String],
         hints: &TagHints,
+        background: &str,
     ) -> Result<Vec<TagSuggestion>, AiError> {
         if allowed.is_empty() {
             return Ok(vec![]); // nothing to choose from
@@ -746,7 +873,7 @@ impl AiTagger for ChatTagger {
             "stream": false,
             "messages": [
                 { "role": "system", "content": SYSTEM_PROMPT },
-                { "role": "user", "content": build_prompt(item, allowed, required, hints) },
+                { "role": "user", "content": build_prompt(item, allowed, required, hints, background) },
             ],
         });
         let mut req = self.http.post(&self.endpoint).json(&body);
@@ -771,6 +898,54 @@ impl AiTagger for ChatTagger {
         suggestions.retain(|s| !have.contains(&s.tag.to_lowercase()));
         Ok(suggestions)
     }
+
+    async fn draft_field(&self, ctx: &FieldDraftContext) -> Result<String, AiError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            // A touch of temperature: prose, not a deterministic tag pick.
+            "temperature": 0.3,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": FIELD_DRAFT_SYSTEM_PROMPT },
+                { "role": "user", "content": build_field_draft_prompt(ctx) },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let content = v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        // Strip a stray ```markdown fence the model may wrap the whole answer in.
+        Ok(strip_code_fence(&content))
+    }
+}
+
+/// Remove a single outer code fence (```lang … ```) if the model wrapped its whole
+/// reply in one - common with some chat models despite the instruction not to.
+fn strip_code_fence(s: &str) -> String {
+    let t = s.trim();
+    if let Some(rest) = t.strip_prefix("```") {
+        // drop the optional language token on the first line, then a trailing ```
+        let after_lang = rest.split_once('\n').map(|(_, b)| b).unwrap_or("");
+        if let Some(inner) = after_lang.trim_end().strip_suffix("```") {
+            return inner.trim().to_string();
+        }
+    }
+    t.to_string()
 }
 
 #[cfg(test)]
@@ -785,6 +960,66 @@ mod tests {
         ]
     }
 
+    fn draft_ctx(mode: DraftMode) -> FieldDraftContext {
+        FieldDraftContext {
+            work_item_type: "User Story".into(),
+            title: "Self-service portal access request".into(),
+            field_label: "Acceptance Criteria".into(),
+            current_value: String::new(),
+            other_fields: vec![
+                (
+                    "Description".into(),
+                    "A user can request access via the portal.".into(),
+                ),
+                ("System Info".into(), "   ".into()), // blank -> skipped
+            ],
+            background: "Portal = our internal developer portal (Backstage).".into(),
+            mode,
+        }
+    }
+
+    #[test]
+    fn draft_prompt_includes_context_and_skips_blank_fields() {
+        let p = build_field_draft_prompt(&draft_ctx(DraftMode::Draft));
+        assert!(p.contains("TEAM BACKGROUND"));
+        assert!(p.contains("Backstage")); // background flows in
+        assert!(p.contains("Type: User Story"));
+        assert!(p.contains("Title: Self-service portal access request"));
+        assert!(p.contains("Description: A user can request access")); // sibling field
+        assert!(!p.contains("System Info")); // blank sibling skipped
+        assert!(p.contains("Draft the \"Acceptance Criteria\""));
+    }
+
+    #[test]
+    fn draft_prompt_improve_mode_carries_the_current_value() {
+        let mut ctx = draft_ctx(DraftMode::Improve);
+        ctx.current_value = "user can log in".into();
+        let p = build_field_draft_prompt(&ctx);
+        assert!(p.contains("Improve the \"Acceptance Criteria\""));
+        assert!(p.contains("user can log in"));
+        // Improve with an EMPTY current value falls back to draft-from-scratch.
+        ctx.current_value = "  ".into();
+        assert!(build_field_draft_prompt(&ctx).contains("Draft the \"Acceptance Criteria\""));
+    }
+
+    #[test]
+    fn draft_prompt_omits_background_block_when_empty() {
+        let mut ctx = draft_ctx(DraftMode::Draft);
+        ctx.background = "  ".into();
+        assert!(!build_field_draft_prompt(&ctx).contains("TEAM BACKGROUND"));
+    }
+
+    #[test]
+    fn strip_code_fence_unwraps_a_whole_answer_fence() {
+        assert_eq!(
+            strip_code_fence("```markdown\n- one\n- two\n```"),
+            "- one\n- two"
+        );
+        assert_eq!(strip_code_fence("```\nplain\n```"), "plain");
+        // Inline/partial fences are left alone (only an OUTER wrap is stripped).
+        assert_eq!(strip_code_fence("text `code` more"), "text `code` more");
+    }
+
     fn integ(id: &str, kind: &str) -> LlmIntegration {
         LlmIntegration {
             id: id.into(),
@@ -796,9 +1031,21 @@ mod tests {
 
     #[test]
     fn caps_suggestions_even_when_the_model_over_tags() {
-        let allowed: Vec<String> = (0..6).map(|i| format!("t{i}")).collect();
-        let raw = r#"{"tags":["t0","t1","t2","t3","t4","t5"],"rationale":"dumped everything"}"#;
-        assert_eq!(parse_suggestions(raw, &allowed).len(), MAX_SUGGESTIONS);
+        // The internal backstop only bites on a runaway model dumping far more than any
+        // real per-item count; the real ceiling is applied downstream from config.
+        let allowed: Vec<String> = (0..MAX_SUGGESTIONS + 5).map(|i| format!("t{i}")).collect();
+        let tags = (0..MAX_SUGGESTIONS + 5)
+            .map(|i| format!("\"t{i}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let raw = format!("{{\"tags\":[{tags}],\"rationale\":\"dumped everything\"}}");
+        assert_eq!(parse_suggestions(&raw, &allowed).len(), MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn default_max_suggestions_scales_with_required_and_has_a_floor() {
+        assert_eq!(default_max_suggestions(3), 10); // 3 required axes + slack
+        assert_eq!(default_max_suggestions(0), 7); // no-required team
     }
 
     #[test]
@@ -1054,6 +1301,8 @@ mod tests {
             description: desc.map(|d| d.to_string()),
             url: "https://x/42".into(),
             linked_pr_ids: Vec::new(),
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
@@ -1087,7 +1336,7 @@ mod tests {
             &["team:platform"],
             None,
         ));
-        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default(), "");
         assert!(prompt.contains("- Title: Wire up ingress"));
         assert!(prompt.contains("- Type: User Story"));
         assert!(prompt.contains("- Current tags: team:platform"));
@@ -1099,26 +1348,33 @@ mod tests {
     #[test]
     fn build_prompt_uses_none_placeholder_for_untagged() {
         let input = TaggerInput::from(&work_item("t", "Task", &[], None));
-        assert!(build_prompt(&input, &allowed(), &[], &Default::default())
-            .contains("- Current tags: (none)"));
+        assert!(
+            build_prompt(&input, &allowed(), &[], &Default::default(), "")
+                .contains("- Current tags: (none)")
+        );
     }
 
     #[test]
     fn build_prompt_omits_description_when_absent_or_blank() {
         let none = TaggerInput::from(&work_item("t", "Task", &[], None));
-        assert!(!build_prompt(&none, &allowed(), &[], &Default::default()).contains("Description:"));
+        assert!(
+            !build_prompt(&none, &allowed(), &[], &Default::default(), "").contains("Description:")
+        );
         // A whitespace-only body is treated as absent (trimmed, then filtered out).
         let blank = TaggerInput::from(&work_item("t", "Task", &[], Some("   \n\t ")));
         assert!(
-            !build_prompt(&blank, &allowed(), &[], &Default::default()).contains("Description:")
+            !build_prompt(&blank, &allowed(), &[], &Default::default(), "")
+                .contains("Description:")
         );
     }
 
     #[test]
     fn build_prompt_includes_description_when_present() {
         let input = TaggerInput::from(&work_item("t", "Task", &[], Some("crashes on retry")));
-        assert!(build_prompt(&input, &allowed(), &[], &Default::default())
-            .contains("- Description: crashes on retry"));
+        assert!(
+            build_prompt(&input, &allowed(), &[], &Default::default(), "")
+                .contains("- Description: crashes on retry")
+        );
     }
 
     #[test]
@@ -1127,7 +1383,7 @@ mod tests {
         // title/type/tags never contain so the count is unambiguous.
         let body = "Z".repeat(MAX_DESC_CHARS + 500);
         let input = TaggerInput::from(&work_item("t", "Task", &[], Some(&body)));
-        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default(), "");
         assert_eq!(prompt.matches('Z').count(), MAX_DESC_CHARS);
     }
 
@@ -1149,7 +1405,7 @@ mod tests {
             "enhancement".to_string(),
         ];
         let required = vec!["area:*".to_string(), "source:*".to_string()];
-        let prompt = build_prompt(&input, &allowed, &required, &Default::default());
+        let prompt = build_prompt(&input, &allowed, &required, &Default::default(), "");
 
         assert!(
             prompt.contains("REQUIRED categories"),
@@ -1183,7 +1439,7 @@ mod tests {
             "area:platform-deployment".into(),
             vec!["platform deployment".into(), "platformdeployment".into()],
         );
-        let prompt = build_prompt(&input, &allowed, &required, &hints);
+        let prompt = build_prompt(&input, &allowed, &required, &hints, "");
         // The hinted tag shows its keywords; the un-hinted one is bare.
         assert!(prompt
             .contains("area:platform-deployment (e.g. platform deployment, platformdeployment)"));
@@ -1198,7 +1454,7 @@ mod tests {
         let many: Vec<String> = (0..20).map(|i| format!("kw{i}")).collect();
         let mut hints = TagHints::new();
         hints.insert("area:kubernetes".into(), many);
-        let prompt = build_prompt(&input, &allowed, &["area:*".to_string()], &hints);
+        let prompt = build_prompt(&input, &allowed, &["area:*".to_string()], &hints, "");
         // Only MAX_HINTS_PER_TAG examples are shown.
         assert_eq!(prompt.matches("kw").count(), MAX_HINTS_PER_TAG);
     }
@@ -1207,7 +1463,7 @@ mod tests {
     fn build_prompt_without_required_matches_the_plain_allowed_layout() {
         // No required patterns -> the old "ALLOWED tags:" layout, no required block.
         let input = TaggerInput::from(&work_item("t", "Task", &[], None));
-        let prompt = build_prompt(&input, &allowed(), &[], &Default::default());
+        let prompt = build_prompt(&input, &allowed(), &[], &Default::default(), "");
         assert!(prompt.contains("ALLOWED tags:"));
         assert!(!prompt.contains("REQUIRED categories"));
     }
