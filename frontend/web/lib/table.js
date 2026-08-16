@@ -53,6 +53,14 @@ export function dataTable(columns, rows, opts = {}) {
   let page = 0;
   const pageSize = opts.pageSize > 0 ? opts.pageSize : 0; // 0 = show all
 
+  // Optional cross-refresh persistence: when `opts.persistKey` is set, the view's
+  // filters + choice selections + sort are mirrored to localStorage so a reload (or
+  // navigating away and back) restores them. Selection + page are intentionally NOT
+  // persisted (they're tied to a specific data snapshot). Rehydrated here, BEFORE the
+  // header inputs are built, so their initial values reflect the restored state.
+  const persistKey = opts.persistKey ? `poseiden.tablefilters.${opts.persistKey}` : null;
+  loadState();
+
   // Multi-select. `selected` holds row keys; selection persists across filtering
   // + sorting (by key), so hidden-but-selected rows stay selected.
   const selectable = !!opts.selectable;
@@ -93,10 +101,10 @@ export function dataTable(columns, rows, opts = {}) {
       if (col.filterChoices) fth.appendChild(buildChoiceFilter(i, col));
       else {
         fth.appendChild(el('input', {
-          class: 'dt-filter-input', type: 'text',
+          class: 'dt-filter-input', type: 'text', value: filters[i],
           placeholder: col.filterPlaceholder || 'filter', 'aria-label': `Filter ${col.label}`,
           title: col.filterMatch ? undefined : 'comma = match any (active, resolved); ! = exclude (!closed)',
-          oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; render(); },
+          oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; saveState(); render(); },
         }));
       }
     }
@@ -223,7 +231,7 @@ export function dataTable(columns, rows, opts = {}) {
       allCb.checked = n === values.length;
       allCb.indeterminate = n > 0 && n < values.length;
     };
-    const commit = () => { page = 0; render(); };
+    const commit = () => { page = 0; saveState(); render(); };
 
     allCb.addEventListener('change', () => {
       choiceSel[i] = allCb.checked ? null : new Set(); // all vs none
@@ -390,16 +398,65 @@ export function dataTable(columns, rows, opts = {}) {
       if (sortDir === 1) sortDir = -1;      // asc -> desc
       else { sortIndex = null; sortDir = 1; } // desc -> unsorted
     } else { sortIndex = i; sortDir = 1; }   // new column -> asc
+    saveState();
     render();
   }
 
   function resetFilters() {
+    // Clears filters + choice selections; leaves the sort alone (that's what the
+    // column header toggles, and users expect "Clear" to mean "clear the filters").
     filters.fill('');
     choiceSel.fill(null);
     filterRow.querySelectorAll('.dt-filter-input').forEach((inp) => { inp.value = ''; });
     choiceSync.forEach((fn) => fn());
     page = 0;
+    saveState();
     render();
+  }
+
+  // Whether the view deviates from its pristine defaults (any filter, any choice
+  // selection, or a sort other than the configured initial one). Drives whether the
+  // persisted entry is worth keeping - a plain default view stores nothing.
+  function hasNonDefaultState() {
+    if (filters.some((f) => f)) return true;
+    if (choiceSel.some((s) => s != null)) return true;
+    const initIdx = opts.initialSort?.index ?? null;
+    const initDir = opts.initialSort?.dir ?? 1;
+    return sortIndex !== initIdx || (sortIndex != null && sortDir !== initDir);
+  }
+
+  // ── Cross-refresh persistence (no-op unless opts.persistKey is set) ──
+  function saveState() {
+    if (!persistKey) return;
+    try {
+      // Nothing to remember once the view is back to defaults - drop the entry so we
+      // don't leave empty state lying around (and so `loadState` stays cheap).
+      if (!hasNonDefaultState()) { localStorage.removeItem(persistKey); return; }
+      localStorage.setItem(persistKey, JSON.stringify({
+        v: 1,
+        cols: columns.length, // guard: ignore a stale entry if the columns changed
+        filters,
+        choice: choiceSel.map((s) => (s == null ? null : [...s])),
+        sort: sortIndex == null ? null : { index: sortIndex, dir: sortDir },
+      }));
+    } catch { /* localStorage unavailable / private mode / quota - persistence is best-effort */ }
+  }
+
+  function loadState() {
+    if (!persistKey) return;
+    let data;
+    try { data = JSON.parse(localStorage.getItem(persistKey) || 'null'); } catch { data = null; }
+    if (!data || data.cols !== columns.length) return;
+    if (Array.isArray(data.filters) && data.filters.length === columns.length) {
+      data.filters.forEach((f, i) => { filters[i] = String(f || ''); });
+    }
+    if (Array.isArray(data.choice) && data.choice.length === columns.length) {
+      data.choice.forEach((c, i) => { choiceSel[i] = Array.isArray(c) ? new Set(c) : null; });
+    }
+    if (data.sort && Number.isInteger(data.sort.index) && data.sort.index < columns.length) {
+      sortIndex = data.sort.index;
+      sortDir = data.sort.dir === -1 ? -1 : 1;
+    }
   }
 
   // Header checkbox: select or clear every currently-filtered row (all pages).

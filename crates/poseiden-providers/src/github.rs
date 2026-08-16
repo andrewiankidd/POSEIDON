@@ -10,7 +10,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use poseiden_core::{
-    Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus, TeamConfig, WorkItem, WorkItemUpdate,
+    EditableField, FieldChange, FieldKind, Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus,
+    TeamConfig, WorkItem, WorkItemUpdate,
 };
 use serde::Deserialize;
 
@@ -248,6 +249,81 @@ impl Provider for GithubProvider {
             "github does not support explicit work-item<->PR links".into(),
         ))
     }
+
+    async fn editable_fields(&self, id: i64) -> Result<Vec<EditableField>, ProviderError> {
+        // A GitHub issue is title + body (markdown, no conversion needed). Labels
+        // (== tags) and state are edited via the row's own controls, not here.
+        let issue: GhIssue = self
+            .get_json(&self.repo_url(&format!("issues/{id}"), ""))
+            .await?;
+        Ok(vec![
+            EditableField {
+                reference: "title".into(),
+                label: "Title".into(),
+                kind: FieldKind::Text,
+                value: issue.title.unwrap_or_default(),
+                options: Vec::new(),
+                read_only: false,
+                required: true,
+                help: None,
+            },
+            EditableField {
+                reference: "body".into(),
+                label: "Description".into(),
+                kind: FieldKind::Markdown,
+                value: issue.body.unwrap_or_default(),
+                options: Vec::new(),
+                read_only: false,
+                required: false,
+                help: None,
+            },
+        ])
+    }
+
+    async fn update_fields(
+        &self,
+        id: i64,
+        changes: &[FieldChange],
+    ) -> Result<WorkItem, ProviderError> {
+        if changes.is_empty() {
+            return Err(ProviderError::Config("no fields to update".into()));
+        }
+        // PATCH /issues/{id} with the changed title/body (body is markdown natively).
+        let mut patch = serde_json::Map::new();
+        for c in changes {
+            match c.reference.as_str() {
+                "title" | "body" => {
+                    patch.insert(
+                        c.reference.clone(),
+                        serde_json::Value::String(c.value.clone()),
+                    );
+                }
+                other => {
+                    return Err(ProviderError::Config(format!(
+                        "github: field '{other}' is not editable"
+                    )))
+                }
+            }
+        }
+        let url = self.repo_url(&format!("issues/{id}"), "");
+        let resp = self
+            .client
+            .patch(&url)
+            .json(&serde_json::Value::Object(patch))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                url,
+                body: body.chars().take(400).collect(),
+            });
+        }
+        let raw: GhIssue = resp.json().await.map_err(ProviderError::Http)?;
+        Ok(normalise_issue(raw, &self.team))
+    }
 }
 
 // ─────────────────────────── GitHub DTOs ───────────────────────────
@@ -419,6 +495,8 @@ fn normalise_issue(raw: GhIssue, team_name: &str) -> WorkItem {
             .filter(|b| !b.is_empty()),
         url,
         linked_pr_ids: Vec::new(),
+        parent_id: None,
+        linked_repos: Vec::new(),
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }

@@ -560,6 +560,8 @@ mod tests {
             url: "u".into(),
             description: None,
             linked_pr_ids: vec![],
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: vec![],
             tag_suggestions: vec![],
         }

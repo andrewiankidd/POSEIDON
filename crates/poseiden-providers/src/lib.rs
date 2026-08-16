@@ -19,7 +19,8 @@ pub mod stub;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use poseiden_core::{
-    Pipeline, PipelineRun, ProviderKind, PullRequest, TeamConfig, WorkItem, WorkItemUpdate,
+    EditableField, FieldChange, Pipeline, PipelineRun, ProviderKind, PullRequest, TeamConfig,
+    WorkItem, WorkItemUpdate,
 };
 
 /// Errors a provider can surface. Deliberately coarse - a poll only reads, so
@@ -88,6 +89,14 @@ pub trait Provider: Send + Sync {
     /// query), normalised.
     async fn fetch_work_items(&self) -> Result<Vec<WorkItem>, ProviderError>;
 
+    /// The area path a work item was CREATED under (its first revision), for the
+    /// "moved in from another board" source signal. Immutable, so callers fetch it
+    /// once and cache. `None` when the provider can't tell (the default) or the item
+    /// has no distinct origin. Only Azure DevOps implements it today.
+    async fn fetch_origin_area(&self, _id: i64) -> Result<Option<String>, ProviderError> {
+        Ok(None)
+    }
+
     /// The pipelines this provider monitors - either the configured subset or
     /// all pipelines in the project.
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError>;
@@ -116,6 +125,30 @@ pub trait Provider: Send + Sync {
         id: i64,
         update: &WorkItemUpdate,
     ) -> Result<WorkItem, ProviderError>;
+
+    /// The set of fields a person may edit for this work item, discovered from the
+    /// item's TYPE (a Bug exposes Repro Steps + System Info; a User Story exposes
+    /// Acceptance Criteria; every type has a Description). Rich (HTML) fields arrive
+    /// as markdown. Provider-normalised into [`EditableField`] so the editor is
+    /// provider-agnostic. Default: none - a provider that doesn't support field
+    /// editing returns an empty set and the editor shows nothing to edit.
+    async fn editable_fields(&self, _id: i64) -> Result<Vec<EditableField>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    /// Write changed fields back to the provider and return the item's post-write
+    /// view. `changes` carries each field's `reference` + new value (markdown for
+    /// rich fields; the provider converts to its native format). Explicit,
+    /// user-initiated - never called by a poll. Default: unsupported.
+    async fn update_fields(
+        &self,
+        _id: i64,
+        _changes: &[FieldChange],
+    ) -> Result<WorkItem, ProviderError> {
+        Err(ProviderError::Config(
+            "this provider does not support field editing".into(),
+        ))
+    }
 
     /// Link a pull request to a work item (add the ADO artifact-link relation),
     /// returning the work item's post-write view so the caller re-derives its

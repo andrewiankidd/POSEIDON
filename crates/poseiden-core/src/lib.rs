@@ -22,6 +22,7 @@
 
 mod config;
 mod config_bundle;
+mod editable_field;
 mod flag;
 mod pipeline;
 mod pull_request;
@@ -34,6 +35,7 @@ pub use config::{
     ProviderKind, RuleSet, ServerConfig, StaleRule, TagAlias, TagKeywords, TeamConfig, UserConfig,
 };
 pub use config_bundle::{BundleMeta, ConfigBundle, CONFIG_BUNDLE_SCHEMA};
+pub use editable_field::{EditableField, FieldChange, FieldKind};
 pub use flag::{EntityFlag, Flag, FlagCode, Severity, TagSuggestion};
 pub use pipeline::{Pipeline, PipelineRun, RunStatus};
 pub use pull_request::{LinkedPr, PrStatus, PullRequest};

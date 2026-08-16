@@ -106,6 +106,14 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/dashboard", get(dashboard))
         .route("/api/tickets", get(tickets))
         .route("/api/work-items/{id}", put(update_work_item))
+        .route(
+            "/api/work-items/{id}/fields",
+            get(work_item_fields).put(update_work_item_fields),
+        )
+        .route(
+            "/api/work-items/{id}/fields/draft",
+            post(draft_work_item_field),
+        )
         .route("/api/work-items/{id}/pr-link", post(link_work_item_pr))
         .route("/api/pipelines", get(pipelines))
         .route("/api/pull-requests", get(pull_requests))
@@ -336,6 +344,78 @@ async fn link_work_item_pr(
         .await
     {
         Ok((item, flags)) => Ok(Json(serde_json::json!({ "item": item, "flags": flags }))),
+        Err(e) => Err(err500(e)),
+    }
+}
+
+/// Team scope for a GET that can't carry a body (the field-editor read).
+#[derive(serde::Deserialize)]
+struct TeamQuery {
+    team: String,
+}
+
+/// The provider-discovered editable fields for a work item - what the editor modal
+/// renders (type-specific on Azure DevOps; title + body on GitHub/GitLab).
+async fn work_item_fields(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<TeamQuery>,
+) -> ApiResult {
+    match svc.work_item_fields(&q.team, id).await {
+        Ok(fields) => Ok(Json(serde_json::json!({ "fields": fields }))),
+        Err(e) => Err(err500(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateFieldsBody {
+    team: String,
+    changes: Vec<poseiden_core::FieldChange>,
+}
+
+/// Save edited fields - writes each changed field through to the provider, then
+/// returns the updated item. Explicit, user-initiated (the modal's Save).
+async fn update_work_item_fields(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<UpdateFieldsBody>,
+) -> ApiResult {
+    match svc
+        .update_work_item_fields(&body.team, id, body.changes)
+        .await
+    {
+        Ok((item, flags)) => Ok(Json(serde_json::json!({ "item": item, "flags": flags }))),
+        Err(e) => Err(err500(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DraftFieldBody {
+    team: String,
+    reference: String,
+    #[serde(default)]
+    improve: bool,
+}
+
+/// AI-draft (or improve) one field's text from the item's context. Returns markdown
+/// for the editor to drop in - never auto-saved.
+async fn draft_work_item_field(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<DraftFieldBody>,
+) -> ApiResult {
+    match svc
+        .draft_work_item_field(&body.team, id, &body.reference, body.improve)
+        .await
+    {
+        // Either the server drafted it, or it hands back the prompt for the browser to
+        // run through its WebGPU model (the same one the tagger uses there).
+        Ok(crate::service::DraftOutcome::Value(value)) => {
+            Ok(Json(serde_json::json!({ "value": value })))
+        }
+        Ok(crate::service::DraftOutcome::Prompt { system, user }) => Ok(Json(
+            serde_json::json!({ "prompt": { "system": system, "user": user } }),
+        )),
         Err(e) => Err(err500(e)),
     }
 }

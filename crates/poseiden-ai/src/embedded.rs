@@ -74,11 +74,12 @@ impl AiTagger for EmbeddedTagger {
         allowed: &[String],
         required: &[String],
         hints: &crate::TagHints,
+        background: &str,
     ) -> Result<Vec<TagSuggestion>, AiError> {
         if allowed.is_empty() {
             return Ok(vec![]);
         }
-        let prompt = chat_prompt(&build_prompt(item, allowed, required, hints));
+        let prompt = chat_prompt(&build_prompt(item, allowed, required, hints, background));
         let allowed = allowed.to_vec();
         let current = item.current_tags.clone();
         let preset = self.preset;
@@ -266,7 +267,7 @@ mod tests {
             "priority:high".to_string(),
         ];
         let out = tagger
-            .suggest(&item, &allowed, &[], &Default::default())
+            .suggest(&item, &allowed, &[], &Default::default(), "")
             .await
             .expect("suggest should load the model and run inference");
         for s in &out {
@@ -307,6 +308,7 @@ mod tests {
             &allowed.map(String::from),
             &[],
             &Default::default(),
+            "",
         ));
 
         let t = Instant::now();

@@ -11,6 +11,7 @@ import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
 import { webgpuAvailable, runWebGpuTagging, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
+import { effectiveActiveId, activeBackend, resolveAiText } from './lib/ai.js';
 import { renderDeck } from './lib/recap-slides.js';
 
 const main = document.getElementById('main');
@@ -601,7 +602,16 @@ async function renderWorkItems() {
   const columns = [
     { label: 'ID', sort: 'number', value: (it) => it.id, render: (it) => linkOut('#' + it.id, it.url) },
     showTeam ? { label: 'Team', filterChoices: true, value: (it) => it.team || '' } : null,
-    { label: 'Title', class: 'wrap', value: (it) => it.title || '', render: (it) => it.title || '(untitled)' },
+    {
+      label: 'Title', class: 'wrap', value: (it) => it.title || '',
+      render: (it) => el('span', { class: 'wi-title' }, [
+        el('button', {
+          class: 'wi-edit', type: 'button', title: 'Edit work-item fields',
+          onclick: (e) => { e.stopPropagation(); openWorkItemEditor(it, refreshRows); },
+        }, '✎'),
+        el('span', {}, it.title || '(untitled)'),
+      ]),
+    },
     { label: 'Type', filterChoices: true, value: (it) => it.work_item_type || '' },
     {
       label: 'State', filterChoices: true, value: (it) => it.state || '',
@@ -700,13 +710,10 @@ async function renderWorkItems() {
     // Decide the engine: if the top client-usable integration is a WebGPU one (and
     // this browser has WebGPU), inference runs IN-PAGE on the user's GPU; otherwise
     // the server handles it (offline candle / online / custom endpoint).
-    let webgpuInteg = null;
-    try {
-      const cfg = await api.llmConfig();
-      const activeId = effectiveActiveId(cfg.integrations || [], cfg.caps || {});
-      const top = (cfg.integrations || []).find((i) => i.id === activeId);
-      if (top && top.kind === 'webgpu') webgpuInteg = top;
-    } catch { /* no registry - server path only */ }
+    // Shared client dispatcher decides the backend (see lib/ai.js). A 'browser' verdict
+    // means WebGPU inference runs in-page on the user's GPU.
+    const be = await activeBackend();
+    const webgpuInteg = be.where === 'browser' ? { offline_model: be.model } : null;
 
     if ((st && st.enabled) || webgpuInteg) {
       aiBtn = el('button', {
@@ -756,7 +763,8 @@ async function renderWorkItems() {
                 webgpuInteg.offline_model, rowsForTagging, aiCandidates,
                 (s) => { b.textContent = s || 'Loading…'; },
                 (done, total) => { b.textContent = `Suggesting… ${done}/${total}`; },
-                rules.required_tags || [], aiHints);
+                rules.required_tags || [], aiHints, rules.team_background || '',
+                rules.max_suggestions);
               b.textContent = 'Storing…';
               const sum = await api.storeTagSuggestions(getTeamScope(), results);
               toast(`WebGPU: tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} items (${sum.suggestions ?? 0} tags)`);
@@ -889,14 +897,26 @@ async function renderWorkItems() {
   // Backfill accelerator: accept EVERY suggestion (keyword + AI adds, and alias
   // rewrites) on each selected row in one sweep - the Suggested column, applied en
   // masse. Rewrites drop their legacy tag; adds that are already present are skipped.
-  const applySuggBtn = mkBulkBtn('✓ Apply suggestions', 'Apply every suggested add + rewrite on each selected item', () => {
+  const applySuggBtn = mkBulkBtn('✓ Apply suggestions', 'Apply every suggested add, rewrite, and flagged removal on each selected item', () => {
     applyBulk('Apply suggestions', (it) => {
+      // Mirror the per-row Suggested column: apply the ADD/REWRITE chips (from
+      // tag_suggestions) AND the "- tag" REMOVAL chips (from stale/disallowed flags).
+      // Removals were previously skipped here, so a bulk apply left "to refine on a
+      // resolved item" (and other flagged tags) in place - "apply did nothing".
       const sugg = it.tag_suggestions || [];
-      if (!sugg.length) return null;
+      const flags = flagsOf(it) || [];
       let tags = [...(it.tags || [])];
+      const rewritten = new Set(sugg.filter((s) => s.replaces).map((s) => s.replaces.toLowerCase()));
       for (const s of sugg) {
         if (s.replaces) tags = tags.filter((t) => t.toLowerCase() !== s.replaces.toLowerCase());
         if (!tags.some((t) => t.toLowerCase() === s.tag.toLowerCase())) tags.push(s.tag);
+      }
+      // Removals last, so a removal wins over any add; skip ones a rewrite migrates.
+      for (const f of flags) {
+        if ((f.code === 'stale_state_tag' || f.code === 'disallowed_tag') && f.tag
+            && !rewritten.has(f.tag.toLowerCase())) {
+          tags = tags.filter((t) => t.toLowerCase() !== f.tag.toLowerCase());
+        }
       }
       const cur = it.tags || [];
       const unchanged = tags.length === cur.length && tags.every((t) => cur.some((c) => c.toLowerCase() === t.toLowerCase()));
@@ -909,6 +929,7 @@ async function renderWorkItems() {
   ]);
 
   table = dataTable(columns, items, {
+    persistKey: 'work-items',
     initialSort: { index: 0, dir: -1 }, // ID descending - newest work items first
     emptyText: 'No matching work items.',
     // Rule-break filtering (all flagged, or one specific flag code); tag
@@ -1145,6 +1166,224 @@ function suggestionChips(it, afterEdit, flags, onChanged) {
   return el('span', {}, [...addChips, ...removeChips]);
 }
 
+// ─────────────────────────── Work-item field editor ───────────────────────────
+// A modal to edit a work item's provider fields (type-specific on Azure DevOps -
+// Repro Steps, Acceptance Criteria, …; title + body on GitHub/GitLab). Fields are
+// discovered live from the provider and rendered by kind; rich fields get an AI
+// "Draft/Improve" button. Save writes ONLY the changed fields back (explicit,
+// user-initiated). `onSaved(item)` refreshes the row.
+async function openWorkItemEditor(it, onSaved) {
+  const overlay = el('div', {
+    class: 'dc-overlay',
+    onclick: (e) => { if (e.target === overlay) close(); },
+  });
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+  document.addEventListener('keydown', onKey, true);
+
+  const body = el('div', { class: 'editor-body' }, el('span', { class: 'muted' }, 'Loading fields…'));
+  const card = el('div', { class: 'dc-modal editor-modal', onclick: (e) => e.stopPropagation() }, [
+    el('h3', {}, `Edit #${it.id} — ${it.title || ''}`),
+    body,
+  ]);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  let fields = [];
+  try {
+    fields = (await api.workItemFields(it.id, it.team)).fields || [];
+  } catch (err) {
+    clear(body).appendChild(el('div', { class: 'err' }, 'Failed to load fields: ' + (err?.message || err)));
+    return;
+  }
+  if (!fields.length) {
+    clear(body).appendChild(el('span', { class: 'muted' }, 'No editable fields for this item.'));
+    return;
+  }
+
+  const controls = fields.map((f) => ({ field: f, ...buildFieldControl(f, it) }));
+  clear(body);
+  const form = el('div', { class: 'editor-fields' });
+  for (const c of controls) {
+    form.appendChild(el('div', { class: 'editor-field' }, [
+      el('div', { class: 'editor-field-head' }, [
+        el('span', { class: 'editor-field-label' }, c.field.label + (c.field.required ? ' *' : '')),
+        c.field.read_only ? el('span', { class: 'editor-field-tag' }, 'read-only') : null,
+        c.field.help ? el('span', { class: 'editor-field-help', title: c.field.help }, 'ⓘ') : null,
+      ]),
+      c.node,
+    ]));
+  }
+  body.appendChild(form);
+
+  const status = el('span', { class: 'editor-status' }, '');
+  const saveBtn = el('button', { class: 'btn btn-primary', onclick: save }, 'Save changes');
+  card.appendChild(el('div', { class: 'editor-footer' }, [
+    status, el('span', { class: 'dt-spacer' }),
+    el('button', { class: 'btn', onclick: close }, 'Cancel'),
+    saveBtn,
+  ]));
+
+  async function save() {
+    const changes = controls
+      .filter((c) => !c.field.read_only && c.get() !== (c.field.value || ''))
+      .map((c) => ({ reference: c.field.reference, value: c.get() }));
+    if (!changes.length) { status.textContent = 'No changes to save.'; return; }
+    saveBtn.disabled = true;
+    status.textContent = `Saving ${changes.length} field${changes.length === 1 ? '' : 's'}…`;
+    try {
+      const res = await api.updateWorkItemFields(it.id, { team: it.team, changes });
+      toast(`#${it.id}: ${changes.length} field${changes.length === 1 ? '' : 's'} saved`);
+      close();
+      if (onSaved) await onSaved(res.item);
+    } catch (err) {
+      saveBtn.disabled = false;
+      status.textContent = 'Save failed: ' + (err?.message || err);
+    }
+  }
+}
+
+// Wrap the textarea's selection with `before`/`after` (e.g. ** ** for bold). With no
+// selection, inserts the markers and puts the cursor between them.
+function mdSurround(ta, before, after) {
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  const sel = ta.value.slice(s, e);
+  ta.value = ta.value.slice(0, s) + before + sel + after + ta.value.slice(e);
+  ta.focus();
+  const pos = sel ? s + before.length + sel.length + after.length : s + before.length;
+  ta.selectionStart = ta.selectionEnd = pos;
+}
+
+// Prefix every line touched by the selection with `prefix` (headings, lists, quotes).
+function mdLinePrefix(ta, prefix) {
+  const s = ta.selectionStart, e = ta.selectionEnd, val = ta.value;
+  const lineStart = val.lastIndexOf('\n', s - 1) + 1;
+  const seg = val.slice(lineStart, e);
+  const out = seg.split('\n').map((l) => prefix + l).join('\n');
+  ta.value = val.slice(0, lineStart) + out + val.slice(e);
+  ta.focus();
+  ta.selectionStart = lineStart;
+  ta.selectionEnd = lineStart + out.length;
+}
+
+// A markdown field: a formatting toolbar + an Edit/Preview toggle (rendered with the
+// shared `renderMarkdown`) + the AI Draft/Improve button. Returns { node, get }.
+function buildMarkdownField(f, it) {
+  const ta = el('textarea', { class: 'editor-textarea', rows: 9 });
+  ta.value = f.value || '';
+  const preview = el('div', { class: 'editor-md-preview docs-view', hidden: true });
+  let previewing = false;
+
+  const tbBtn = (label, title, fn) => el('button', {
+    class: 'md-tb-btn', type: 'button', title,
+    onclick: (e) => { e.preventDefault(); if (!previewing) fn(); },
+  }, label);
+
+  const previewBtn = el('button', { class: 'md-tb-btn md-tb-preview', type: 'button', title: 'Toggle preview' }, 'Preview');
+  previewBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    previewing = !previewing;
+    if (previewing) preview.innerHTML = renderMarkdown(ta.value || '') || '<span class="muted">(empty)</span>';
+    ta.hidden = previewing;
+    preview.hidden = !previewing;
+    previewBtn.textContent = previewing ? 'Edit' : 'Preview';
+    previewBtn.classList.toggle('md-tb-on', previewing);
+  });
+
+  const toolbar = el('div', { class: 'md-toolbar' }, [
+    tbBtn('B', 'Bold', () => mdSurround(ta, '**', '**')),
+    tbBtn('I', 'Italic', () => mdSurround(ta, '_', '_')),
+    tbBtn('H', 'Heading', () => mdLinePrefix(ta, '## ')),
+    tbBtn('“', 'Quote', () => mdLinePrefix(ta, '> ')),
+    tbBtn('•', 'Bulleted list', () => mdLinePrefix(ta, '- ')),
+    tbBtn('1.', 'Numbered list', () => mdLinePrefix(ta, '1. ')),
+    tbBtn('</>', 'Inline code', () => mdSurround(ta, '`', '`')),
+    tbBtn('🔗', 'Link', () => mdSurround(ta, '[', '](url)')),
+    el('span', { class: 'md-tb-spacer' }),
+    previewBtn,
+  ]);
+
+  // AI draft/improve.
+  const aiBtn = el('button', { class: 'btn btn-xs editor-ai', type: 'button' });
+  const aiLabel = () => (ta.value.trim() ? '✨ Improve' : '✨ Draft');
+  aiBtn.textContent = aiLabel();
+  aiBtn.addEventListener('click', async () => {
+    if (previewing) previewBtn.click(); // drop back to edit so the result is visible
+    const improve = !!ta.value.trim();
+    aiBtn.disabled = true;
+    aiBtn.textContent = '✨ Thinking…';
+    try {
+      // One call to the server (runs it if it has a model, else hands back the prompt);
+      // the shared dispatcher resolves it - running in-browser on the same WebGPU model
+      // the tagger uses when that's the active backend.
+      const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve });
+      const text = await resolveAiText(res, (s) => { aiBtn.textContent = '✨ ' + (s || 'Loading…'); });
+      if (text) ta.value = text;
+    } catch (err) {
+      toast('AI draft failed: ' + (err?.message || err), true);
+    } finally {
+      aiBtn.disabled = false;
+      aiBtn.textContent = aiLabel();
+    }
+  });
+
+  return {
+    node: el('div', { class: 'editor-rich' }, [
+      toolbar, ta, preview, el('div', { class: 'editor-ai-row' }, aiBtn),
+    ]),
+    get: () => ta.value,
+  };
+}
+
+// Build the input control for one field, keyed by its `kind`. Returns { node, get }
+// where `get()` reads the current value as the string the API expects (markdown for
+// rich fields). Rich fields also get an AI Draft/Improve button.
+function buildFieldControl(f, it) {
+  if (f.read_only) {
+    return {
+      node: el('div', { class: 'editor-ro' }, f.value || el('span', { class: 'muted' }, '(empty)')),
+      get: () => f.value || '',
+    };
+  }
+  switch (f.kind) {
+    case 'markdown':
+      return buildMarkdownField(f, it);
+    case 'plain_text': {
+      const ta = el('textarea', { class: 'editor-textarea', rows: 4 });
+      ta.value = f.value || '';
+      return { node: ta, get: () => ta.value };
+    }
+    case 'select': {
+      const sel = el('select', { class: 'editor-input' }, [
+        el('option', { value: '' }, '(none)'),
+        ...(f.options || []).map((o) => el('option', { value: o }, o)),
+      ]);
+      sel.value = f.value || '';
+      return { node: sel, get: () => sel.value };
+    }
+    case 'integer':
+    case 'float': {
+      const inp = el('input', { class: 'editor-input', type: 'number', step: f.kind === 'float' ? 'any' : '1' });
+      inp.value = f.value || '';
+      return { node: inp, get: () => inp.value.trim() };
+    }
+    case 'boolean': {
+      const inp = el('input', { type: 'checkbox' });
+      inp.checked = /^true$/i.test(f.value || '');
+      return {
+        node: el('label', { class: 'editor-check' }, [inp, el('span', {}, 'Yes')]),
+        get: () => (inp.checked ? 'true' : 'false'),
+      };
+    }
+    default: {
+      // text / date_time (edited as its ISO string) / anything unmapped.
+      const inp = el('input', { class: 'editor-input', type: 'text' });
+      inp.value = f.value || '';
+      return { node: inp, get: () => inp.value };
+    }
+  }
+}
+
 // Linked-work-item chips on a PR, each a link to the item in ADO. `meta` is the
 // team's config ({ organization, project }); without it the chip is a plain tag.
 function wiLinkChips(ids, meta) {
@@ -1205,6 +1444,7 @@ async function renderPipelines() {
   ];
 
   pipeTable = dataTable(columns, pipelines, {
+    persistKey: 'pipelines',
     initialSort: { index: 0, dir: 1 },
     emptyText: 'No matching pipelines.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
@@ -1284,6 +1524,7 @@ async function renderPulls() {
   ].filter(Boolean);
 
   prTable = dataTable(columns, prs, {
+    persistKey: 'pull-requests',
     initialSort: { index: 0, dir: -1 }, // newest PRs first (highest id)
     emptyText: 'No matching pull requests.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
@@ -1966,6 +2207,12 @@ function rulesEditorCard(rules, opts) {
     ignore_types: [...(r.ignore_types || [])],
     resolved_states: [...(r.resolved_states || [])],
     stale_when_resolved_tags: [...(r.stale_when_resolved_tags || [])],
+    // Carried through so a UI save doesn't drop them (no dedicated editor for the
+    // first two; team_background gets the textarea below).
+    refine_tag: r.refine_tag ?? null,
+    refine_min_chars: r.refine_min_chars ?? null,
+    moved_in_source: r.moved_in_source ?? null,
+    team_background: r.team_background || '',
     pipelines: {
       flag_failing: !!(r.pipelines && r.pipelines.flag_failing),
       flag_never_run: !!(r.pipelines && r.pipelines.flag_never_run),
@@ -1998,6 +2245,7 @@ function rulesEditorCard(rules, opts) {
     field('Required tags', 'every item must carry a tag matching each pattern', chipListEditor(draft.required_tags)),
     field('Untagged item', 'severity when an item has no tags at all', untaggedToggle(draft)),
     field('Auto-suggest keywords', 'suggest a tag when an item title contains a keyword (advisory - never applied automatically)', tagKeywordsEditor(draft.tag_keywords)),
+    field('Team background (AI)', 'context / glossary fed verbatim to the AI tagger so it understands your internal naming - never applied as a tag', teamBackgroundEditor(draft)),
     field('Stale limits', 'days an item may sit in a state before it is flagged stale', staleEditor(draft.stale_days)),
     field('Resolved states', 'states that count as "done" - a "still needs work" tag here is flagged (runs even on ignored states)', chipListEditor(draft.resolved_states)),
     field('Stale-when-resolved tags', 'tags meaning outstanding work; flagged on a resolved item, e.g. "to refine" on a Closed story', chipListEditor(draft.stale_when_resolved_tags)),
@@ -2081,6 +2329,17 @@ function tagKeywordsEditor(list) {
   };
   draw();
   return box;
+}
+
+// Free-text team background / AI glossary editor. Bound to draft.team_background.
+function teamBackgroundEditor(draft) {
+  const ta = el('textarea', {
+    class: 'rule-textarea', rows: '10', 'aria-label': 'Team background',
+    placeholder: 'Context fed verbatim to the AI tagger, e.g.\n- Our core billing service and its satellites are all product:platform.\n- The internal developer portal = product:idp.\n- Crossplane / Terraform / Argo = product:dev-platform (the platform tooling itself).\n- The "deployment" repos are IaC that provisions customer environments = area:platform-deployment.',
+    oninput: (e) => { draft.team_background = e.target.value; },
+  });
+  ta.value = draft.team_background || '';
+  return ta;
 }
 
 // A tag/string list editor: removable chips + an add-on-Enter input. Mutates the
@@ -2484,15 +2743,6 @@ function renderIntegrations(holder, data) {
       } }, 'Reset to defaults'),
   ]));
   holder.append(benchOut);
-}
-
-// What actually runs for THIS client, in priority order: WebGPU entries are usable
-// only where the browser has WebGPU; every other kind uses the server's platform
-// verdict. First usable + configured one wins (matches the Suggest engine choice).
-function effectiveActiveId(list, caps) {
-  const usable = (i) => (i.kind === 'webgpu' ? webgpuAvailable() : i.compatible) && i.configured !== false;
-  const hit = (list || []).find(usable);
-  return hit ? hit.id : null;
 }
 
 // Fixed benchmark probe - a small, unambiguous work item + allowed set, mirrored on

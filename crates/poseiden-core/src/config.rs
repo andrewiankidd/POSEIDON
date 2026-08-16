@@ -273,6 +273,46 @@ pub struct RuleSet {
     /// underspecified. Defaults to 40 when `refine_tag` is set; ignored otherwise.
     #[serde(default)]
     pub refine_min_chars: Option<usize>,
+    /// Placeholder phrases that mark an item as underspecified regardless of length -
+    /// a body with real words but no actionable content ("scope to be clarified",
+    /// "TBD", "details to follow"). Case-insensitive substring match against the body
+    /// (hyperlinks stripped first). Empty = off. Catches stubs that a length check
+    /// misses because a pasted URL inflates them past `refine_min_chars`.
+    #[serde(default)]
+    pub refine_phrases: Vec<String>,
+    /// Max tags the AI tagger may propose per item. `None` = an adaptive default that
+    /// scales with the required-tag axes (so all required categories fit, plus slack
+    /// for a second area / a rewrite - see `poseiden_ai::default_max_suggestions`). Set
+    /// a number to override. Only a ceiling: the prompt still favours precision, so a
+    /// higher cap doesn't force over-tagging - it just stops a many-axis taxonomy from
+    /// truncating its own required picks (the old flat cap of 3 did exactly that).
+    #[serde(default)]
+    pub max_suggestions: Option<usize>,
+    /// Free-text team background / glossary fed to the AI tagger's prompt. Lets a
+    /// team teach the model its internal naming and conventions (e.g. "Widget = our
+    /// billing service", "the Portal = our internal developer portal") so it tags by
+    /// meaning, not by guessing at unfamiliar words. Per-team (inherits/overrides);
+    /// empty = no background. Only reaches the model, never applied as a tag.
+    #[serde(default)]
+    pub team_background: Option<String>,
+    /// When set, an item that was CREATED under a different area path and later MOVED
+    /// into this team's area (detected from work-item revision history) gets this
+    /// source tag suggested - the "raised elsewhere, handed to us" signal that can't
+    /// be read from the body (e.g. `"source:sre"` for work moved off the SRE board).
+    /// None = the check is off.
+    #[serde(default)]
+    pub moved_in_source: Option<String>,
+    /// When true, a child work item inherits its parent's `product:`/`area:` tags as
+    /// suggestions (a child's product/area is almost always its parent's). `source:`
+    /// is NOT inherited - how work arrived is per-item. Off by default.
+    #[serde(default)]
+    pub inherit_parent_tags: bool,
+    /// Map a linked repository name to a tag: when an item's linked repos match a
+    /// rule's keywords (repo names, whole-word), the tag is suggested. Reuses the
+    /// `TagKeywords` shape (`tag` + `keywords`=repo names) - a PR to "PlatformDeployment"
+    /// implies `area:platform-deployment`. A high-precision product/area signal.
+    #[serde(default)]
+    pub repo_tags: Vec<TagKeywords>,
     /// Pipeline hygiene checks (a sub-policy of the same ruleset, so it inherits
     /// / overrides per-team exactly like the work-item rules above).
     pub pipelines: PipelineRules,

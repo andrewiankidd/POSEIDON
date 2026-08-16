@@ -92,6 +92,8 @@ impl StubProvider {
             url: format!("https://stub.example/{}/_workitems/edit/{id}", self.team),
             description: None,
             linked_pr_ids: linked.to_vec(),
+            parent_id: None,
+            linked_repos: Vec::new(),
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
@@ -114,7 +116,7 @@ impl Provider for StubProvider {
         // recently-closed items tagged with the area:/source:/internal-external
         // taxonomy so Recap has a real month of shipped work to summarise.
         // Closed items are ignored by the hygiene engine, so they never add flags.
-        Ok(vec![
+        let mut items = vec![
             // --- open: the three that trip a rule ---
             self.wi(
                 1001,
@@ -306,7 +308,54 @@ impl Provider for StubProvider {
                 Some(28),
                 &[],
             ),
-        ])
+        ];
+        // Demo-only ENRICHMENT (advisory signals; never touches hygiene flags). Gives
+        // the offline showcase live examples of the relation-driven tag suggestions:
+        // parent-tag inheritance, linked-repo -> tag, and a body for keyword/AI tagging.
+        // Ids 1001-1003 (the three flagged items) are left untouched so counts hold.
+        for it in &mut items {
+            match it.id {
+                // Parent Feature carries a product tag its children can inherit.
+                1005 => {
+                    it.tags.push("product:platform".into());
+                    it.description = Some(
+                        "Deliver the configurable report engine: pick datasources and \
+                         conditions, CRUD reports with render types, drive the home tiles."
+                            .into(),
+                    );
+                }
+                // Children of 1005: inherit product:platform; each also links a repo.
+                1004 => {
+                    it.parent_id = Some(1005);
+                    it.linked_repos = vec!["platform-core".into()];
+                    it.description = Some(
+                        "The poller drops items on transient 5xx from the tracker; add \
+                         retry with exponential backoff and jitter."
+                            .into(),
+                    );
+                }
+                1006 => {
+                    it.parent_id = Some(1005);
+                    it.linked_repos = vec!["platform-infra".into()];
+                    it.description = Some(
+                        "Wire the live-reload dev loop so the web client rebuilds on save \
+                         against the local Kubernetes cluster."
+                            .into(),
+                    );
+                }
+                // A linked repo that maps to a different product than the body suggests.
+                1002 => {
+                    it.linked_repos = vec!["portal-service".into()];
+                    it.description = Some(
+                        "Document the YAML config-import format consumed by \
+                         `poseiden config import`, including the rules schema."
+                            .into(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(items)
     }
 
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError> {
@@ -435,6 +484,16 @@ impl Provider for StubProvider {
             .ok_or_else(|| ProviderError::NotFound(format!("pull request {id}")))
     }
 
+    async fn fetch_origin_area(&self, id: i64) -> Result<Option<String>, ProviderError> {
+        // Demo: item 1004 was CREATED on the SRE board and later moved into this team's
+        // area - the "raised elsewhere, handed to us" signal. Configure a team area path
+        // + moved_in_source and this surfaces source:sre. Every other item is native.
+        Ok(match id {
+            1004 => Some(format!("{}\\SRE Projects", self.team)),
+            _ => None,
+        })
+    }
+
     async fn update_work_item(
         &self,
         id: i64,
@@ -479,6 +538,66 @@ impl Provider for StubProvider {
             .find(|w| w.id == work_item_id)
             .ok_or_else(|| ProviderError::NotFound(format!("work item {work_item_id}")))?;
         item.linked_pr_ids.retain(|p| *p != pr_id);
+        Ok(item)
+    }
+
+    async fn editable_fields(
+        &self,
+        id: i64,
+    ) -> Result<Vec<poseiden_core::EditableField>, ProviderError> {
+        use poseiden_core::{EditableField, FieldKind};
+        let item = self
+            .fetch_work_items()
+            .await?
+            .into_iter()
+            .find(|w| w.id == id)
+            .ok_or_else(|| ProviderError::NotFound(format!("work item {id}")))?;
+        Ok(vec![
+            EditableField {
+                reference: "title".into(),
+                label: "Title".into(),
+                kind: FieldKind::Text,
+                value: item.title,
+                options: Vec::new(),
+                read_only: false,
+                required: true,
+                help: None,
+            },
+            EditableField {
+                reference: "description".into(),
+                label: "Description".into(),
+                kind: FieldKind::Markdown,
+                value: item.description.unwrap_or_default(),
+                options: Vec::new(),
+                read_only: false,
+                required: false,
+                help: Some("Demo field - edits echo back but revert on the next poll.".into()),
+            },
+        ])
+    }
+
+    async fn update_fields(
+        &self,
+        id: i64,
+        changes: &[poseiden_core::FieldChange],
+    ) -> Result<WorkItem, ProviderError> {
+        // In-memory echo (like update_work_item): apply title/description and return
+        // the item so the editor round-trips; reverts on the next poll.
+        let mut item = self
+            .fetch_work_items()
+            .await?
+            .into_iter()
+            .find(|w| w.id == id)
+            .ok_or_else(|| ProviderError::NotFound(format!("work item {id}")))?;
+        for c in changes {
+            match c.reference.as_str() {
+                "title" => item.title = c.value.clone(),
+                "description" => {
+                    item.description = Some(c.value.clone()).filter(|s| !s.trim().is_empty());
+                }
+                _ => {}
+            }
+        }
         Ok(item)
     }
 }
