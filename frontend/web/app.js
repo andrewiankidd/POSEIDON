@@ -49,13 +49,16 @@ function saveToggles(state) {
   if (!state || !state.persistKey) return;
   try {
     const k = `poseiden.toggles.${state.persistKey}`;
+    const view = state.view && state.view !== 'table' ? state.view : null;
     // Drop the entry at defaults so we don't leave empty state lying around.
-    if (!state.flaggedOnly && !state.hideEmpty) localStorage.removeItem(k);
-    else localStorage.setItem(k, JSON.stringify({ flaggedOnly: !!state.flaggedOnly, hideEmpty: !!state.hideEmpty }));
+    if (!state.flaggedOnly && !state.hideEmpty && !view) { localStorage.removeItem(k); return; }
+    localStorage.setItem(k, JSON.stringify({
+      flaggedOnly: !!state.flaggedOnly, hideEmpty: !!state.hideEmpty, view: state.view || 'table',
+    }));
   } catch { /* private mode / quota - persistence is best-effort */ }
 }
-// Build the shared filter state for a list view, restoring the persisted toggles -
-// unless a deep-link (?flagged=1 / ?flag=<code>) explicitly overrides them.
+// Build the shared filter state for a list view, restoring the persisted toggles +
+// view - unless a deep-link (?flagged=1 / ?flag=<code>) explicitly overrides them.
 function listState(persistKey, flagCode) {
   const saved = loadToggles(persistKey);
   return {
@@ -63,6 +66,7 @@ function listState(persistKey, flagCode) {
     flagCode,
     flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode || !!saved.flaggedOnly,
     hideEmpty: !!saved.hideEmpty,
+    view: saved.view || 'table',
   };
 }
 
@@ -1094,8 +1098,9 @@ async function renderWorkItems() {
     // Rule-break filtering (all flagged, or one specific flag code); tag
     // filtering is the Tags column's own per-column filter input.
     predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    // Action buttons in the order you'd run them: dedupe -> triage quality -> classify.
-    toolbar: [flaggedToggle, emptyToggle, dupBtn, hcBtn, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    // View switcher leads; then action buttons in the order you'd run them:
+    // dedupe -> triage quality -> classify.
+    toolbar: [mkViewSelect(), flaggedToggle, emptyToggle, dupBtn, hcBtn, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
@@ -1117,8 +1122,127 @@ async function renderWorkItems() {
     },
   });
   wrap.appendChild(bulkBar);
-  wrap.appendChild(table);
+  // The content host swaps between the table and the board (Kanban) view. Both read
+  // the same `items`/`flags`; the board is rebuilt on entry (no per-board state to
+  // keep), while the table node persists so its selection/filters survive a round trip.
+  const host = el('div', { class: 'wi-host' });
+  wrap.appendChild(host);
+  renderHost();
   return wrap;
+
+  // ── view switching (declarations - hoisted, so the toolbar above can use them) ──
+  function renderHost() {
+    clear(host);
+    host.appendChild(state.view && state.view !== 'table' ? buildBoard(state.view) : table);
+  }
+
+  // The View <select>: Table, Board · State, and a Board · <prefix> per tag axis found
+  // in the data (area / product / source / …). A fresh node each call (it lives in
+  // whichever toolbar is currently mounted).
+  function mkViewSelect() {
+    const prefixes = [...new Set((items || [])
+      .flatMap((it) => it.tags || [])
+      .map((t) => (t.includes(':') ? t.split(':')[0].toLowerCase() : ''))
+      .filter(Boolean))].sort();
+    const opts = [
+      { v: 'table', label: '▤ Table' },
+      { v: 'state', label: '▦ Board · State' },
+      ...prefixes.map((p) => ({ v: p, label: `▦ Board · ${p[0].toUpperCase()}${p.slice(1)}` })),
+    ];
+    const sel = el('select', {
+      class: 'view-select', title: 'Switch between table and board views', 'aria-label': 'View',
+      onchange: (e) => { state.view = e.target.value; saveToggles(state); renderHost(); },
+    }, opts.map((o) => {
+      const opt = el('option', { value: o.v }, o.label);
+      if ((state.view || 'table') === o.v) opt.selected = true;
+      return opt;
+    }));
+    return sel;
+  }
+
+  // Build the Kanban board for `axis` ('state' or a tag prefix). Same predicate
+  // filters as the table (Rule Breaks / Hide empty / flag chip) apply to which cards
+  // show; the toggles re-render the host so they work in board mode too.
+  function buildBoard(axis) {
+    const shown = items.filter((it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)));
+    const toolbar = el('div', { class: 'dt-toolbar' }, [
+      mkViewSelect(),
+      ruleBreaksToggle(state, () => ({ refresh: renderHost })),
+      hideEmptyToggle(state, () => ({ refresh: renderHost })),
+      el('span', { class: 'dt-spacer' }),
+      el('span', { class: 'dt-count' }, `${shown.length} of ${items.length}`),
+      flagFilterChip(state, 'work-items'),
+    ].filter(Boolean));
+    const cols = el('div', { class: 'board-cols' });
+    const groups = groupForBoard(shown, axis);
+    for (const g of groups) {
+      cols.appendChild(el('div', { class: 'board-col' }, [
+        el('div', { class: 'board-col-head' }, [
+          el('span', { class: 'board-col-name', title: g.key }, g.key),
+          el('span', { class: 'board-col-count' }, String(g.items.length)),
+        ]),
+        el('div', { class: 'board-col-cards' }, g.items.map(boardCard)),
+      ]));
+    }
+    if (!groups.length) cols.appendChild(el('div', { class: 'empty' }, 'No matching work items.'));
+    return el('div', { class: 'board-view' }, [toolbar, cols]);
+  }
+
+  // One card. Id links out to the provider item; the pencil opens the POSEIDEN editor.
+  function boardCard(it) {
+    const fl = flagsOf(it) || [];
+    return el('div', { class: 'board-card' }, [
+      el('div', { class: 'board-card-head' }, [
+        linkOut('#' + it.id, it.url),
+        el('span', { class: 'board-card-type' }, it.work_item_type || ''),
+        el('span', { class: 'dt-spacer' }),
+        el('button', {
+          class: 'wi-edit', type: 'button', title: 'Edit work-item fields',
+          onclick: () => openWorkItemEditor(it, () => route()),
+        }, '✎'),
+      ]),
+      el('div', { class: 'board-card-title' }, it.title || ''),
+      it.assigned_to ? el('div', { class: 'board-card-assignee' }, it.assigned_to) : null,
+      (it.tags || []).length
+        ? el('div', { class: 'board-card-tags' }, it.tags.map((t) => el('span', { class: 'board-chip' }, t)))
+        : null,
+      fl.length
+        ? el('div', { class: 'board-card-flags' }, fl.map((f) => el('span', {
+            class: 'flagchip ' + (f.severity === 'error' ? 'err' : 'warn'), title: f.message,
+          }, flagShort(f))))
+        : null,
+    ].filter(Boolean));
+  }
+}
+
+// Group work items into ordered board columns. State axis uses a sensible lifecycle
+// order; a tag axis (`area`/`product`/…) groups by each matching tag value (an item
+// with two `area:` tags shows in both columns), untagged items in a "(none)" column.
+const BOARD_STATE_ORDER = [
+  'new', 'proposed', 'to do', 'approved', 'open', 'active', 'committed',
+  'in progress', 'doing', 'review', 'resolved', 'done', 'completed', 'closed', 'removed',
+];
+function groupForBoard(items, axis) {
+  const map = new Map();
+  const push = (k, it) => { (map.get(k) || map.set(k, []).get(k)).push(it); };
+  if (axis === 'state') {
+    for (const it of items) push(it.state || '(no state)', it);
+    const keys = [...map.keys()].sort((a, b) => {
+      const ia = BOARD_STATE_ORDER.indexOf(a.toLowerCase());
+      const ib = BOARD_STATE_ORDER.indexOf(b.toLowerCase());
+      return (ia === -1 ? 500 : ia) - (ib === -1 ? 500 : ib) || a.localeCompare(b);
+    });
+    return keys.map((k) => ({ key: k, items: map.get(k) }));
+  }
+  const pfx = axis + ':';
+  for (const it of items) {
+    const vals = (it.tags || []).filter((t) => t.toLowerCase().startsWith(pfx)).map((t) => t.slice(pfx.length));
+    if (!vals.length) push('(none)', it);
+    else for (const v of vals) push(v, it);
+  }
+  const keys = [...map.keys()].sort((a, b) =>
+    (a === '(none)' ? 1 : b === '(none)' ? -1 : a.localeCompare(b)));
+  return keys.map((k) => ({ key: k, items: map.get(k) }));
 }
 
 // Mirror of poseiden-rules::tag_matches - trailing-`*` prefix wildcard, else

@@ -440,6 +440,27 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
    from the header row (see table.js) so the offset tracks its real height. */
 .dt-fill .dt-head th { z-index: 2; }
 .dt-fill .dt-filter th { position: sticky; top: var(--dt-head-h, 34px); z-index: 1; }
+
+/* Board (Kanban) view - swaps in for the table in `.wi-host`. */
+.wi-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.view-select { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel-2); color: var(--ink); cursor: pointer; }
+.view-select:focus { outline: none; border-color: var(--accent); }
+.board-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.board-view .dt-toolbar { flex: 0 0 auto; }
+.board-cols { flex: 1 1 auto; min-height: 0; display: flex; gap: 12px; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; }
+.board-col { flex: 0 0 300px; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.board-col-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.board-col-name { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-col-count { flex: 0 0 auto; font-size: 11px; color: var(--ink-soft); background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px; padding: 0 8px; }
+.board-col-cards { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.board-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.board-card:hover { border-color: var(--accent); }
+.board-card-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.board-card-type { color: var(--ink-soft); font-size: 11px; }
+.board-card-title { font-size: 13px; line-height: 1.35; color: var(--ink); }
+.board-card-assignee { font-size: 11px; color: var(--ink-soft); }
+.board-card-tags, .board-card-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.board-chip { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; background: var(--panel); border: 1px solid var(--border); color: var(--ink-soft); }
 .page-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; gap: 16px; }
 .page-head h1 { font-size: 22px; margin: 0; }
 .page-head .sub { color: var(--ink-soft); font-size: 13px; }
