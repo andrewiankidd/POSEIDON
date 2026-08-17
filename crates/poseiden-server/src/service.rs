@@ -72,6 +72,16 @@ pub enum DraftOutcome {
     Prompt { system: String, user: String },
 }
 
+/// The result of a whole-item consistency sweep. Like [`DraftOutcome`] but the value
+/// is a SET of field changes: either the server produced them, or the built prompt is
+/// handed back for the browser (WebGPU) to run - the browser then posts the reply to
+/// [`Service::parse_refine_reply`] to be validated + turned into changes server-side.
+#[derive(Debug, Clone)]
+pub enum RefineOutcome {
+    Value(Vec<poseiden_core::FieldChange>),
+    Prompt { system: String, user: String },
+}
+
 /// `replace`, only the newly-added ones on a merge.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportSummary {
@@ -2199,6 +2209,131 @@ impl Service {
             system: poseiden_ai::FIELD_DRAFT_SYSTEM_PROMPT.to_string(),
             user: poseiden_ai::build_field_draft_prompt(&ctx),
         })
+    }
+
+    /// Assemble the whole-item consistency context from the item's editable fields with
+    /// the editor's UNSAVED working values overlaid - the draftable (rich-text) fields
+    /// only, since those are what "Improve all" proposes. Shared by the run + parse paths
+    /// so both agree on which fields (and references) are in scope.
+    async fn consistency_context(
+        &self,
+        team: &str,
+        id: i64,
+        working: &[poseiden_core::FieldChange],
+    ) -> anyhow::Result<poseiden_ai::FieldsConsistencyContext> {
+        let mut fields = self.provider_for(team).await?.editable_fields(id).await?;
+        if !working.is_empty() {
+            let overlay: std::collections::HashMap<&str, &str> = working
+                .iter()
+                .map(|c| (c.reference.as_str(), c.value.as_str()))
+                .collect();
+            for f in &mut fields {
+                if let Some(v) = overlay.get(f.reference.as_str()) {
+                    f.value = (*v).to_string();
+                }
+            }
+        }
+        let items = self
+            .store
+            .list_work_items(&self.owner, Some(team))
+            .await
+            .unwrap_or_default();
+        let item = items.iter().find(|w| w.id == id);
+        let title = fields
+            .iter()
+            .find(|f| f.reference.eq_ignore_ascii_case("title") || f.reference == "System.Title")
+            .map(|f| f.value.clone())
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| item.map(|w| w.title.clone()))
+            .unwrap_or_default();
+        let work_item_type = item.map(|w| w.work_item_type.clone()).unwrap_or_default();
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        let background = rules_for_team(&cfg, team)
+            .team_background
+            .clone()
+            .unwrap_or_default();
+        // Only the rich narrative fields (Description, Repro Steps, Acceptance Criteria,
+        // …) - a consistency pass over a treePath (Area Path), a pick-list, or the Title
+        // is meaningless, and those `Text` kinds are draftable too, so filter by the rich
+        // kinds explicitly rather than `is_draftable()`. The title is context (above).
+        let harmonised: Vec<poseiden_ai::DraftFieldValue> = fields
+            .iter()
+            .filter(|f| {
+                !f.read_only
+                    && matches!(
+                        f.kind,
+                        poseiden_core::FieldKind::Markdown | poseiden_core::FieldKind::PlainText
+                    )
+            })
+            .map(|f| poseiden_ai::DraftFieldValue {
+                reference: f.reference.clone(),
+                label: f.label.clone(),
+                value: f.value.clone(),
+            })
+            .collect();
+        Ok(poseiden_ai::FieldsConsistencyContext {
+            work_item_type,
+            title,
+            background,
+            fields: harmonised,
+        })
+    }
+
+    /// Refine ALL of an item's proposed rich fields into a mutually-consistent set in one
+    /// pass. Server-run when an online model is configured; otherwise the built prompt is
+    /// handed back for the browser to run (WebGPU), which posts the reply to
+    /// [`Self::parse_refine_reply`]. `working` carries the editor's unsaved values.
+    pub async fn refine_work_item_fields(
+        &self,
+        team: &str,
+        id: i64,
+        working: &[poseiden_core::FieldChange],
+    ) -> anyhow::Result<RefineOutcome> {
+        let ctx = self.consistency_context(team, id, working).await?;
+        if ctx.fields.is_empty() {
+            return Ok(RefineOutcome::Value(Vec::new())); // nothing to harmonise
+        }
+        if let Some(ai) = self.ai_tagger().await {
+            match ai.refine_fields(&ctx).await {
+                Ok(pairs) => {
+                    return Ok(RefineOutcome::Value(
+                        pairs
+                            .into_iter()
+                            .map(|(reference, value)| poseiden_core::FieldChange { reference, value })
+                            .collect(),
+                    ))
+                }
+                Err(poseiden_ai::AiError::Unsupported(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(RefineOutcome::Prompt {
+            system: poseiden_ai::FIELDS_CONSISTENCY_SYSTEM_PROMPT.to_string(),
+            user: poseiden_ai::build_fields_consistency_prompt(&ctx),
+        })
+    }
+
+    /// Validate a browser (WebGPU) consistency reply and turn it into field changes. The
+    /// trust boundary for that path: the reply is re-parsed server-side and kept only for
+    /// references that are actually editable on this item. `working` scopes which fields
+    /// were in the request (same set as the run path).
+    pub async fn parse_refine_reply(
+        &self,
+        team: &str,
+        id: i64,
+        working: &[poseiden_core::FieldChange],
+        text: &str,
+    ) -> anyhow::Result<Vec<poseiden_core::FieldChange>> {
+        let ctx = self.consistency_context(team, id, working).await?;
+        let refs: Vec<String> = ctx.fields.iter().map(|f| f.reference.clone()).collect();
+        Ok(poseiden_ai::parse_fields_consistency(text, &refs)
+            .into_iter()
+            .map(|(reference, value)| poseiden_core::FieldChange { reference, value })
+            .collect())
     }
 
     /// Hygiene flags for the current stored items (optionally one team),

@@ -76,6 +76,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Markdown field editor** — a formatting toolbar + Edit/Preview toggle on rich
   fields; AI drafts land in a **review pane** (Use / Discard) rather than overwriting,
   operate on the live unsaved editor state, and have malformed links auto-repaired.
+- **"Improve all fields"** — a top-level editor action that drafts/improves every
+  AI-eligible field (the same per-field calls), then runs one **consistency sweep**
+  over the whole item so the fields share terminology and don't contradict or repeat
+  each other. Every result lands in its field's review pane to keep or discard
+  individually — nothing is auto-applied. Runs on the active AI backend (server or
+  the browser's WebGPU model via the value-or-prompt handshake).
 
 ### Fixed
 - **Editor no longer shows fields a work-item type hides** — the field editor

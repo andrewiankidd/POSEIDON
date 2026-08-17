@@ -114,6 +114,14 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
             "/api/work-items/{id}/fields/draft",
             post(draft_work_item_field),
         )
+        .route(
+            "/api/work-items/{id}/fields/consistency",
+            post(refine_work_item_fields),
+        )
+        .route(
+            "/api/work-items/{id}/fields/consistency/parse",
+            post(parse_refine_reply),
+        )
         .route("/api/work-items/{id}/pr-link", post(link_work_item_pr))
         .route("/api/pipelines", get(pipelines))
         .route("/api/pull-requests", get(pull_requests))
@@ -430,6 +438,59 @@ async fn draft_work_item_field(
         Ok(crate::service::DraftOutcome::Prompt { system, user }) => Ok(Json(
             serde_json::json!({ "prompt": { "system": system, "user": user } }),
         )),
+        Err(e) => Err(err500(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RefineFieldsBody {
+    team: String,
+    /// The editor's current (unsaved) values for every rich field - the proposed set
+    /// the sweep harmonises. Empty = harmonise the last-saved values.
+    #[serde(default)]
+    fields: Vec<poseiden_core::FieldChange>,
+}
+
+/// Refine ALL of an item's rich fields into a consistent set in one pass. Returns
+/// `{ fields: [...] }` when the server ran it, or `{ prompt }` for the browser to run
+/// (WebGPU) - the browser then posts the reply to `.../consistency/parse`.
+async fn refine_work_item_fields(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<RefineFieldsBody>,
+) -> ApiResult {
+    match svc.refine_work_item_fields(&body.team, id, &body.fields).await {
+        Ok(crate::service::RefineOutcome::Value(fields)) => {
+            Ok(Json(serde_json::json!({ "fields": fields })))
+        }
+        Ok(crate::service::RefineOutcome::Prompt { system, user }) => Ok(Json(
+            serde_json::json!({ "prompt": { "system": system, "user": user } }),
+        )),
+        Err(e) => Err(err500(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RefineParseBody {
+    team: String,
+    #[serde(default)]
+    fields: Vec<poseiden_core::FieldChange>,
+    /// The raw model reply the browser (WebGPU) produced, to be re-parsed server-side.
+    #[serde(default)]
+    text: String,
+}
+
+/// Parse a browser (WebGPU) consistency reply into validated field changes.
+async fn parse_refine_reply(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<RefineParseBody>,
+) -> ApiResult {
+    match svc
+        .parse_refine_reply(&body.team, id, &body.fields, &body.text)
+        .await
+    {
+        Ok(fields) => Ok(Json(serde_json::json!({ "fields": fields }))),
         Err(e) => Err(err500(e)),
     }
 }

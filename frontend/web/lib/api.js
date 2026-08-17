@@ -415,6 +415,22 @@ export const api = {
       method: 'POST',
       body: { team, reference, improve: !!improve, fields: fields || [] },
     }),
+  /** Whole-item consistency sweep: harmonise all rich fields in one pass. `fields` =
+   *  the proposed values [{reference,value}]. Returns { fields: [...] } (server ran it)
+   *  or { prompt: {system,user} } for the browser (WebGPU) to run, then post to
+   *  `parseFieldsConsistency`. */
+  refineFields: (id, { team, fields }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/consistency', {
+      method: 'POST',
+      body: { team, fields: fields || [] },
+    }),
+  /** Re-parse a browser (WebGPU) consistency reply into validated changes. Returns
+   *  { fields: [{reference,value}] }. */
+  parseFieldsConsistency: (id, { team, fields, text }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/consistency/parse', {
+      method: 'POST',
+      body: { team, fields: fields || [], text: text || '' },
+    }),
   /** Replace the instance-wide default ruleset. `rules` = a full RuleSet. */
   updateRules: (rules) =>
     request('/rules', { method: 'PUT', body: rules, invokeCmd: 'update_rules', invokeArgs: { rules } }),
