@@ -28,6 +28,18 @@ pub enum FlagCode {
     /// outstanding work (e.g. "to refine" on a Closed story) - a contradiction the
     /// content-only AI tagger can't catch. See `RuleSet::stale_when_resolved_tags`.
     StaleStateTag,
+    /// Item has too little descriptive body to work with (see
+    /// `poseiden_rules::is_underspecified`) - the most upstream hygiene problem, since
+    /// you can't meaningfully tag, estimate or review it until it's fleshed out. Only
+    /// raised when `refine_tag` is configured and the item is open (not resolved).
+    Underspecified,
+    /// Item shares its (normalised) title with another item in scope - a likely
+    /// copy-paste / raised-twice duplicate to merge. Opt-in (`flag_duplicate_titles`),
+    /// since some backlogs have legitimately recurring titles.
+    Duplicate,
+    /// Item's title is a placeholder / junk (`test`, `asdf`, `Untitled`, too short) -
+    /// it tells you nothing about the work. Driven by the configured `bad_title_terms`.
+    BadTitle,
 }
 
 /// A single hygiene violation against one work item. Produced by the rules
@@ -87,6 +99,9 @@ mod tests {
             (FlagCode::DisallowedTag, "disallowed_tag"),
             (FlagCode::Stale, "stale"),
             (FlagCode::StaleStateTag, "stale_state_tag"),
+            (FlagCode::Underspecified, "underspecified"),
+            (FlagCode::Duplicate, "duplicate"),
+            (FlagCode::BadTitle, "bad_title"),
         ];
         for (code, slug) in cases {
             assert_eq!(serde_json::to_value(code).unwrap(), serde_json::json!(slug));

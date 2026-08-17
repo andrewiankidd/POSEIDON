@@ -42,13 +42,31 @@ export async function activeBackend() {
 // completion pattern lives - any feature whose endpoint returns value-or-prompt uses it.
 // `onStatus(text)` surfaces model-load progress during a browser run.
 export async function resolveAiText(res, onStatus) {
-  if (res && typeof res.value === 'string') return res.value;
-  if (res && res.prompt) {
+  let text;
+  if (res && typeof res.value === 'string') {
+    text = res.value;
+  } else if (res && res.prompt) {
     const be = await activeBackend();
     if (be.where !== 'browser' || !be.model) {
       throw new Error('No AI model configured (Settings → AI)');
     }
-    return runWebGpuChat(be.model, res.prompt.system, res.prompt.user, onStatus);
+    text = await runWebGpuChat(be.model, res.prompt.system, res.prompt.user, onStatus);
+  } else {
+    throw new Error('AI returned no result');
   }
-  throw new Error('AI returned no result');
+  return fixMarkdownLinks(text);
+}
+
+// Repair the common small-model link mistake: a bare URL inside [brackets] with no
+// (target) - e.g. "[Search URL: https://…]" or "[https://…]" - which is NOT a markdown
+// link and renders as literal text (and saves back broken). Rewrite to a valid
+// [label](url). Only touches brackets that CONTAIN a URL and aren't already a proper
+// [text](url) link, so "[TODO: …]" placeholders and real links are left untouched.
+export function fixMarkdownLinks(md) {
+  if (!md) return md;
+  return md.replace(/\[([^\]]*?(https?:\/\/[^\]\s]+)[^\]]*?)\](?!\()/g, (_m, inner, url) => {
+    let label = inner.replace(url, '').replace(/[\s:–—-]+$/, '').replace(/^[\s:–—-]+/, '').trim();
+    if (!label) label = url;
+    return `[${label}](${url})`;
+  });
 }

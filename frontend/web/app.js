@@ -78,9 +78,34 @@ function flagFilterChip(state, route) {
 // Does an entity carry the flag we're filtering to (or any flag if just "flagged
 // only")? `codes` is the entity's flag-code list. Shared predicate logic.
 function passesFlagFilter(state, codes) {
+  // "Hide empty body" - drop underspecified items so you can work the ones with real
+  // content first. Skipped when you're explicitly filtering TO empty-body items.
+  if (state.hideEmpty && state.flagCode !== 'underspecified' && codes.includes('underspecified')) {
+    return false;
+  }
   if (state.flagCode) return codes.includes(state.flagCode);
   if (state.flaggedOnly) return codes.length > 0;
   return true;
+}
+
+// A "Hide empty body" toggle for the Work Items toolbar - filters out underspecified
+// items (the "to refine" pile), so you can prioritise the ones with a real description
+// before tackling the empties.
+function hideEmptyToggle(state, getTable) {
+  return el('button', {
+    class: 'toggle-btn' + (state.hideEmpty ? ' on' : ''), type: 'button',
+    'aria-pressed': String(!!state.hideEmpty),
+    title: 'Hide items with an empty/very thin description (the "to refine" pile)',
+    onclick: (e) => {
+      state.hideEmpty = !state.hideEmpty;
+      e.currentTarget.classList.toggle('on', state.hideEmpty);
+      e.currentTarget.setAttribute('aria-pressed', String(state.hideEmpty));
+      getTable().refresh();
+    },
+  }, [
+    el('span', { class: 'toggle-switch' }, el('span', { class: 'toggle-knob' })),
+    el('span', {}, 'Hide empty body'),
+  ]);
 }
 
 // Auth state ({ signed_in, method, message }) - refreshed at boot + after a
@@ -441,6 +466,9 @@ const FLAG_LABELS = {
   disallowed_tag: 'Disallowed tag',
   stale: 'Stale',
   stale_state_tag: 'Stale tag on resolved item',
+  underspecified: 'Empty body',
+  duplicate: 'Duplicate title',
+  bad_title: 'Bad title',
   // Pull-request + pipeline entity-flag codes.
   'stale-open': 'Stale open PR',
   'stale-draft': 'Stale draft PR',
@@ -576,6 +604,7 @@ async function renderWorkItems() {
   // the table re-reads (only items with hygiene-rule violations).
   let table;
   const flaggedToggle = ruleBreaksToggle(state, () => table);
+  const emptyToggle = hideEmptyToggle(state, () => table);
 
   // After an inline edit writes back to ADO, patch everything locally so the
   // view is correct without a re-poll: the row's fields, its recomputed flags
@@ -935,7 +964,7 @@ async function renderWorkItems() {
     // Rule-break filtering (all flagged, or one specific flag code); tag
     // filtering is the Tags column's own per-column filter input.
     predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    toolbar: [flaggedToggle, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    toolbar: [flaggedToggle, emptyToggle, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
@@ -1018,7 +1047,7 @@ function flagShort(f) {
   if (f.code === 'missing_required_tag') return f.tag ? `missing ${f.tag}` : 'missing tag';
   if (f.code === 'disallowed_tag') return f.tag ? `bad: ${f.tag}` : 'bad tag';
   if (f.code === 'stale_state_tag') return f.tag ? `stale: ${f.tag}` : 'stale tag';
-  return { untagged: 'untagged', stale: 'stale' }[f.code] || f.code;
+  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title' }[f.code] || f.code;
 }
 
 // Work-items -> CSV: id, title, type, state, assignee, tags, suggestions (adds and
@@ -1201,7 +1230,15 @@ async function openWorkItemEditor(it, onSaved) {
     return;
   }
 
-  const controls = fields.map((f) => ({ field: f, ...buildFieldControl(f, it) }));
+  // The editor's current (unsaved) values for every writable field - handed to the AI
+  // so a draft operates on what's ON SCREEN (a just-generated body feeds a later title
+  // improve), not the last-saved provider state. Forward-referenced: the closure reads
+  // `controls` at call time, after it's populated below.
+  let controls = [];
+  const workingFields = () => controls
+    .filter((c) => !c.field.read_only)
+    .map((c) => ({ reference: c.field.reference, value: c.get() }));
+  controls = fields.map((f) => ({ field: f, ...buildFieldControl(f, it, workingFields) }));
   clear(body);
   const form = el('div', { class: 'editor-fields' });
   for (const c of controls) {
@@ -1268,7 +1305,7 @@ function mdLinePrefix(ta, prefix) {
 
 // A markdown field: a formatting toolbar + an Edit/Preview toggle (rendered with the
 // shared `renderMarkdown`) + the AI Draft/Improve button. Returns { node, get }.
-function buildMarkdownField(f, it) {
+function buildMarkdownField(f, it, workingFields) {
   const ta = el('textarea', { class: 'editor-textarea', rows: 9 });
   ta.value = f.value || '';
   const preview = el('div', { class: 'editor-md-preview docs-view', hidden: true });
@@ -1303,42 +1340,77 @@ function buildMarkdownField(f, it) {
     previewBtn,
   ]);
 
-  // AI draft/improve.
-  const aiBtn = el('button', { class: 'btn btn-xs editor-ai', type: 'button' });
-  const aiLabel = () => (ta.value.trim() ? '✨ Improve' : '✨ Draft');
-  aiBtn.textContent = aiLabel();
-  aiBtn.addEventListener('click', async () => {
-    if (previewing) previewBtn.click(); // drop back to edit so the result is visible
-    const improve = !!ta.value.trim();
-    aiBtn.disabled = true;
-    aiBtn.textContent = '✨ Thinking…';
+  // AI draft/improve, shown in a review pane before it replaces the field. Drops out
+  // of preview first so the result lands in the editable box.
+  const ai = buildAiAssist(f, it, () => ta.value, (t) => { ta.value = t; },
+    () => { if (previewing) previewBtn.click(); }, workingFields);
+
+  return {
+    node: el('div', { class: 'editor-rich' }, [toolbar, ta, preview, ai.row, ai.result]),
+    get: () => ta.value,
+  };
+}
+
+// Shared AI Draft/Improve affordance: a ✨ button + a REVIEW pane. The generated text
+// is shown in the pane (the current value stays put) with Use / Discard, so nothing is
+// silently overwritten - the user sees the proposal and chooses. `read()`/`apply(text)`
+// access the field's value; `beforeRun` (optional) runs before generating.
+function buildAiAssist(f, it, read, apply, beforeRun, workingFields) {
+  const result = el('div', { class: 'editor-ai-result-slot' });
+  const btn = el('button', { class: 'btn btn-xs editor-ai', type: 'button' });
+  const label = () => (read().trim() ? '✨ Improve' : '✨ Draft');
+  btn.textContent = label();
+  btn.addEventListener('click', async () => {
+    if (beforeRun) beforeRun();
+    const improve = !!read().trim();
+    btn.disabled = true;
+    btn.textContent = '✨ Thinking…';
     try {
       // One call to the server (runs it if it has a model, else hands back the prompt);
-      // the shared dispatcher resolves it - running in-browser on the same WebGPU model
-      // the tagger uses when that's the active backend.
-      const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve });
-      const text = await resolveAiText(res, (s) => { aiBtn.textContent = '✨ ' + (s || 'Loading…'); });
-      if (text) ta.value = text;
+      // the shared dispatcher resolves it - in-browser on the same WebGPU model the
+      // tagger uses when that's the active backend. `fields` carries the editor's current
+      // UNSAVED values so the AI drafts from what's on screen, not the saved state.
+      const fields = workingFields ? workingFields() : [];
+      const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve, fields });
+      const text = await resolveAiText(res, (s) => { btn.textContent = '✨ ' + (s || 'Loading…'); });
+      if (text) {
+        clear(result);
+        result.appendChild(el('div', { class: 'editor-ai-result' }, [
+          el('div', { class: 'editor-ai-result-head' }, improve ? '✨ Suggested rewrite — review, then keep or discard' : '✨ Draft — review, then keep or discard'),
+          el('div', { class: 'editor-ai-result-body' }, text),
+          el('div', { class: 'editor-ai-result-actions' }, [
+            el('button', { class: 'btn btn-xs btn-primary', type: 'button',
+              onclick: () => { apply(text); clear(result); btn.textContent = label(); } }, '✓ Use this'),
+            el('button', { class: 'btn btn-xs', type: 'button', onclick: () => clear(result) }, '✕ Discard'),
+          ]),
+        ]));
+      }
     } catch (err) {
       toast('AI draft failed: ' + (err?.message || err), true);
     } finally {
-      aiBtn.disabled = false;
-      aiBtn.textContent = aiLabel();
+      btn.disabled = false;
+      btn.textContent = label();
     }
   });
+  return { row: el('div', { class: 'editor-ai-row' }, btn), result };
+}
 
-  return {
-    node: el('div', { class: 'editor-rich' }, [
-      toolbar, ta, preview, el('div', { class: 'editor-ai-row' }, aiBtn),
-    ]),
-    get: () => ta.value,
-  };
+// Whether a field should offer AI drafting: rich/plain text always; a single-line text
+// field only when it's the Title (drafting an Area/Iteration path is nonsensical).
+function fieldAllowsAi(f) {
+  if (f.read_only) return false;
+  if (f.kind === 'markdown' || f.kind === 'plain_text') return true;
+  if (f.kind === 'text') {
+    const r = (f.reference || '').toLowerCase();
+    return r === 'title' || r.endsWith('.title');
+  }
+  return false;
 }
 
 // Build the input control for one field, keyed by its `kind`. Returns { node, get }
 // where `get()` reads the current value as the string the API expects (markdown for
 // rich fields). Rich fields also get an AI Draft/Improve button.
-function buildFieldControl(f, it) {
+function buildFieldControl(f, it, workingFields) {
   if (f.read_only) {
     return {
       node: el('div', { class: 'editor-ro' }, f.value || el('span', { class: 'muted' }, '(empty)')),
@@ -1347,11 +1419,12 @@ function buildFieldControl(f, it) {
   }
   switch (f.kind) {
     case 'markdown':
-      return buildMarkdownField(f, it);
+      return buildMarkdownField(f, it, workingFields);
     case 'plain_text': {
       const ta = el('textarea', { class: 'editor-textarea', rows: 4 });
       ta.value = f.value || '';
-      return { node: ta, get: () => ta.value };
+      const ai = buildAiAssist(f, it, () => ta.value, (t) => { ta.value = t; }, null, workingFields);
+      return { node: el('div', { class: 'editor-rich' }, [ta, ai.row, ai.result]), get: () => ta.value };
     }
     case 'select': {
       const sel = el('select', { class: 'editor-input' }, [
@@ -1379,6 +1452,11 @@ function buildFieldControl(f, it) {
       // text / date_time (edited as its ISO string) / anything unmapped.
       const inp = el('input', { class: 'editor-input', type: 'text' });
       inp.value = f.value || '';
+      if (fieldAllowsAi(f)) {
+        // e.g. Title - offer a suggestion with the same review pane.
+        const ai = buildAiAssist(f, it, () => inp.value, (t) => { inp.value = t.replace(/\s+/g, ' ').trim(); }, null, workingFields);
+        return { node: el('div', { class: 'editor-rich' }, [inp, ai.row, ai.result]), get: () => inp.value };
+      }
       return { node: inp, get: () => inp.value };
     }
   }

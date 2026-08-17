@@ -395,6 +395,10 @@ struct DraftFieldBody {
     reference: String,
     #[serde(default)]
     improve: bool,
+    /// The editor's current (unsaved) field values, so the AI drafts from what's on
+    /// screen rather than the last-saved provider state. Empty = use saved values.
+    #[serde(default)]
+    fields: Vec<poseiden_core::FieldChange>,
 }
 
 /// AI-draft (or improve) one field's text from the item's context. Returns markdown
@@ -405,7 +409,7 @@ async fn draft_work_item_field(
     Json(body): Json<DraftFieldBody>,
 ) -> ApiResult {
     match svc
-        .draft_work_item_field(&body.team, id, &body.reference, body.improve)
+        .draft_work_item_field(&body.team, id, &body.reference, body.improve, &body.fields)
         .await
     {
         // Either the server drafted it, or it hands back the prompt for the browser to

@@ -288,6 +288,17 @@ pub struct RuleSet {
     /// truncating its own required picks (the old flat cap of 3 did exactly that).
     #[serde(default)]
     pub max_suggestions: Option<usize>,
+    /// Healthcheck: title terms that mark an item's title as junk/placeholder
+    /// (`test`, `asdf`, `untitled`, `tbd`, …). A title equal to one of these (or shorter
+    /// than a few chars) raises the `BadTitle` flag. Case-insensitive, whole-title match.
+    /// Empty = the check is off.
+    #[serde(default)]
+    pub bad_title_terms: Vec<String>,
+    /// Healthcheck: when true, items that share a normalised title with another item in
+    /// scope raise the `Duplicate` flag (likely a raised-twice / copy-paste duplicate).
+    /// Off by default - some backlogs have legitimately recurring titles ("Bump deps").
+    #[serde(default)]
+    pub flag_duplicate_titles: bool,
     /// Free-text team background / glossary fed to the AI tagger's prompt. Lets a
     /// team teach the model its internal naming and conventions (e.g. "Widget = our
     /// billing service", "the Portal = our internal developer portal") so it tags by
