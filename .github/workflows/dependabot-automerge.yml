@@ -1,13 +1,17 @@
 name: Dependabot auto-merge
 
-# Auto-merges Dependabot PRs that bump a dependency by a PATCH version only.
-# Minor + major bumps still come as regular PRs for human review.
+# Auto-merges Dependabot PRs that bump a dependency by a PATCH or MINOR version
+# (they're grouped into one PR per ecosystem, so a group with any minor reports as
+# minor - patch-only would never fire). MAJOR bumps still come as regular PRs for
+# human review.
 #
-# For `--auto` to mean "after CI passes," `main` needs branch protection with
-# the CI jobs (Check + fmt (linux), Test (ubuntu/windows/macos)) marked as
-# required status checks. Without that, auto-merge fires immediately. Set it at
-# Settings → Branches. "Require a pull request" can stay off so direct pushes
-# to main still work.
+# REQUIRES branch protection for safety: `--auto` only completes the merge once the
+# required status checks pass, so a bump that breaks the build never lands. `main`
+# needs branch protection with the CI jobs (Check + fmt (linux), Test
+# (ubuntu/windows/macos)) marked as required status checks, and the repo's "Allow
+# auto-merge" enabled. Without protection, auto-merge would fire immediately (unsafe)
+# — set it at Settings → Branches. "Require a pull request" can stay OFF so direct
+# pushes to main still work; leave "Include administrators" off so you keep pushing.
 
 on:
   pull_request:
@@ -27,8 +31,10 @@ jobs:
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable auto-merge for patch updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+      - name: Enable auto-merge for patch + minor updates
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

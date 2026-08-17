@@ -7,6 +7,10 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # Don't rebase open PRs when main moves - a rebase re-runs the whole CI matrix
+    # on every push, which burns Actions minutes for no benefit. Rebase manually
+    # (`@dependabot rebase`) or let auto-merge update the branch when ready.
+    rebase-strategy: disabled
     commit-message:
       prefix: deps
     groups:
@@ -23,6 +27,7 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    rebase-strategy: disabled
     commit-message:
       prefix: ci
     groups:
@@ -38,5 +43,6 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    rebase-strategy: disabled
     commit-message:
       prefix: deps
