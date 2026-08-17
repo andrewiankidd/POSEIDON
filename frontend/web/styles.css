@@ -386,6 +386,8 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 .editor-md-preview > :first-child { margin-top: 0; }
 .editor-md-preview > :last-child { margin-bottom: 0; }
 .editor-ai-row { display: flex; justify-content: flex-end; }
+.editor-topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.editor-topbar-hint { font-size: 12px; flex: 1 1 auto; }
 .editor-ai { color: var(--accent); border-color: var(--accent); }
 /* AI review pane: the proposed text shown before it replaces the field (Use/Discard). */
 .editor-ai-result-slot:empty { display: none; }

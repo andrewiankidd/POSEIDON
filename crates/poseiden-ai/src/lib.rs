@@ -116,6 +116,18 @@ pub trait AiTagger: Send + Sync {
             "The AI healthcheck needs an online model (Settings → AI)".into(),
         ))
     }
+
+    /// Rewrite all of an item's proposed fields into a mutually-consistent set in one
+    /// pass. Returns `(reference, value)` for each field. Default: unsupported (only the
+    /// online chat backend generates prose; the browser runs it via the handshake).
+    async fn refine_fields(
+        &self,
+        _ctx: &FieldsConsistencyContext,
+    ) -> Result<Vec<(String, String)>, AiError> {
+        Err(AiError::Unsupported(
+            "AI drafting needs an online model (Settings → AI)".into(),
+        ))
+    }
 }
 
 /// Whether to write a field from scratch or refine what's already there.
@@ -380,6 +392,121 @@ pub fn parse_audit_response(content: &str) -> Vec<AuditIssue> {
             })
         })
         .take(MAX_AUDIT_ISSUES)
+        .collect()
+}
+
+// ─────────────────────────── Whole-item consistency sweep ───────────────────
+//
+// The per-field draft (`draft_field`) writes ONE field in isolation. After a user
+// drafts several, the fields can drift - the Description and the Acceptance Criteria
+// use different terms, or repeat each other. This pass takes ALL the proposed fields
+// at once and rewrites them into a mutually-consistent set, so the "Improve all"
+// action ends with a coherent item. Advisory, like everything else: the refined
+// values land in each field's review pane for the user to keep or discard.
+
+/// One field handed to the consistency sweep: its reference, human label, and the
+/// currently-proposed markdown value (from the per-field drafts, or the existing value).
+#[derive(Debug, Clone)]
+pub struct DraftFieldValue {
+    pub reference: String,
+    pub label: String,
+    pub value: String,
+}
+
+/// Context for the whole-item consistency sweep: what the item IS, the team glossary,
+/// and every editable rich field's proposed value, so the model harmonises them in one
+/// pass rather than field-by-field.
+#[derive(Debug, Clone)]
+pub struct FieldsConsistencyContext {
+    pub work_item_type: String,
+    pub title: String,
+    pub background: String,
+    pub fields: Vec<DraftFieldValue>,
+}
+
+pub const FIELDS_CONSISTENCY_SYSTEM_PROMPT: &str = "You are refining the fields of ONE \
+software work item so they read as a single coherent ticket. You are given the item and \
+several of its fields with their current (possibly just-drafted) content. Rewrite the \
+fields so they are mutually CONSISTENT and non-redundant: shared terminology, no \
+contradictions between fields, no field repeating another, and each field kept in its \
+proper role (Description = the what and why; Repro Steps = numbered steps + expected vs \
+actual; Acceptance Criteria = a checklist of testable conditions). Improve clarity and \
+completeness but do NOT invent specifics (names, ids, dates, APIs) not implied by the \
+input; where a detail is unknown, keep a clear [square-bracket] placeholder. Match the \
+team's terminology from any TEAM BACKGROUND. PRESERVE every existing URL and link EXACTLY; \
+write links only as valid markdown [text](url), never as a bare URL in brackets. Return \
+EVERY field you were given, each as GitHub-flavoured markdown, keyed by its exact reference. \
+Reply with ONLY a JSON object, no prose, no code fences: \
+{\"fields\":[{\"reference\":\"<the field reference>\",\"value\":\"<markdown>\"}]}.";
+
+/// Build the user prompt for the consistency sweep. Pure + testable.
+pub fn build_fields_consistency_prompt(ctx: &FieldsConsistencyContext) -> String {
+    let mut p = String::new();
+    let bg = ctx.background.trim();
+    if !bg.is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(bg);
+        p.push_str("\n\n");
+    }
+    p.push_str(&format!(
+        "WORK ITEM\n- Type: {}\n- Title: {}\n\nFIELDS TO HARMONISE:\n",
+        ctx.work_item_type.trim(),
+        ctx.title.trim()
+    ));
+    for f in &ctx.fields {
+        // Cap each field so one long body can't blow the budget.
+        let v: String = f.value.trim().chars().take(MAX_DESC_CHARS).collect();
+        let shown = if v.is_empty() { "(empty)" } else { &v };
+        p.push_str(&format!(
+            "\n--- reference: {} | label: {} ---\n{}\n",
+            f.reference.trim(),
+            f.label.trim(),
+            shown
+        ));
+    }
+    p.push_str("\nReturn the JSON now, one entry per field above.");
+    p
+}
+
+#[derive(Deserialize, Default)]
+struct ConsistencyReply {
+    #[serde(default)]
+    fields: Vec<ConsistencyField>,
+}
+
+#[derive(Deserialize, Default)]
+struct ConsistencyField {
+    #[serde(default)]
+    reference: String,
+    #[serde(default)]
+    value: String,
+}
+
+/// Parse a consistency reply into `(reference, value)` pairs. The trust boundary:
+/// extract the JSON, keep only fields whose reference was in the request (canonical
+/// spelling preserved), drop empties, dedupe by reference. Pure - both the server and
+/// the browser path share it.
+pub fn parse_fields_consistency(content: &str, known_refs: &[String]) -> Vec<(String, String)> {
+    let json = extract_json(content);
+    let reply: ConsistencyReply = serde_json::from_str(&json).unwrap_or_default();
+    let canon: HashMap<String, &String> =
+        known_refs.iter().map(|r| (r.to_lowercase(), r)).collect();
+    let mut seen = HashSet::new();
+    reply
+        .fields
+        .into_iter()
+        .filter_map(|f| {
+            let key = f.reference.trim().to_lowercase();
+            let canonical = canon.get(&key)?; // drop refs not in the request
+            let value = strip_code_fence(f.value.trim());
+            if value.trim().is_empty() {
+                return None;
+            }
+            if !seen.insert(canonical.to_lowercase()) {
+                return None;
+            }
+            Some(((*canonical).clone(), value))
+        })
         .collect()
 }
 
@@ -1156,6 +1283,38 @@ impl AiTagger for ChatTagger {
         let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
         Ok(parse_audit_response(content))
     }
+
+    async fn refine_fields(
+        &self,
+        ctx: &FieldsConsistencyContext,
+    ) -> Result<Vec<(String, String)>, AiError> {
+        let refs: Vec<String> = ctx.fields.iter().map(|f| f.reference.clone()).collect();
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": 0.2,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": FIELDS_CONSISTENCY_SYSTEM_PROMPT },
+                { "role": "user", "content": build_fields_consistency_prompt(ctx) },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
+        Ok(parse_fields_consistency(content, &refs))
+    }
 }
 
 /// Remove a single outer code fence (```lang … ```) if the model wrapped its whole
@@ -1312,6 +1471,59 @@ mod tests {
         }
         assert_eq!(AuditKind::parse("VAGUE"), Some(AuditKind::Unclear));
         assert_eq!(AuditKind::parse("nonsense-kind"), None);
+    }
+
+    // ── whole-item consistency sweep ─────────────────────────────────────────
+
+    fn consistency_ctx() -> FieldsConsistencyContext {
+        FieldsConsistencyContext {
+            work_item_type: "Bug".into(),
+            title: "Cost widgets zero out".into(),
+            background: "Widget = our billing service.".into(),
+            fields: vec![
+                DraftFieldValue {
+                    reference: "Microsoft.VSTS.TCM.ReproSteps".into(),
+                    label: "Repro Steps".into(),
+                    value: "Charts drop to zero.".into(),
+                },
+                DraftFieldValue {
+                    reference: "Custom.Expected".into(),
+                    label: "Expected behaviour".into(),
+                    value: String::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn build_consistency_prompt_lists_every_field_with_its_reference() {
+        let p = build_fields_consistency_prompt(&consistency_ctx());
+        assert!(p.contains("TEAM BACKGROUND"));
+        assert!(p.contains("Type: Bug"));
+        assert!(p.contains("reference: Microsoft.VSTS.TCM.ReproSteps"));
+        assert!(p.contains("Charts drop to zero."));
+        assert!(p.contains("reference: Custom.Expected"));
+        assert!(p.contains("(empty)")); // the blank field is still listed
+    }
+
+    #[test]
+    fn parse_consistency_keeps_known_refs_dropping_unknown_and_empty() {
+        let refs = vec![
+            "Microsoft.VSTS.TCM.ReproSteps".to_string(),
+            "Custom.Expected".to_string(),
+        ];
+        let raw = r#"```json
+        {"fields":[
+          {"reference":"microsoft.vsts.tcm.reprosteps","value":"1. Open widget\n2. Observe zero"},
+          {"reference":"Custom.Expected","value":"   "},
+          {"reference":"System.Bogus","value":"not requested"}
+        ]}
+        ```"#;
+        let out = parse_fields_consistency(raw, &refs);
+        // case-insensitive ref match returns canonical spelling; empty + unknown dropped.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "Microsoft.VSTS.TCM.ReproSteps");
+        assert!(out[0].1.contains("Open widget"));
     }
 
     #[test]

@@ -1331,6 +1331,81 @@ async function openWorkItemEditor(it, onSaved) {
       c.node,
     ]));
   }
+  // Top-level "Improve all": draft/improve every AI-eligible field individually (the
+  // same per-field calls), then ONE consistency sweep over the proposed set so the
+  // fields read as a coherent ticket. Every result lands in its field's review pane -
+  // the user keeps or discards each, nothing is auto-applied.
+  const aiControls = controls.filter((c) => c.ai);
+  if (aiControls.length) {
+    const allBtn = el('button', {
+      class: 'btn btn-xs', type: 'button',
+      title: 'Draft or improve every field, then a consistency pass — review and keep each suggestion individually',
+    }, '✨ Improve all fields');
+    allBtn.addEventListener('click', async () => {
+      allBtn.disabled = true;
+      const orig = allBtn.textContent;
+      aiControls.forEach((c) => c.ai.setBusy(true));
+      try {
+        // Phase 1: draft/improve each field on its own (fills each review pane). Collect
+        // the proposed text per field (fall back to the current value when it declined).
+        const proposals = {};
+        for (let i = 0; i < aiControls.length; i++) {
+          const c = aiControls[i];
+          allBtn.textContent = `✨ Field ${i + 1}/${aiControls.length}…`;
+          try {
+            const text = await c.ai.run();
+            proposals[c.field.reference] = (text && text.trim()) ? text : c.get();
+          } catch (err) {
+            console.warn('Improve all: draft failed for', c.field.reference, err);
+            proposals[c.field.reference] = c.get();
+          }
+        }
+        // Phase 2: one consistency sweep over the proposed rich fields.
+        allBtn.textContent = '✨ Harmonising…';
+        const proposed = aiControls.map((c) => ({ reference: c.field.reference, value: proposals[c.field.reference] ?? c.get() }));
+        let res;
+        try {
+          res = await api.refineFields(it.id, { team: it.team, fields: proposed });
+        } catch (err) {
+          toast('Consistency pass failed: ' + (err?.message || err), true);
+          return;
+        }
+        let refined = res.fields;
+        if (!refined && res.prompt) {
+          // Browser (WebGPU) path: run the built prompt locally, then re-parse server-side.
+          const be = await activeBackend();
+          if (be.where !== 'browser') { toast('No AI model available for the consistency pass.', true); return; }
+          const text = await runWebGpuChat(be.model, res.prompt.system, res.prompt.user,
+            (s) => { allBtn.textContent = '✨ ' + (s || 'Harmonising…'); });
+          const parsed = await api.parseFieldsConsistency(it.id, { team: it.team, fields: proposed, text });
+          refined = parsed.fields;
+        }
+        // Replace each harmonised field's pane; fields the sweep didn't touch keep their
+        // phase-1 proposal, so nothing is lost.
+        const byRef = {};
+        (refined || []).forEach((f) => { byRef[f.reference] = f.value; });
+        let shown = 0;
+        for (const c of aiControls) {
+          const v = byRef[c.field.reference];
+          if (v != null && v !== '') {
+            c.ai.showSuggestion(v, true, '✨ Consistency pass — review, then keep or discard');
+            shown++;
+          }
+        }
+        toast(shown ? `Improve all: ${shown} field${shown === 1 ? '' : 's'} to review` : 'Improve all: nothing to change');
+      } catch (err) {
+        toast('Improve all failed: ' + (err?.message || err), true);
+      } finally {
+        aiControls.forEach((c) => c.ai.setBusy(false));
+        allBtn.disabled = false;
+        allBtn.textContent = orig;
+      }
+    });
+    body.appendChild(el('div', { class: 'editor-topbar' }, [
+      el('span', { class: 'editor-topbar-hint muted' }, 'Draft every field, then harmonise for consistency — review each before saving.'),
+      allBtn,
+    ]));
+  }
   body.appendChild(form);
 
   const status = el('span', { class: 'editor-status' }, '');
@@ -1428,6 +1503,8 @@ function buildMarkdownField(f, it, workingFields) {
   return {
     node: el('div', { class: 'editor-rich' }, [toolbar, ta, preview, ai.row, ai.result]),
     get: () => ta.value,
+    set: (t) => { ta.value = t; if (previewing) previewBtn.click(); },
+    ai,
   };
 }
 
@@ -1440,31 +1517,45 @@ function buildAiAssist(f, it, read, apply, beforeRun, workingFields) {
   const btn = el('button', { class: 'btn btn-xs editor-ai', type: 'button' });
   const label = () => (read().trim() ? '✨ Improve' : '✨ Draft');
   btn.textContent = label();
+
+  // Render a proposal into the review pane with Use / Discard. Shared by the per-field
+  // button and the top-level "Improve all" sweep, so both surface suggestions the same
+  // way - nothing is silently overwritten; the user keeps or discards each.
+  function showSuggestion(text, improve, head) {
+    if (!text) return;
+    clear(result);
+    result.appendChild(el('div', { class: 'editor-ai-result' }, [
+      el('div', { class: 'editor-ai-result-head' }, head
+        || (improve ? '✨ Suggested rewrite — review, then keep or discard' : '✨ Draft — review, then keep or discard')),
+      el('div', { class: 'editor-ai-result-body' }, text),
+      el('div', { class: 'editor-ai-result-actions' }, [
+        el('button', { class: 'btn btn-xs btn-primary', type: 'button',
+          onclick: () => { if (beforeRun) beforeRun(); apply(text); clear(result); btn.textContent = label(); } }, '✓ Use this'),
+        el('button', { class: 'btn btn-xs', type: 'button', onclick: () => clear(result) }, '✕ Discard'),
+      ]),
+    ]));
+  }
+
+  // Run one draft/improve and show it in the review pane; return the proposed text (''
+  // if the model declined). One call to the server (runs it if it has a model, else
+  // hands back the prompt); the shared dispatcher resolves it - in-browser on the same
+  // WebGPU model the tagger uses. `fields` carries the editor's current UNSAVED values
+  // so the AI drafts from what's on screen, not the saved state.
+  async function run(onStatus) {
+    const improve = !!read().trim();
+    const fields = workingFields ? workingFields() : [];
+    const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve, fields });
+    const text = await resolveAiText(res, onStatus || (() => {}));
+    if (text) showSuggestion(text, improve);
+    return text;
+  }
+
   btn.addEventListener('click', async () => {
     if (beforeRun) beforeRun();
-    const improve = !!read().trim();
     btn.disabled = true;
     btn.textContent = '✨ Thinking…';
     try {
-      // One call to the server (runs it if it has a model, else hands back the prompt);
-      // the shared dispatcher resolves it - in-browser on the same WebGPU model the
-      // tagger uses when that's the active backend. `fields` carries the editor's current
-      // UNSAVED values so the AI drafts from what's on screen, not the saved state.
-      const fields = workingFields ? workingFields() : [];
-      const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve, fields });
-      const text = await resolveAiText(res, (s) => { btn.textContent = '✨ ' + (s || 'Loading…'); });
-      if (text) {
-        clear(result);
-        result.appendChild(el('div', { class: 'editor-ai-result' }, [
-          el('div', { class: 'editor-ai-result-head' }, improve ? '✨ Suggested rewrite — review, then keep or discard' : '✨ Draft — review, then keep or discard'),
-          el('div', { class: 'editor-ai-result-body' }, text),
-          el('div', { class: 'editor-ai-result-actions' }, [
-            el('button', { class: 'btn btn-xs btn-primary', type: 'button',
-              onclick: () => { apply(text); clear(result); btn.textContent = label(); } }, '✓ Use this'),
-            el('button', { class: 'btn btn-xs', type: 'button', onclick: () => clear(result) }, '✕ Discard'),
-          ]),
-        ]));
-      }
+      await run((s) => { btn.textContent = '✨ ' + (s || 'Loading…'); });
     } catch (err) {
       toast('AI draft failed: ' + (err?.message || err), true);
     } finally {
@@ -1472,7 +1563,7 @@ function buildAiAssist(f, it, read, apply, beforeRun, workingFields) {
       btn.textContent = label();
     }
   });
-  return { row: el('div', { class: 'editor-ai-row' }, btn), result };
+  return { row: el('div', { class: 'editor-ai-row' }, btn), result, run, showSuggestion, setBusy: (b) => { btn.disabled = b; } };
 }
 
 // Whether a field should offer AI drafting: rich/plain text always; a single-line text
@@ -1504,7 +1595,7 @@ function buildFieldControl(f, it, workingFields) {
       const ta = el('textarea', { class: 'editor-textarea', rows: 4 });
       ta.value = f.value || '';
       const ai = buildAiAssist(f, it, () => ta.value, (t) => { ta.value = t; }, null, workingFields);
-      return { node: el('div', { class: 'editor-rich' }, [ta, ai.row, ai.result]), get: () => ta.value };
+      return { node: el('div', { class: 'editor-rich' }, [ta, ai.row, ai.result]), get: () => ta.value, set: (t) => { ta.value = t; }, ai };
     }
     case 'select': {
       const sel = el('select', { class: 'editor-input' }, [
@@ -1535,7 +1626,7 @@ function buildFieldControl(f, it, workingFields) {
       if (fieldAllowsAi(f)) {
         // e.g. Title - offer a suggestion with the same review pane.
         const ai = buildAiAssist(f, it, () => inp.value, (t) => { inp.value = t.replace(/\s+/g, ' ').trim(); }, null, workingFields);
-        return { node: el('div', { class: 'editor-rich' }, [inp, ai.row, ai.result]), get: () => inp.value };
+        return { node: el('div', { class: 'editor-rich' }, [inp, ai.row, ai.result]), get: () => inp.value, set: (t) => { inp.value = t.replace(/\s+/g, ' ').trim(); }, ai };
       }
       return { node: inp, get: () => inp.value };
     }
