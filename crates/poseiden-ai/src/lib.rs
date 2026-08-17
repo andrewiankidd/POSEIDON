@@ -157,7 +157,25 @@ pub struct FieldDraftContext {
     /// team's real terminology. May be empty.
     pub background: String,
     pub mode: DraftMode,
+    /// When true, an Acceptance Criteria field is written as Given-When-Then (the house
+    /// style). Ignored for every other field. Defaults on via `RuleSet`.
+    pub acceptance_criteria_gwt: bool,
 }
+
+/// Whether a field label denotes Acceptance Criteria (so the GWT house style applies).
+/// Matches the ADO field label / GitHub-ish equivalents, case-insensitively.
+pub fn is_acceptance_criteria(label: &str) -> bool {
+    let l = label.trim().to_ascii_lowercase();
+    l.contains("acceptance criteria") || l == "acceptance" || l == "ac"
+}
+
+/// The Given-When-Then instruction appended to the prompt for an Acceptance Criteria
+/// field when the team keeps the GWT house style. Kept as one string so the per-field
+/// draft and the whole-item consistency sweep phrase it identically.
+pub const GWT_ACCEPTANCE_CRITERIA_INSTRUCTION: &str = "Write the Acceptance Criteria as \
+Given-When-Then scenarios - each criterion as \"Given <context>, When <action>, Then \
+<expected outcome>\" (use extra \"And\" lines where needed). One scenario per acceptance \
+condition; do NOT collapse them into a prose paragraph or a bare bullet list.";
 
 /// System prompt for field drafting - a different job from tagging (free-form prose
 /// vs. a constrained pick), so its own instruction set.
@@ -216,6 +234,11 @@ pub fn build_field_draft_prompt(ctx: &FieldDraftContext) -> String {
                 ctx.field_label.trim()
             ));
         }
+    }
+    // House style: Acceptance Criteria as Given-When-Then, unless the team opted out.
+    if ctx.acceptance_criteria_gwt && is_acceptance_criteria(&ctx.field_label) {
+        p.push_str("\n\n");
+        p.push_str(GWT_ACCEPTANCE_CRITERIA_INSTRUCTION);
     }
     p
 }
@@ -427,6 +450,9 @@ pub struct FieldsConsistencyContext {
     pub title: String,
     pub background: String,
     pub fields: Vec<DraftFieldValue>,
+    /// When true, an Acceptance Criteria field among `fields` is harmonised as
+    /// Given-When-Then (the house style). Defaults on via `RuleSet`.
+    pub acceptance_criteria_gwt: bool,
 }
 
 pub const FIELDS_CONSISTENCY_SYSTEM_PROMPT: &str = "You are refining the fields of ONE \
@@ -458,6 +484,7 @@ pub fn build_fields_consistency_prompt(ctx: &FieldsConsistencyContext) -> String
         ctx.work_item_type.trim(),
         ctx.title.trim()
     ));
+    let mut has_ac = false;
     for f in &ctx.fields {
         // Cap each field so one long body can't blow the budget.
         let v: String = f.value.trim().chars().take(MAX_DESC_CHARS).collect();
@@ -468,6 +495,12 @@ pub fn build_fields_consistency_prompt(ctx: &FieldsConsistencyContext) -> String
             f.label.trim(),
             shown
         ));
+        has_ac |= is_acceptance_criteria(&f.label);
+    }
+    // House style: Acceptance Criteria as Given-When-Then, unless the team opted out.
+    if ctx.acceptance_criteria_gwt && has_ac {
+        p.push('\n');
+        p.push_str(GWT_ACCEPTANCE_CRITERIA_INSTRUCTION);
     }
     p.push_str("\nReturn the JSON now, one entry per field above.");
     p
@@ -1363,6 +1396,7 @@ mod tests {
             ],
             background: "Portal = our internal developer portal (Backstage).".into(),
             mode,
+            acceptance_criteria_gwt: true,
         }
     }
 
@@ -1388,6 +1422,43 @@ mod tests {
         // Improve with an EMPTY current value falls back to draft-from-scratch.
         ctx.current_value = "  ".into();
         assert!(build_field_draft_prompt(&ctx).contains("Draft the \"Acceptance Criteria\""));
+    }
+
+    #[test]
+    fn draft_prompt_adds_gwt_only_for_acceptance_criteria_when_enabled() {
+        // AC field + GWT on -> the Given-When-Then instruction is appended.
+        let mut ctx = draft_ctx(DraftMode::Draft); // field_label = "Acceptance Criteria"
+        assert!(build_field_draft_prompt(&ctx).contains("Given-When-Then"));
+        // Opted out -> no GWT instruction.
+        ctx.acceptance_criteria_gwt = false;
+        assert!(!build_field_draft_prompt(&ctx).contains("Given-When-Then"));
+        // A different field never gets the AC instruction, even with GWT on.
+        ctx.acceptance_criteria_gwt = true;
+        ctx.field_label = "Repro Steps".into();
+        assert!(!build_field_draft_prompt(&ctx).contains("Given-When-Then"));
+    }
+
+    #[test]
+    fn is_acceptance_criteria_matches_common_spellings() {
+        assert!(is_acceptance_criteria("Acceptance Criteria"));
+        assert!(is_acceptance_criteria("  acceptance criteria  "));
+        assert!(is_acceptance_criteria("AC"));
+        assert!(!is_acceptance_criteria("Repro Steps"));
+        assert!(!is_acceptance_criteria("Description"));
+    }
+
+    #[test]
+    fn consistency_prompt_adds_gwt_when_an_ac_field_is_present() {
+        let mut ctx = consistency_ctx(); // Repro Steps + Expected behaviour (no AC)
+        assert!(!build_fields_consistency_prompt(&ctx).contains("Given-When-Then"));
+        ctx.fields.push(DraftFieldValue {
+            reference: "Microsoft.VSTS.Common.AcceptanceCriteria".into(),
+            label: "Acceptance Criteria".into(),
+            value: "user can log in".into(),
+        });
+        assert!(build_fields_consistency_prompt(&ctx).contains("Given-When-Then"));
+        ctx.acceptance_criteria_gwt = false;
+        assert!(!build_fields_consistency_prompt(&ctx).contains("Given-When-Then"));
     }
 
     #[test]
@@ -1500,6 +1571,7 @@ mod tests {
                     value: String::new(),
                 },
             ],
+            acceptance_criteria_gwt: true,
         }
     }
 

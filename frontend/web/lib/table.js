@@ -141,6 +141,18 @@ export function dataTable(columns, rows, opts = {}) {
   const pager = el('div', { class: 'dt-pager' }, [prevBtn, pageLabel, nextBtn]);
 
   const wrap = el('div', {}, [toolbar, tableWrap, pager]);
+  // Fill mode: the wrap becomes a flex column so only the table scrolls (header +
+  // toolbar stay fixed). Keep the sticky filter row's offset in sync with the real
+  // header-row height, which varies with zoom / font.
+  if (opts.fill) {
+    wrap.classList.add('dt-fill');
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => {
+        table.style.setProperty('--dt-head-h', `${headRow.offsetHeight}px`);
+      });
+      ro.observe(headRow);
+    }
+  }
 
   function valueOf(col, row) {
     return col.value ? col.value(row) : '';

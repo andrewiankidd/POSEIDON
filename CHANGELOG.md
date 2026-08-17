@@ -82,6 +82,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each other. Every result lands in its field's review pane to keep or discard
   individually — nothing is auto-applied. Runs on the active AI backend (server or
   the browser's WebGPU model via the value-or-prompt handshake).
+- **Given-When-Then Acceptance Criteria** — the AI now writes/refines an *Acceptance
+  Criteria* field as Given-When-Then scenarios by default (the house style), instead
+  of a free-form checklist. Per-team via `acceptance_criteria_style` (`"checklist"` /
+  `"plain"` opts out); only the AC field's prompt changes.
+- **Sticky toolbar on Work Items** — the page header and toolbar (Rule Breaks, Hide
+  empty body, Suggest tags, Run healthcheck, filters) and the table's column headers
+  now stay fixed while only the rows scroll, so the actions are always reachable in a
+  long backlog instead of requiring a scroll back to the top.
 
 ### Fixed
 - **Editor no longer shows fields a work-item type hides** — the field editor

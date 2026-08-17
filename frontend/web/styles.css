@@ -49,7 +49,10 @@ html, body {
 body {
   display: grid;
   grid-template-columns: 220px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  /* The shell owns the viewport; the sidebar and the content column each scroll
+     on their own, so a view can keep its header/toolbar fixed while the body scrolls. */
+  overflow: hidden;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
@@ -421,7 +424,22 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 /* Fill the available width (the sidebar takes its column; content gets the rest)
    - no fixed cap, so it scales to wide / 4K displays. min-width:0 lets the grid
    column actually shrink/grow instead of being sized by its content. */
-.content { padding: 26px 30px 60px; min-width: 0; overflow-x: hidden; }
+.content { padding: 26px 30px 60px; min-width: 0; overflow-x: hidden; height: 100vh; box-sizing: border-box; overflow-y: auto; }
+
+/* A view that fills the content column and scrolls its TABLE internally, so the
+   page header + toolbar (and the sticky column headers) stay put while the rows
+   scroll. Opt-in per view via `.view-fill` + the table's `fill` option. */
+.view-fill { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.view-fill .page-head { flex: 0 0 auto; }
+.dt-fill { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.dt-fill .dt-toolbar { flex: 0 0 auto; }
+.dt-fill .table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.dt-fill .dt-pager { flex: 0 0 auto; margin-top: 8px; }
+/* The header row is already sticky (top:0); pin the per-column filter row just
+   below it so filtering stays reachable while scrolling. `--dt-head-h` is measured
+   from the header row (see table.js) so the offset tracks its real height. */
+.dt-fill .dt-head th { z-index: 2; }
+.dt-fill .dt-filter th { position: sticky; top: var(--dt-head-h, 34px); z-index: 1; }
 .page-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; gap: 16px; }
 .page-head h1 { font-size: 22px; margin: 0; }
 .page-head .sub { color: var(--ink-soft); font-size: 13px; }

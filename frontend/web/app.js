@@ -555,7 +555,7 @@ async function renderWorkItems() {
     } catch { route(); }
   }
 
-  const wrap = el('div', {});
+  const wrap = el('div', { class: 'view-fill' });
   wrap.appendChild(pageHead('Work Items', `${items.length} work items`,
     el('button', {
       class: 'btn btn-xs', title: 'Export the current filtered view (or your selection) to CSV - id, tags, suggestions, flags',
@@ -1035,6 +1035,7 @@ async function renderWorkItems() {
 
   table = dataTable(columns, items, {
     persistKey: 'work-items',
+    fill: true, // fill the view height; scroll rows, keep header + toolbar fixed
     initialSort: { index: 0, dir: -1 }, // ID descending - newest work items first
     emptyText: 'No matching work items.',
     // Rule-break filtering (all flagged, or one specific flag code); tag
