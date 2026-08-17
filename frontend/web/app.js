@@ -1653,6 +1653,7 @@ function wiLinkChips(ids, meta) {
 async function renderPipelines() {
   const pipelines = await api.pipelines();
   const wrap = el('div', {});
+  wrap.className = 'view-fill';
   wrap.appendChild(pageHead('Pipelines', `${pipelines.length} monitored`));
 
   if (!pipelines.length) {
@@ -1695,6 +1696,7 @@ async function renderPipelines() {
 
   pipeTable = dataTable(columns, pipelines, {
     persistKey: 'pipelines',
+    fill: true,
     initialSort: { index: 0, dir: 1 },
     emptyText: 'No matching pipelines.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
@@ -1712,6 +1714,7 @@ async function renderPipelines() {
 async function renderPulls() {
   const prs = await api.pullRequests();
   const wrap = el('div', {});
+  wrap.className = 'view-fill';
   wrap.appendChild(pageHead('Pull Requests', `${prs.length} open`));
 
   if (!prs.length) {
@@ -1775,6 +1778,7 @@ async function renderPulls() {
 
   prTable = dataTable(columns, prs, {
     persistKey: 'pull-requests',
+    fill: true,
     initialSort: { index: 0, dir: -1 }, // newest PRs first (highest id)
     emptyText: 'No matching pull requests.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
