@@ -306,6 +306,12 @@ pub struct RuleSet {
     /// empty = no background. Only reaches the model, never applied as a tag.
     #[serde(default)]
     pub team_background: Option<String>,
+    /// Left-to-right column order for the Board (Kanban) view's **State** axis, e.g.
+    /// `["New", "Ready", "Blocked", "Active", "Resolved", "Closed"]`. Case-insensitive;
+    /// states not listed fall to the end (alphabetically). Empty = a built-in lifecycle
+    /// heuristic. Lets a team match its real board's column order without code.
+    #[serde(default)]
+    pub board_state_order: Vec<String>,
     /// Cosine-similarity threshold (0..1) above which two items are reported as
     /// near-duplicates by the on-demand duplicate scan (semantic-ish: reworded titles
     /// that share vocabulary, beyond the exact-title `flag_duplicate_titles` check).
