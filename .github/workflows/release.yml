@@ -64,7 +64,7 @@ jobs:
             bundles: "app,dmg"
             friendly: macos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 🔧 Install Linux deps (Tauri)
         if: runner.os == 'Linux'
@@ -157,7 +157,7 @@ jobs:
       POSEIDON_COMMIT: ${{ github.sha }}
       POSEIDON_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.tag || 'latest-main') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
