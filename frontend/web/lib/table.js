@@ -131,7 +131,9 @@ export function dataTable(columns, rows, opts = {}) {
     class: 'dt-sel-clear', href: '#', onclick: (e) => { e.preventDefault(); selected.clear(); render(); },
   }, 'clear');
   const toolbar = el('div', { class: 'dt-toolbar' }, [
-    ...(opts.toolbar || []), selCount, selClear, el('span', { class: 'dt-spacer' }), count, clearLink,
+    // Selection count + clear lead the toolbar (before Rule Breaks etc.); both are
+    // hidden when nothing is selected so they add no leading gap.
+    selCount, selClear, ...(opts.toolbar || []), el('span', { class: 'dt-spacer' }), count, clearLink,
   ]);
 
   // Pager (only shown when there's more than one page).
@@ -489,6 +491,8 @@ export function dataTable(columns, rows, opts = {}) {
   function updateSelectionUI() {
     if (!selectable) return;
     selCount.textContent = selected.size ? `${selected.size} selected` : '';
+    // Hide both when nothing is selected so they add no leading gap before the toggles.
+    selCount.style.display = selected.size ? '' : 'none';
     selClear.style.display = selected.size ? '' : 'none';
     const keys = lastShown.map(keyOf);
     const inSel = keys.filter((k) => selected.has(k)).length;
