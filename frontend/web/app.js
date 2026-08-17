@@ -1174,7 +1174,7 @@ async function renderWorkItems() {
       flagFilterChip(state, 'work-items'),
     ].filter(Boolean));
     const cols = el('div', { class: 'board-cols' });
-    const groups = groupForBoard(shown, axis);
+    const groups = groupForBoard(shown, axis, rules.board_state_order);
     for (const g of groups) {
       cols.appendChild(el('div', { class: 'board-col' }, [
         el('div', { class: 'board-col-head' }, [
@@ -1219,19 +1219,20 @@ async function renderWorkItems() {
 // order; a tag axis (`area`/`product`/…) groups by each matching tag value (an item
 // with two `area:` tags shows in both columns), untagged items in a "(none)" column.
 const BOARD_STATE_ORDER = [
-  'new', 'proposed', 'to do', 'approved', 'open', 'active', 'committed',
-  'in progress', 'doing', 'review', 'resolved', 'done', 'completed', 'closed', 'removed',
+  'new', 'proposed', 'to do', 'approved', 'ready', 'open',
+  'blocked', 'active', 'committed', 'in progress', 'doing', 'review',
+  'resolved', 'done', 'completed', 'closed', 'removed',
 ];
-function groupForBoard(items, axis) {
+// `order` (rules.board_state_order) pins a team's exact State-column order; empty falls
+// back to the built-in lifecycle. States not in the chosen order sort to the end (alpha).
+function groupForBoard(items, axis, order) {
   const map = new Map();
   const push = (k, it) => { (map.get(k) || map.set(k, []).get(k)).push(it); };
   if (axis === 'state') {
     for (const it of items) push(it.state || '(no state)', it);
-    const keys = [...map.keys()].sort((a, b) => {
-      const ia = BOARD_STATE_ORDER.indexOf(a.toLowerCase());
-      const ib = BOARD_STATE_ORDER.indexOf(b.toLowerCase());
-      return (ia === -1 ? 500 : ia) - (ib === -1 ? 500 : ib) || a.localeCompare(b);
-    });
+    const pref = ((order && order.length) ? order : BOARD_STATE_ORDER).map((s) => String(s).toLowerCase());
+    const rank = (k) => { const i = pref.indexOf(k.toLowerCase()); return i === -1 ? 500 : i; };
+    const keys = [...map.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     return keys.map((k) => ({ key: k, items: map.get(k) }));
   }
   const pfx = axis + ':';
