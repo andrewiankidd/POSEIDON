@@ -195,6 +195,55 @@ fn is_noise_field(reference: &str) -> bool {
         || reference.starts_with("System.IterationLevel")
 }
 
+/// The set of field reference names that appear as CONTROLS on a work-item type's
+/// form, parsed from the type's `xmlForm` (returned by `wit/workitemtypes/{type}`).
+/// This is the only signal that distinguishes a field the process actually SHOWS
+/// from one merely associated with the type: a Bug carries `System.Description` as a
+/// type field but hides it on the form (Repro Steps takes its place), so it must not
+/// be offered as an editable field. Refs are lowercased (ADO treats them case-
+/// insensitively). An empty result (no form / unparseable) means "unknown" - callers
+/// fall back to not filtering rather than hiding everything.
+fn form_field_refs(xml_form: &str) -> std::collections::HashSet<String> {
+    // The form XML is `<Control FieldName="System.Description" .../>` (attribute order
+    // and quoting vary). Scan for each `FieldName=` attribute rather than parsing XML,
+    // so a formatting quirk can never make us drop the whole form. Case-insensitive on
+    // the attribute name; the value is taken verbatim up to the closing quote.
+    let mut refs = std::collections::HashSet::new();
+    let bytes = xml_form.as_bytes();
+    let lower = xml_form.to_ascii_lowercase();
+    let needle = "fieldname";
+    let skip_ws = |mut i: usize| {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let mut from = 0usize;
+    while let Some(rel) = lower[from..].find(needle) {
+        let after = from + rel + needle.len();
+        // Require `=` (optionally whitespace-separated) then a quote, so the value is an
+        // attribute value - tolerating `FieldName="x"`, `FieldName = 'x'`, etc.
+        let mut i = skip_ws(after);
+        if i < bytes.len() && bytes[i] == b'=' {
+            i = skip_ws(i + 1);
+            if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                let quote = bytes[i];
+                let start = i + 1;
+                if let Some(endrel) = xml_form[start..].find(quote as char) {
+                    let val = xml_form[start..start + endrel].trim();
+                    if !val.is_empty() {
+                        refs.insert(val.to_ascii_lowercase());
+                    }
+                    from = start + endrel + 1;
+                    continue;
+                }
+            }
+        }
+        from = after;
+    }
+    refs
+}
+
 /// Build the default WIQL for a team: non-removed items in the project, most-
 /// recently-changed first, narrowed to an area path when the team defines one.
 /// This is what lets two teams share one Azure DevOps project - each scoped to
@@ -713,6 +762,19 @@ impl Provider for AzureDevOpsProvider {
                 "$expand=all",
             ))
             .await?;
+        // 2b. The TYPE's FORM layout, to tell fields the process SHOWS from ones merely
+        //     associated with the type (a Bug hides System.Description in favour of Repro
+        //     Steps). Best-effort: on any error we get an empty set and simply don't
+        //     filter (better to show a stray field than hide a real one).
+        let form_refs = self
+            .get_json::<serde_json::Value>(&self.project_url(
+                &format!("wit/workitemtypes/{}", enc(&wit)),
+                "",
+            ))
+            .await
+            .ok()
+            .and_then(|t| t.get("xmlForm").and_then(|x| x.as_str()).map(form_field_refs))
+            .unwrap_or_default();
         // 3. The org FIELD CATALOG (each field's data type + readOnly). One call; the
         //    type-fields endpoint doesn't carry the data type, so we cross-reference.
         let catalog: AdoFieldCatalogResponse = self.get_json(&self.org_url("wit/fields")).await?;
@@ -749,11 +811,21 @@ impl Provider for AzureDevOpsProvider {
             } else {
                 tf.name.clone()
             };
+            let value = field_value_to_string(values.get(&tf.reference_name), kind);
+            // A field the process hides on the form AND that carries no value is not
+            // something the user edits here (e.g. a Bug's System.Description, replaced by
+            // Repro Steps). Drop it. We keep any off-form field that HAS a value, so we
+            // never lose real data, and keep all fields when the form is unknown.
+            let on_form = form_refs.is_empty()
+                || form_refs.contains(&tf.reference_name.to_ascii_lowercase());
+            if !on_form && value.trim().is_empty() {
+                continue;
+            }
             out.push(EditableField {
                 reference: tf.reference_name.clone(),
                 label,
                 kind,
-                value: field_value_to_string(values.get(&tf.reference_name), kind),
+                value,
                 options: tf
                     .allowed_values
                     .iter()
@@ -1399,6 +1471,26 @@ mod tests {
         // Types with nothing to edit are dropped.
         assert_eq!(map_field_kind("history", false), None);
         assert_eq!(map_field_kind("guid", false), None);
+    }
+
+    #[test]
+    fn form_field_refs_extracts_on_form_controls() {
+        // A Bug form: Repro Steps + a custom field are on the form; System.Description
+        // is NOT (that's the whole point). Mixed quoting + attribute order + casing.
+        let xml = r#"
+            <FORM><Layout>
+              <Group><Control FieldName="Microsoft.VSTS.TCM.ReproSteps" Type="HtmlFieldControl" Label="Repro Steps"/></Group>
+              <Group><Control Label='Expected' fieldname='Custom.ExpectedBehaviour' Type="HtmlFieldControl"/></Group>
+              <Control  FieldName = "System.AreaPath" Type="WorkItemClassificationControl"/>
+            </Layout></FORM>"#;
+        let refs = form_field_refs(xml);
+        assert!(refs.contains("microsoft.vsts.tcm.reprosteps"));
+        assert!(refs.contains("custom.expectedbehaviour")); // lowercased attr name + value
+        assert!(refs.contains("system.areapath")); // whitespace around '=' tolerated
+        assert!(!refs.contains("system.description")); // absent from the form
+        // No form / junk -> empty set (callers then fall back to not filtering).
+        assert!(form_field_refs("").is_empty());
+        assert!(form_field_refs("<Form>no controls here</Form>").is_empty());
     }
 
     #[test]

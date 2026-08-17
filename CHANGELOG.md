@@ -78,6 +78,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operate on the live unsaved editor state, and have malformed links auto-repaired.
 
 ### Fixed
+- **Editor no longer shows fields a work-item type hides** — the field editor
+  listed every field *associated* with the type, including ones the process keeps
+  off the form (e.g. a Bug's empty *Description*, which Repro Steps replaces). It now
+  reads the type's form layout and drops a field only when it's both off-form and
+  empty — so hidden empties disappear while any field that holds data is always kept.
 - **Azure DevOps bug bodies** — bugs carry their body in *Repro Steps*, not
   *Description* (which is empty for them); the provider now falls back to it, so a
   detailed bug is no longer mis-detected as empty-bodied.
