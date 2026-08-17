@@ -13,8 +13,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use poseiden_core::{
     BundleMeta, ConfigBundle, DashboardSummary, EntityFlag, Flag, FlagCode, LinkedPr,
-    PipelineHealth, PipelineReport, PoseidenConfig, PrStatus, PullRequest, RunStatus, TagCount,
-    TeamConfig, TicketReport, WorkItem, WorkItemUpdate, CONFIG_BUNDLE_SCHEMA, DEFAULT_OWNER,
+    PipelineHealth, PipelineReport, PoseidenConfig, PrStatus, PullRequest, RunStatus, Severity,
+    TagCount, TeamConfig, TicketReport, WorkItem, WorkItemUpdate, CONFIG_BUNDLE_SCHEMA,
+    DEFAULT_OWNER,
 };
 use poseiden_doctor::{Check, Doctor, DoctorReport, FixResult};
 use poseiden_providers::Credential;
@@ -112,6 +113,9 @@ pub struct Service {
     /// In-flight / last AI tag-suggestion run, per owner (a background job). Same
     /// non-`.await`-held mutex discipline as `signins`.
     suggest_jobs: Arc<std::sync::Mutex<HashMap<String, SuggestState>>>,
+    /// In-flight / last on-demand AI healthcheck audit run, per owner (a background
+    /// job). Same non-`.await`-held mutex discipline as `suggest_jobs`.
+    audit_jobs: Arc<std::sync::Mutex<HashMap<String, AuditState>>>,
 }
 
 /// State of an owner's web (hosted) device-code sign-in. Backs `GET /api/sign-in`.
@@ -146,6 +150,27 @@ pub enum SuggestState {
     /// The last run finished.
     Done { summary: AiSuggestSummary },
     /// The last run failed.
+    Failed { error: String },
+}
+
+/// State of an owner's on-demand AI healthcheck audit run. Backs
+/// `GET /api/healthcheck/audit/status`. Same background-job rationale as
+/// [`SuggestState`]: judging each item with the model is slow, so the browser
+/// starts it and polls rather than blocking one request past the proxy timeout.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AuditState {
+    /// No audit has been started for this owner this process.
+    Idle,
+    /// A run is in progress: `done`/`total` items judged, `findings` stored so far.
+    Running {
+        done: usize,
+        total: usize,
+        findings: usize,
+    },
+    /// The last audit finished.
+    Done { summary: AiAuditSummary },
+    /// The last audit failed.
     Failed { error: String },
 }
 
@@ -207,6 +232,7 @@ impl Service {
             verifier: Arc::new(None),
             ai: Arc::new(std::sync::RwLock::new(HashMap::new())),
             suggest_jobs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            audit_jobs: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -1652,6 +1678,228 @@ impl Service {
         Ok(summary)
     }
 
+    // ───────────────────────────── AI healthcheck audit ─────────────────────
+    //
+    // On-demand, scoped, advisory. A person runs it over the rows they picked; the
+    // active AI backend judges each item's data quality; the findings are stored and
+    // surfaced as `ai_audit` flags until the next run. Server path = a background job
+    // (this process runs the model); browser path = the server hands out prompts, the
+    // browser's WebGPU model runs them, and the replies are posted back to be parsed
+    // + stored here (the same value-or-prompt split as field drafting).
+
+    /// The items an audit run should judge for `team`, optionally narrowed to `ids`
+    /// (the rows the user ticked). Owner-scoped, so a selection can never reach
+    /// another tenant's items.
+    async fn audit_scope(
+        &self,
+        team: Option<&str>,
+        ids: Option<&[i64]>,
+    ) -> anyhow::Result<Vec<WorkItem>> {
+        let mut items = self.store.list_work_items(&self.owner, team).await?;
+        if let Some(ids) = ids {
+            let want: std::collections::HashSet<i64> = ids.iter().copied().collect();
+            items.retain(|it| want.contains(&it.id));
+        }
+        Ok(items)
+    }
+
+    /// The team background glossary for an item's team (so the model doesn't mistake
+    /// correct internal jargon for nonsense). Read from the item's team-effective rules.
+    fn audit_background(cfg: &poseiden_core::UserConfig, team: &str) -> String {
+        rules_for_team(cfg, team)
+            .team_background
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// Run the healthcheck audit on the server (the active backend runs in THIS
+    /// process), scoped to `team`/`ids`, calling `progress(done, total, findings)`
+    /// after each item so the background job can publish a live count. Requires a
+    /// server-side backend; the browser path uses [`Self::audit_prompts`] instead.
+    pub async fn run_healthcheck_audit_with<F: FnMut(usize, usize, usize)>(
+        &self,
+        team: Option<&str>,
+        ids: Option<&[i64]>,
+        mut progress: F,
+    ) -> anyhow::Result<AiAuditSummary> {
+        let ai = self.ai_tagger().await.ok_or_else(|| {
+            anyhow::anyhow!("The AI healthcheck needs a server-side model - enable it in Settings")
+        })?;
+        let items = self.audit_scope(team, ids).await?;
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        let total = items.len();
+        let mut summary = AiAuditSummary::default();
+        for (i, it) in items.iter().enumerate() {
+            summary.considered += 1;
+            let input = poseiden_ai::AuditInput::from(it);
+            let background = Self::audit_background(&cfg, &it.team);
+            match ai.audit_item(&input, &background).await {
+                Ok(issues) => {
+                    let pairs: Vec<(String, String)> = issues
+                        .iter()
+                        .map(|f| (f.kind.as_str().to_string(), f.detail.clone()))
+                        .collect();
+                    self.store
+                        .set_ai_audit(&self.owner, &it.team, it.id, &pairs)
+                        .await?;
+                    if !pairs.is_empty() {
+                        summary.flagged += 1;
+                        summary.findings += pairs.len();
+                    }
+                }
+                Err(e) => tracing::warn!(item = it.id, "AI healthcheck audit failed: {e}"),
+            }
+            progress(i + 1, total, summary.findings);
+        }
+        info!(
+            team = team.unwrap_or("all"),
+            considered = summary.considered,
+            findings = summary.findings,
+            "AI healthcheck audit run complete"
+        );
+        Ok(summary)
+    }
+
+    /// Start a healthcheck audit in the BACKGROUND for this owner and return at once;
+    /// the browser polls [`Self::healthcheck_audit_status`]. Idempotent per owner: a
+    /// run already in flight is left alone. Server-backend path only.
+    pub async fn start_healthcheck_audit(
+        &self,
+        team: Option<String>,
+        ids: Option<Vec<i64>>,
+    ) -> anyhow::Result<()> {
+        if !self.ai_enabled().await {
+            anyhow::bail!("The AI healthcheck needs a server-side model - enable it in Settings");
+        }
+        {
+            let mut jobs = self.audit_jobs.lock().unwrap();
+            if matches!(jobs.get(&self.owner), Some(AuditState::Running { .. })) {
+                return Ok(()); // already running for this owner
+            }
+            jobs.insert(
+                self.owner.clone(),
+                AuditState::Running {
+                    done: 0,
+                    total: 0,
+                    findings: 0,
+                },
+            );
+        }
+        let svc = self.clone();
+        let jobs = self.audit_jobs.clone();
+        let owner = self.owner.clone();
+        tokio::spawn(async move {
+            let (pjobs, powner) = (jobs.clone(), owner.clone());
+            let result = svc
+                .run_healthcheck_audit_with(
+                    team.as_deref(),
+                    ids.as_deref(),
+                    move |done, total, findings| {
+                        pjobs.lock().unwrap().insert(
+                            powner.clone(),
+                            AuditState::Running {
+                                done,
+                                total,
+                                findings,
+                            },
+                        );
+                    },
+                )
+                .await;
+            let final_state = match result {
+                Ok(summary) => AuditState::Done { summary },
+                Err(e) => AuditState::Failed {
+                    error: e.to_string(),
+                },
+            };
+            jobs.lock().unwrap().insert(owner, final_state);
+        });
+        Ok(())
+    }
+
+    /// The current healthcheck audit run state for this owner (Idle if none started
+    /// this process). Polled by the browser after `start_healthcheck_audit`.
+    pub fn healthcheck_audit_status(&self) -> AuditState {
+        self.audit_jobs
+            .lock()
+            .unwrap()
+            .get(&self.owner)
+            .cloned()
+            .unwrap_or(AuditState::Idle)
+    }
+
+    /// Build the per-item audit prompts for the BROWSER (WebGPU) path: the server
+    /// assembles the exact system + user messages so the browser's local model runs
+    /// the same prompt, then posts replies to [`Self::store_healthcheck_audit`].
+    /// Owner-scoped via [`Self::audit_scope`].
+    pub async fn audit_prompts(
+        &self,
+        team: Option<&str>,
+        ids: Option<&[i64]>,
+    ) -> anyhow::Result<Vec<AuditPrompt>> {
+        let items = self.audit_scope(team, ids).await?;
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        Ok(items
+            .iter()
+            .map(|it| {
+                let input = poseiden_ai::AuditInput::from(it);
+                let background = Self::audit_background(&cfg, &it.team);
+                AuditPrompt {
+                    id: it.id,
+                    system: poseiden_ai::AUDIT_SYSTEM_PROMPT.to_string(),
+                    user: poseiden_ai::build_audit_prompt(&input, &background),
+                }
+            })
+            .collect())
+    }
+
+    /// Store browser-computed (WebGPU) audit replies. The trust boundary for the
+    /// browser path: every reply is RE-PARSED server-side via
+    /// [`poseiden_ai::parse_audit_response`] (the browser can't inject arbitrary
+    /// findings), then stored against the item's own team. Owner-scoped.
+    pub async fn store_healthcheck_audit(
+        &self,
+        team: Option<&str>,
+        incoming: Vec<BrowserAuditResult>,
+    ) -> anyhow::Result<AiAuditSummary> {
+        let items = self.audit_scope(team, None).await?;
+        let team_of: HashMap<i64, String> = items.iter().map(|i| (i.id, i.team.clone())).collect();
+        let mut summary = AiAuditSummary::default();
+        for entry in incoming {
+            let Some(team_name) = team_of.get(&entry.id) else {
+                continue; // not this owner's item (or out of scope) - ignore
+            };
+            summary.considered += 1;
+            let issues = poseiden_ai::parse_audit_response(&entry.text);
+            let pairs: Vec<(String, String)> = issues
+                .iter()
+                .map(|f| (f.kind.as_str().to_string(), f.detail.clone()))
+                .collect();
+            self.store
+                .set_ai_audit(&self.owner, team_name, entry.id, &pairs)
+                .await?;
+            if !pairs.is_empty() {
+                summary.flagged += 1;
+                summary.findings += pairs.len();
+            }
+        }
+        info!(
+            team = team.unwrap_or("all"),
+            considered = summary.considered,
+            findings = summary.findings,
+            "browser (WebGPU) healthcheck audit stored"
+        );
+        Ok(summary)
+    }
+
     /// Populate each item's `linked_prs` (the coloured chips) from its stored
     /// `linked_pr_ids`, resolving status/url against the polled PR set. Abandoned
     /// links are hidden unless the team's rule opts them in; a linked PR we never
@@ -1988,6 +2236,28 @@ impl Service {
                 .unwrap_or(&cfg.rules);
             flags.extend(poseiden_rules::evaluate(&group, rules, now));
         }
+        // Merge stored on-demand AI healthcheck findings as `ai_audit` flags, so they
+        // ride the same chips / dashboard counts / `?flag=` filter as the deterministic
+        // ones. Advisory (Warn) and only present for items a person audited; scoped to
+        // the items in this read via their id + team.
+        let team_of: HashMap<i64, String> = items.iter().map(|i| (i.id, i.team.clone())).collect();
+        if let Ok(audit) = self.store.ai_audit(&self.owner, None).await {
+            for (id, findings) in audit {
+                let Some(team) = team_of.get(&id) else {
+                    continue; // finding for an item not in this read's scope
+                };
+                for (kind, detail) in findings {
+                    flags.push(Flag {
+                        work_item_id: id,
+                        team: team.clone(),
+                        code: FlagCode::AiAudit,
+                        severity: Severity::Warn,
+                        message: format!("AI healthcheck ({}): {}", audit_kind_label(&kind), detail),
+                        tag: None,
+                    });
+                }
+            }
+        }
         flags
     }
 
@@ -2244,6 +2514,19 @@ fn code_str(code: FlagCode) -> &'static str {
         FlagCode::Underspecified => "underspecified",
         FlagCode::Duplicate => "duplicate",
         FlagCode::BadTitle => "bad_title",
+        FlagCode::AiAudit => "ai_audit",
+    }
+}
+
+/// Human label for an audit finding's kind slug (see [`poseiden_ai::AuditKind`]),
+/// shown as the prefix of an `ai_audit` flag's message. Falls back to the raw slug
+/// for any future kind not yet mapped here.
+fn audit_kind_label(kind: &str) -> &str {
+    match kind {
+        "unclear" => "unclear",
+        "bad_title" => "vague title",
+        "bad_data" => "bad data",
+        other => other,
     }
 }
 
@@ -2526,6 +2809,37 @@ pub struct AiSuggestSummary {
     pub with_suggestions: usize,
     /// Total suggestions stored across all items.
     pub suggestions: usize,
+}
+
+/// Outcome of an AI healthcheck audit run, over the scoped items.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AiAuditSummary {
+    /// Items sent to the model to judge.
+    pub considered: usize,
+    /// Items that came back with at least one concern.
+    pub flagged: usize,
+    /// Total concerns stored across all items.
+    pub findings: usize,
+}
+
+/// One item's prompt for the browser (WebGPU) audit path: the exact system + user
+/// messages the server built, so the browser runs the SAME prompt on its local
+/// model and posts the raw reply back to [`Service::store_healthcheck_audit`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditPrompt {
+    pub id: i64,
+    pub system: String,
+    pub user: String,
+}
+
+/// A browser-computed (WebGPU) audit reply for one item: the raw model text, which
+/// is parsed and stored server-side (the trust boundary - the browser can't inject
+/// arbitrary findings; every one is re-validated by `poseiden_ai::parse_audit_response`).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BrowserAuditResult {
+    pub id: i64,
+    #[serde(default)]
+    pub text: String,
 }
 
 /// A browser-computed (WebGPU) suggestion set for one work item, posted back to be
@@ -2907,6 +3221,38 @@ mod tests {
         item.tag_suggestions
             .iter()
             .any(|s| s.tag.eq_ignore_ascii_case(tag))
+    }
+
+    #[tokio::test]
+    async fn stored_audit_findings_surface_as_ai_audit_flags_in_scope() {
+        let svc = test_service().await;
+        let owner = svc.owner.clone();
+        svc.store
+            .replace_team_work_items(&owner, "Platform", &[work_item(1, "Platform", "Fix it", &[])])
+            .await
+            .unwrap();
+        // A finding for an item in scope surfaces as an ai_audit flag...
+        svc.store
+            .set_ai_audit(&owner, "Platform", 1, &[("unclear".into(), "No component named".into())])
+            .await
+            .unwrap();
+        // ...while a finding for an id not in this read's items is ignored (no ghost flag).
+        svc.store
+            .set_ai_audit(&owner, "Platform", 999, &[("bad_data".into(), "orphan".into())])
+            .await
+            .unwrap();
+
+        let flags = svc.flags(None).await.unwrap();
+        let audit: Vec<&Flag> = flags.iter().filter(|f| f.code == FlagCode::AiAudit).collect();
+        assert_eq!(audit.len(), 1, "only the in-scope finding surfaces");
+        let f = audit[0];
+        assert_eq!(f.work_item_id, 1);
+        assert_eq!(f.team, "Platform");
+        assert_eq!(f.severity, Severity::Warn);
+        // The message carries the human kind label + the model's detail.
+        assert!(f.message.contains("unclear"), "{}", f.message);
+        assert!(f.message.contains("No component named"), "{}", f.message);
+        assert!(!flags.iter().any(|f| f.work_item_id == 999), "orphan finding excluded");
     }
 
     #[tokio::test]

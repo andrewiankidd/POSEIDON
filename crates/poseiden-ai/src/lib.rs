@@ -102,6 +102,20 @@ pub trait AiTagger: Send + Sync {
             "AI drafting needs an online model (Settings → AI)".into(),
         ))
     }
+
+    /// Judge ONE work item's data quality for the on-demand healthcheck, returning
+    /// the concerns found (empty = clean). Default: unsupported - the keyword /
+    /// embedded backends decline so the caller can fall back to the browser's WebGPU
+    /// model (which runs the same prompt via the value-or-prompt handshake).
+    async fn audit_item(
+        &self,
+        _input: &AuditInput,
+        _background: &str,
+    ) -> Result<Vec<AuditIssue>, AiError> {
+        Err(AiError::Unsupported(
+            "The AI healthcheck needs an online model (Settings → AI)".into(),
+        ))
+    }
 }
 
 /// Whether to write a field from scratch or refine what's already there.
@@ -192,6 +206,181 @@ pub fn build_field_draft_prompt(ctx: &FieldDraftContext) -> String {
         }
     }
     p
+}
+
+// ─────────────────────────────── AI healthcheck audit ───────────────────────
+//
+// A DIFFERENT job from tagging: rather than pick from a fixed set, the model
+// JUDGES one work item's data quality and reports concrete concerns (a vague
+// title, a description that contradicts the title, placeholder/malformed data).
+// On-demand and advisory - the findings surface as `ai_audit` flags a person
+// chose to compute, never a silent side effect of polling. Like tagging it runs
+// on whichever backend is active (server online, or the browser's WebGPU model
+// via the value-or-prompt handshake), so the pure prompt + parser live here and
+// both paths share them.
+
+/// What the model flagged about one item. Kept coarse + stable so the UI can
+/// group/colour and the wire slug never churns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditKind {
+    /// Too vague to action - you can't tell what the work actually is.
+    Unclear,
+    /// The title is a placeholder or says nothing (beyond the deterministic term list).
+    BadTitle,
+    /// The data is internally wrong: description contradicts the title, is malformed,
+    /// or is obvious nonsense / boilerplate left unfilled.
+    BadData,
+}
+
+impl AuditKind {
+    /// Stable wire slug (matches the serde rename).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditKind::Unclear => "unclear",
+            AuditKind::BadTitle => "bad_title",
+            AuditKind::BadData => "bad_data",
+        }
+    }
+    /// Parse a model-supplied kind, case/space-insensitively. Unknown -> None (dropped).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace([' ', '-'], "_").as_str() {
+            "unclear" | "vague" | "underspecified" => Some(AuditKind::Unclear),
+            "bad_title" | "title" | "placeholder_title" => Some(AuditKind::BadTitle),
+            "bad_data" | "data" | "invalid" | "contradiction" => Some(AuditKind::BadData),
+            _ => None,
+        }
+    }
+}
+
+/// One concern the audit raised about an item: what KIND, and a one-line human
+/// explanation. Both the server path and the browser path produce these via
+/// [`parse_audit_response`], so a finding means the same thing wherever it ran.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AuditIssue {
+    pub kind: AuditKind,
+    /// A short, specific explanation (the "why") - shown in the flag message.
+    pub detail: String,
+}
+
+/// What we send the model to audit one item. Minimal, like [`TaggerInput`].
+#[derive(Debug, Clone)]
+pub struct AuditInput {
+    pub id: i64,
+    pub title: String,
+    pub work_item_type: String,
+    pub state: String,
+    pub description: Option<String>,
+}
+
+impl From<&WorkItem> for AuditInput {
+    fn from(w: &WorkItem) -> Self {
+        Self {
+            id: w.id,
+            title: w.title.clone(),
+            work_item_type: w.work_item_type.clone(),
+            state: w.state.clone(),
+            description: w.description.clone(),
+        }
+    }
+}
+
+/// Absolute cap on audit issues kept per item - a runaway model can't dump a wall
+/// of concerns. Well above the realistic count (an item has one or two real
+/// problems), so it only bites pathological output.
+pub const MAX_AUDIT_ISSUES: usize = 4;
+
+pub const AUDIT_SYSTEM_PROMPT: &str = "You are a meticulous backlog-hygiene reviewer. \
+You are given ONE software work item (backlog ticket). Judge ONLY its data quality - is it \
+clear, self-consistent, and specific enough for someone else to pick up? Report concrete \
+problems, not style nitpicks. Use these kinds: \"unclear\" (too vague to know what the work \
+is), \"bad_title\" (a placeholder or uninformative title), \"bad_data\" (the description \
+contradicts the title, is malformed, or is obviously boilerplate / nonsense left unfilled). \
+Do NOT invent problems: a terse-but-clear item is FINE, and a well-formed item must return \
+an empty list. Judge the item as it IS - never ask for more process. A resolved/closed item \
+that reads clearly is fine even if brief. \
+Reply with ONLY a JSON object, no prose, no code fences: \
+{\"issues\":[{\"kind\":\"<unclear|bad_title|bad_data>\",\"detail\":\"<one short sentence>\"}]}. \
+If nothing is wrong, reply {\"issues\":[]}.";
+
+/// Build the user prompt for an audit. Pure + testable: item identity, type,
+/// state, title, and a bounded description, plus the team background so the model
+/// doesn't mistake correct internal jargon for nonsense.
+pub fn build_audit_prompt(input: &AuditInput, background: &str) -> String {
+    let mut out = String::new();
+    let bg = background.trim();
+    if !bg.is_empty() {
+        out.push_str(
+            "TEAM BACKGROUND (this team's systems + internal names - so you don't mistake \
+             correct jargon for nonsense):\n",
+        );
+        out.push_str(bg);
+        out.push_str("\n\n");
+    }
+    out.push_str(&format!(
+        "Work item to audit:\n- Type: {}\n- State: {}\n- Title: {}\n",
+        input.work_item_type.trim(),
+        input.state.trim(),
+        input.title.trim(),
+    ));
+    match input
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
+        Some(d) => {
+            let text: String = d.chars().take(MAX_DESC_CHARS).collect();
+            out.push_str(&format!("- Description: {text}\n"));
+        }
+        None => out.push_str("- Description: (empty)\n"),
+    }
+    out.push_str("\nReturn the JSON now.");
+    out
+}
+
+#[derive(Deserialize, Default)]
+struct AuditReply {
+    #[serde(default)]
+    issues: Vec<AuditIssueRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct AuditIssueRaw {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    detail: String,
+}
+
+/// Turn a model's raw audit reply into validated issues. The trust boundary for
+/// the audit: extract the JSON (models wrap it in prose / fences), keep only known
+/// kinds with a non-empty detail, dedupe by (kind, detail), and cap. Pure - both
+/// the server backend and the browser path are thin glue over this.
+pub fn parse_audit_response(content: &str) -> Vec<AuditIssue> {
+    let json = extract_json(content);
+    let reply: AuditReply = serde_json::from_str(&json).unwrap_or_default();
+    let mut seen = HashSet::new();
+    reply
+        .issues
+        .into_iter()
+        .filter_map(|raw| {
+            let kind = AuditKind::parse(&raw.kind)?;
+            let detail = raw.detail.trim();
+            if detail.is_empty() {
+                return None;
+            }
+            let key = (kind, detail.to_lowercase());
+            if !seen.insert(key) {
+                return None;
+            }
+            Some(AuditIssue {
+                kind,
+                detail: detail.to_string(),
+            })
+        })
+        .take(MAX_AUDIT_ISSUES)
+        .collect()
 }
 
 /// Instance-level AI config: which backend suggests tags. Persisted (set via
@@ -935,6 +1124,38 @@ impl AiTagger for ChatTagger {
         // Strip a stray ```markdown fence the model may wrap the whole answer in.
         Ok(strip_code_fence(&content))
     }
+
+    async fn audit_item(
+        &self,
+        input: &AuditInput,
+        background: &str,
+    ) -> Result<Vec<AuditIssue>, AiError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": 0, // a judgement, not prose - deterministic
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": AUDIT_SYSTEM_PROMPT },
+                { "role": "user", "content": build_audit_prompt(input, background) },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
+        Ok(parse_audit_response(content))
+    }
 }
 
 /// Remove a single outer code fence (```lang … ```) if the model wrapped its whole
@@ -1010,6 +1231,87 @@ mod tests {
         let mut ctx = draft_ctx(DraftMode::Draft);
         ctx.background = "  ".into();
         assert!(!build_field_draft_prompt(&ctx).contains("TEAM BACKGROUND"));
+    }
+
+    // ── audit prompt + parser ────────────────────────────────────────────────
+
+    fn audit_input(title: &str, state: &str, desc: Option<&str>) -> AuditInput {
+        AuditInput {
+            id: 7,
+            title: title.into(),
+            work_item_type: "Bug".into(),
+            state: state.into(),
+            description: desc.map(|d| d.into()),
+        }
+    }
+
+    #[test]
+    fn build_audit_prompt_carries_identity_and_marks_empty_body() {
+        let p = build_audit_prompt(&audit_input("Fix login", "Active", None), "");
+        assert!(p.contains("- Type: Bug"));
+        assert!(p.contains("- State: Active"));
+        assert!(p.contains("- Title: Fix login"));
+        assert!(p.contains("- Description: (empty)"));
+        // Background block omitted when blank.
+        assert!(!p.contains("TEAM BACKGROUND"));
+    }
+
+    #[test]
+    fn build_audit_prompt_includes_background_and_truncates_body() {
+        let body = "Q".repeat(MAX_DESC_CHARS + 200);
+        let p = build_audit_prompt(
+            &audit_input("t", "Active", Some(&body)),
+            "Widget = our billing service.",
+        );
+        assert!(p.contains("TEAM BACKGROUND"));
+        assert!(p.contains("Widget = our billing service."));
+        assert_eq!(p.matches('Q').count(), MAX_DESC_CHARS);
+    }
+
+    #[test]
+    fn parse_audit_keeps_known_kinds_dedupes_and_drops_blanks() {
+        let raw = r#"Sure:
+        ```json
+        {"issues":[
+          {"kind":"unclear","detail":"Title says 'fix it' without saying what."},
+          {"kind":"UNCLEAR","detail":"Title says 'fix it' without saying what."},
+          {"kind":"bad_data","detail":"  "},
+          {"kind":"made_up","detail":"not a real kind"},
+          {"kind":"bad_title","detail":"Placeholder title 'asdf'."}
+        ]}
+        ```"#;
+        let issues = parse_audit_response(raw);
+        // dedup drops the case-variant duplicate; blank detail + unknown kind dropped.
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].kind, AuditKind::Unclear);
+        assert_eq!(issues[1].kind, AuditKind::BadTitle);
+    }
+
+    #[test]
+    fn parse_audit_clean_or_garbage_yields_nothing() {
+        assert!(parse_audit_response(r#"{"issues":[]}"#).is_empty());
+        assert!(parse_audit_response("no json at all").is_empty());
+        assert!(parse_audit_response("").is_empty());
+    }
+
+    #[test]
+    fn parse_audit_caps_a_runaway_model() {
+        let items = (0..MAX_AUDIT_ISSUES + 5)
+            .map(|i| format!(r#"{{"kind":"unclear","detail":"concern {i}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let raw = format!("{{\"issues\":[{items}]}}");
+        assert_eq!(parse_audit_response(&raw).len(), MAX_AUDIT_ISSUES);
+    }
+
+    #[test]
+    fn audit_kind_slug_round_trips() {
+        for k in [AuditKind::Unclear, AuditKind::BadTitle, AuditKind::BadData] {
+            assert_eq!(AuditKind::parse(k.as_str()), Some(k));
+            assert_eq!(serde_json::to_value(k).unwrap(), serde_json::json!(k.as_str()));
+        }
+        assert_eq!(AuditKind::parse("VAGUE"), Some(AuditKind::Unclear));
+        assert_eq!(AuditKind::parse("nonsense-kind"), None);
     }
 
     #[test]

@@ -307,6 +307,58 @@ pub async fn store_tag_suggestions(
     serde_json::to_value(summary).map_err(|e| e.to_string())
 }
 
+/// Start an on-demand AI healthcheck audit in the background (server-side model);
+/// the UI polls `healthcheck_audit_status`.
+#[tauri::command]
+pub async fn run_healthcheck_audit(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    ids: Option<Vec<i64>>,
+) -> CmdResult {
+    let service = state.service()?;
+    service
+        .start_healthcheck_audit(team, ids.filter(|v| !v.is_empty()))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(service.healthcheck_audit_status()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn healthcheck_audit_status(state: State<'_, AppState>) -> CmdResult {
+    let service = state.service()?;
+    serde_json::to_value(service.healthcheck_audit_status()).map_err(|e| e.to_string())
+}
+
+/// Per-item audit prompts for the browser (WebGPU) path.
+#[tauri::command]
+pub async fn healthcheck_audit_prompts(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    ids: Option<Vec<i64>>,
+) -> CmdResult {
+    let service = state.service()?;
+    let prompts = service
+        .audit_prompts(team.as_deref(), ids.filter(|v| !v.is_empty()).as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(prompts).map_err(|e| e.to_string())
+}
+
+/// Store browser (WebGPU) computed audit replies; the service re-parses them.
+#[tauri::command]
+pub async fn store_healthcheck_audit(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    results: Vec<poseiden_server::BrowserAuditResult>,
+) -> CmdResult {
+    let service = state.service()?;
+    let summary = service
+        .store_healthcheck_audit(team.as_deref(), results)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(summary).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_llm_config(state: State<'_, AppState>) -> CmdResult {
     let service = state.service()?;

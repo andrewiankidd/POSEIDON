@@ -40,6 +40,11 @@ pub enum FlagCode {
     /// Item's title is a placeholder / junk (`test`, `asdf`, `Untitled`, too short) -
     /// it tells you nothing about the work. Driven by the configured `bad_title_terms`.
     BadTitle,
+    /// An on-demand AI healthcheck judged this item's data quality as poor (a vague
+    /// title, contradictory / missing description, malformed data). Advisory and
+    /// AI-sourced - the specific concern is in [`Flag::message`]. Only present after a
+    /// person runs the healthcheck; stored until re-run (see the healthcheck audit).
+    AiAudit,
 }
 
 /// A single hygiene violation against one work item. Produced by the rules
@@ -102,6 +107,7 @@ mod tests {
             (FlagCode::Underspecified, "underspecified"),
             (FlagCode::Duplicate, "duplicate"),
             (FlagCode::BadTitle, "bad_title"),
+            (FlagCode::AiAudit, "ai_audit"),
         ];
         for (code, slug) in cases {
             assert_eq!(serde_json::to_value(code).unwrap(), serde_json::json!(slug));

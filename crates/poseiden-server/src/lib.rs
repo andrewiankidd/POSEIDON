@@ -24,7 +24,8 @@ pub use http::router;
 pub use poseiden_ai::{AiConfig, LlmConfig, OFFLINE_MODELS, ONLINE_PROVIDERS};
 pub use scheduler::Scheduler;
 pub use service::{
-    AuthStatus, BrowserSuggestion, PollOutcome, Service, SharedService, SigninState,
+    AuthStatus, BrowserAuditResult, BrowserSuggestion, PollOutcome, Service, SharedService,
+    SigninState,
 };
 
 /// Env var pointing at the static frontend bundle. Set in the Docker image;

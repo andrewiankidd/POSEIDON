@@ -10,7 +10,7 @@ import { el, clear, esc, ago, shortDate, toast } from './lib/dom.js';
 import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
-import { webgpuAvailable, runWebGpuTagging, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
+import { webgpuAvailable, runWebGpuTagging, runWebGpuChat, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
 import { effectiveActiveId, activeBackend, resolveAiText } from './lib/ai.js';
 import { renderDeck } from './lib/recap-slides.js';
 
@@ -469,6 +469,7 @@ const FLAG_LABELS = {
   underspecified: 'Empty body',
   duplicate: 'Duplicate title',
   bad_title: 'Bad title',
+  ai_audit: 'AI healthcheck',
   // Pull-request + pipeline entity-flag codes.
   'stale-open': 'Stale open PR',
   'stale-draft': 'Stale draft PR',
@@ -734,6 +735,8 @@ async function renderWorkItems() {
   // backlog - you pick the handful you want.
   let aiBtn = null;
   let aiRunning = false;
+  let hcBtn = null;
+  let hcRunning = false;
   try {
     const st = await api.aiStatus().catch(() => ({ enabled: false }));
     // Decide the engine: if the top client-usable integration is a WebGPU one (and
@@ -830,6 +833,79 @@ async function renderWorkItems() {
           }
         },
       }, '✨ Suggest tags');
+    }
+
+    // "Run healthcheck": an on-demand AI audit of the selected items' DATA QUALITY
+    // (vague titles, contradictory / boilerplate bodies) - distinct from tagging.
+    // Same backend split as tagging: WebGPU runs in-page, otherwise the server. The
+    // findings land as advisory `ai_audit` flags (chips + dashboard count + filter).
+    if ((st && st.enabled) || webgpuInteg) {
+      hcBtn = el('button', {
+        class: 'btn btn-xs', type: 'button', disabled: true,
+        title: webgpuInteg
+          ? 'Audit the selected items for data-quality problems IN YOUR BROWSER on the GPU (WebGPU, experimental)'
+          : 'Select work items, then run an AI healthcheck for data-quality problems (advisory)',
+        onclick: async (e) => {
+          const b = e.currentTarget;
+          const rows = table ? table.getSelection() : [];
+          if (!rows.length) return;
+          const ids = rows.map((r) => r.id);
+          const orig = b.textContent;
+          hcRunning = true;
+          b.disabled = true;
+          b.textContent = 'Starting…';
+          try {
+            if (webgpuInteg) {
+              // The server builds the exact prompts (single source of truth); the
+              // browser's GPU runs each, and replies are posted back to be re-parsed
+              // + stored server-side (trust boundary). Mirrors the drafting handshake.
+              const prompts = await api.healthcheckAuditPrompts(getTeamScope(), ids);
+              const results = [];
+              for (let i = 0; i < prompts.length; i++) {
+                const p = prompts[i];
+                b.textContent = `Auditing… ${i + 1}/${prompts.length}`;
+                try {
+                  const text = await runWebGpuChat(webgpuInteg.offline_model, p.system, p.user,
+                    (s) => { if (s) b.textContent = s; });
+                  results.push({ id: p.id, text });
+                } catch (err) {
+                  console.warn('WebGPU audit failed for item', p.id, err);
+                }
+              }
+              b.textContent = 'Storing…';
+              const sum = await api.storeHealthcheckAudit(getTeamScope(), results);
+              toast(`Healthcheck: flagged ${sum.flagged ?? 0}/${sum.considered ?? 0} items (${sum.findings ?? 0} concerns)`);
+              await refreshRows();
+              return;
+            }
+            // Server path: background run + poll (slow models never block the request).
+            await api.runHealthcheckAudit(getTeamScope(), ids);
+            for (;;) {
+              await new Promise((r) => setTimeout(r, 2000));
+              let s;
+              try { s = await api.healthcheckAuditStatus(); } catch { continue; }
+              if (s.state === 'running') {
+                b.textContent = s.total ? `Auditing… ${s.done}/${s.total}` : 'Auditing…';
+                continue;
+              }
+              if (s.state === 'done') {
+                const sum = s.summary || {};
+                toast(`Healthcheck: flagged ${sum.flagged ?? 0}/${sum.considered ?? 0} items (${sum.findings ?? 0} concerns)`);
+                await refreshRows();
+                return;
+              }
+              toast('Healthcheck failed: ' + (s.error || 'unknown error'), true);
+              break;
+            }
+          } catch (err) {
+            toast('Healthcheck failed: ' + (err?.message || err), true);
+          } finally {
+            hcRunning = false;
+            b.textContent = orig;
+            b.disabled = !(table && table.getSelection().length);
+          }
+        },
+      }, '🩺 Run healthcheck');
     }
   } catch { /* status unavailable - just hide the button */ }
 
@@ -964,7 +1040,7 @@ async function renderWorkItems() {
     // Rule-break filtering (all flagged, or one specific flag code); tag
     // filtering is the Tags column's own per-column filter input.
     predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    toolbar: [flaggedToggle, emptyToggle, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    toolbar: [flaggedToggle, emptyToggle, aiBtn, hcBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
@@ -978,6 +1054,10 @@ async function renderWorkItems() {
       if (aiBtn && !aiRunning) {
         aiBtn.disabled = n === 0;
         aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags';
+      }
+      if (hcBtn && !hcRunning) {
+        hcBtn.disabled = n === 0;
+        hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck';
       }
     },
   });
@@ -1047,7 +1127,7 @@ function flagShort(f) {
   if (f.code === 'missing_required_tag') return f.tag ? `missing ${f.tag}` : 'missing tag';
   if (f.code === 'disallowed_tag') return f.tag ? `bad: ${f.tag}` : 'bad tag';
   if (f.code === 'stale_state_tag') return f.tag ? `stale: ${f.tag}` : 'stale tag';
-  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title' }[f.code] || f.code;
+  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title', ai_audit: 'AI flag' }[f.code] || f.code;
 }
 
 // Work-items -> CSV: id, title, type, state, assignee, tags, suggestions (adds and
