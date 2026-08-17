@@ -30,7 +30,7 @@ tracing = { workspace = true }
 candle-core = "0.8"
 candle-transformers = "0.8"
 tokenizers = "0.21"
-hf-hub = "0.3"
+hf-hub = "1.0"
 
 [features]
 # Off by default: the plain build is pure-CPU and runs anywhere (the single-binary,
