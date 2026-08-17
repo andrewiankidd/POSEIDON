@@ -1065,7 +1065,8 @@ async function renderWorkItems() {
     // Rule-break filtering (all flagged, or one specific flag code); tag
     // filtering is the Tags column's own per-column filter input.
     predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    toolbar: [flaggedToggle, emptyToggle, aiBtn, hcBtn, dupBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    // Action buttons in the order you'd run them: dedupe -> triage quality -> classify.
+    toolbar: [flaggedToggle, emptyToggle, dupBtn, hcBtn, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
