@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>POSEIDEN - Product Owner support tool</title>
-  <meta name="description" content="POSEIDEN is a Product Owner support tool: it keeps your backlog legible - hygiene rules, pipeline observation, and velocity in one place. Connects to your work tracker (Azure DevOps, GitHub, or GitLab); runs standalone or against a shared backend." />
+  <title>POSEIDON - Product Owner support tool</title>
+  <meta name="description" content="POSEIDON is a Product Owner support tool: it keeps your backlog legible - hygiene rules, pipeline observation, and velocity in one place. Connects to your work tracker (Azure DevOps, GitHub, or GitLab); runs standalone or against a shared backend." />
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="stylesheet" href="landing.css" />
 </head>
@@ -13,7 +13,7 @@
     Landing page. This is what GitHub Pages / Cloudflare Pages serve at `/`.
     It's pure static - no backend, no API calls - so it works on any static
     host. The actual application lives at `app.html`; "Launch in browser"
-    below opens it. On a hosted POSEIDEN instance (the Docker image) the app
+    below opens it. On a hosted POSEIDON instance (the Docker image) the app
     talks to that instance's own API; on a static host it prompts you to
     connect to your instance URL (repoint).
 
@@ -22,11 +22,11 @@
   -->
   <header class="hero">
     <div class="hero-inner">
-      <img class="hero-logo" src="assets/logo.png" alt="POSEIDEN logo - a trident over a wave" width="112" height="112" />
+      <img class="hero-logo" src="assets/logo.png" alt="POSEIDON logo - a trident over a wave" width="112" height="112" />
       <div class="wordmark"><span class="po">PO</span><span class="rest">SEIDEN</span></div>
       <p class="tagline">The backlog hygiene your Product Owner used to keep - automated and self-hosted.</p>
       <p class="lede">
-        Work comes in never-ending waves. POSEIDEN helps you see them, sort them,
+        Work comes in never-ending waves. POSEIDON helps you see them, sort them,
         and show what's adrift: it polls your work tracker (Azure DevOps,
         GitHub, or GitLab) and your CI pipelines on a
         schedule, validates work items against configurable tag &amp; state
@@ -36,10 +36,10 @@
       <div class="cta-row">
         <a id="launch-btn" class="btn btn-primary" href="app.html">Launch in browser →</a>
         <a class="btn" href="#download">Download</a>
-        <a class="btn btn-ghost" href="https://github.com/andrewiankidd/POSEIDEN" target="_blank" rel="noopener">View on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/andrewiankidd/POSEIDON" target="_blank" rel="noopener">View on GitHub</a>
       </div>
       <p id="launch-fineprint" class="fineprint">
-        The browser client needs a running POSEIDEN instance. On a hosted
+        The browser client needs a running POSEIDON instance. On a hosted
         instance it just works; on this static site, launch it and set your
         instance URL in <em>Settings</em>.
       </p>
@@ -87,26 +87,26 @@
       <h2>Download</h2>
       <p class="download-note">
         Pick a build below, or run the web version as a container
-        (<code>ghcr.io/andrewiankidd/poseiden</code>). Latest builds come from
-        the <a href="https://github.com/andrewiankidd/POSEIDEN/releases" target="_blank" rel="noopener">Releases page</a>.
+        (<code>ghcr.io/andrewiankidd/poseidon</code>). Latest builds come from
+        the <a href="https://github.com/andrewiankidd/POSEIDON/releases" target="_blank" rel="noopener">Releases page</a>.
       </p>
       <div class="dl-grid">
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-windows-setup.exe">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-windows-setup.exe">
           <span class="dl-os">Windows</span><span class="dl-kind">Desktop installer (.exe)</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-macos-setup.dmg">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-macos-setup.dmg">
           <span class="dl-os">macOS</span><span class="dl-kind">Desktop app (.dmg)</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-desktop-linux-portable.AppImage">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-linux-portable.AppImage">
           <span class="dl-os">Linux</span><span class="dl-kind">Desktop (AppImage)</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-mobile-android.apk">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-mobile-android.apk">
           <span class="dl-os">Android</span><span class="dl-kind">Mobile app (.apk)</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/releases/latest">
-          <span class="dl-os">CLI</span><span class="dl-kind">poseiden - poll / lint / report</span>
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest">
+          <span class="dl-os">CLI</span><span class="dl-kind">poseidon - poll / lint / report</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDEN/pkgs/container/poseiden">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/pkgs/container/poseidon">
           <span class="dl-os">Container</span><span class="dl-kind">Web instance image (GHCR)</span>
         </a>
       </div>
@@ -115,7 +115,7 @@
 
   <footer>
     <b>&copy; <script>document.write(new Date().getFullYear())</script>++</b>
-    <span class="foot-mid">POSEIDEN - a Product Owner support tool. Dual-licensed MIT / Apache-2.0.</span>
+    <span class="foot-mid">POSEIDON - a Product Owner support tool. Dual-licensed MIT / Apache-2.0.</span>
     <a href="https://andrewkidd.co.uk" target="_blank" rel="noopener" title="andrewkidd.co.uk">
       <svg class="personal-logo" xmlns="http://www.w3.org/2000/svg" viewBox="-15 -15 230 230">
         <!-- Outer circle -->
@@ -143,7 +143,7 @@
 
   <script>
     // Static-host detection (same pattern the sibling projects use). GitHub
-    // Pages has no POSEIDEN backend, so the browser client can't load real
+    // Pages has no POSEIDON backend, so the browser client can't load real
     // data there - "Launch in browser" would dead-end at a connect prompt.
     // On Pages, turn it into "View Demo", which opens the app in demo mode
     // (client-side sample data). Anywhere else (a hosted instance, localhost)
@@ -157,7 +157,7 @@
       var fine = document.getElementById('launch-fineprint');
       if (fine) {
         fine.innerHTML = 'This is the public demo, running on built-in sample data - no backend needed. '
-          + 'To use POSEIDEN for real, download a build or run the container and point it at your own instance.';
+          + 'To use POSEIDON for real, download a build or run the container and point it at your own instance.';
       }
     })();
   </script>

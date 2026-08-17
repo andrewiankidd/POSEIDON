@@ -1,0 +1,19 @@
+{{- if and (eq .Values.auth.provider "dex") .Values.auth.dex.bundled.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "poseidon.dex.fullname" . }}
+  labels:
+    {{- include "poseidon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dex
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "poseidon.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dex
+  ports:
+    - name: http
+      port: 5556
+      targetPort: http
+      protocol: TCP
+{{- end }}

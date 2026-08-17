@@ -5,7 +5,7 @@ name: Deploy landing + web client → GitHub Pages
 #   /            → landing page (index.html) - project info + downloads + launch
 #   /app.html    → the web client (repoint it at your instance in Settings)
 #
-# POSEIDEN's frontend is pure static (no WASM / build step), so this is just an
+# POSEIDON's frontend is pure static (no WASM / build step), so this is just an
 # upload - no toolchain needed. Pages must be set to "GitHub Actions" build mode
 # once (Settings → Pages → Build and deployment → Source: GitHub Actions).
 

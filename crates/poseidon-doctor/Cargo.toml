@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "poseidon-doctor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON health-check engine - a Doctor that runs registered checks (built-in + runtime-parameterised), auto-fixes what it can, and aggregates a green/amber/red status. Generic; concrete checks live in the crates that own their dependencies."
+
+[dependencies]
+serde = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

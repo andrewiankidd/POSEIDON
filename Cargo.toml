@@ -1,18 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/poseiden-core",
-    "crates/poseiden-telemetry",
-    "crates/poseiden-paths",
-    "crates/poseiden-rules",
-    "crates/poseiden-reports",
-    "crates/poseiden-ai",
-    "crates/poseiden-providers",
-    "crates/poseiden-store",
-    "crates/poseiden-doctor",
-    "crates/poseiden-server",
-    "crates/poseiden-cli",
-    "crates/poseiden-app",
+    "crates/poseidon-core",
+    "crates/poseidon-telemetry",
+    "crates/poseidon-paths",
+    "crates/poseidon-rules",
+    "crates/poseidon-reports",
+    "crates/poseidon-ai",
+    "crates/poseidon-providers",
+    "crates/poseidon-store",
+    "crates/poseidon-doctor",
+    "crates/poseidon-server",
+    "crates/poseidon-cli",
+    "crates/poseidon-app",
 ]
 
 [workspace.package]
@@ -21,7 +21,7 @@ edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Andrew Kidd"]
-repository = "https://github.com/andrewiankidd/POSEIDEN"
+repository = "https://github.com/andrewiankidd/POSEIDON"
 
 [workspace.dependencies]
 # Errors
@@ -66,16 +66,16 @@ async-trait = "0.1"
 futures = "0.3"
 
 # Internal crates
-poseiden-core = { path = "crates/poseiden-core" }
-poseiden-telemetry = { path = "crates/poseiden-telemetry" }
-poseiden-doctor = { path = "crates/poseiden-doctor" }
-poseiden-paths = { path = "crates/poseiden-paths" }
-poseiden-rules = { path = "crates/poseiden-rules" }
-poseiden-reports = { path = "crates/poseiden-reports" }
-poseiden-ai = { path = "crates/poseiden-ai" }
-poseiden-providers = { path = "crates/poseiden-providers" }
-poseiden-store = { path = "crates/poseiden-store" }
-poseiden-server = { path = "crates/poseiden-server" }
+poseidon-core = { path = "crates/poseidon-core" }
+poseidon-telemetry = { path = "crates/poseidon-telemetry" }
+poseidon-doctor = { path = "crates/poseidon-doctor" }
+poseidon-paths = { path = "crates/poseidon-paths" }
+poseidon-rules = { path = "crates/poseidon-rules" }
+poseidon-reports = { path = "crates/poseidon-reports" }
+poseidon-ai = { path = "crates/poseidon-ai" }
+poseidon-providers = { path = "crates/poseidon-providers" }
+poseidon-store = { path = "crates/poseidon-store" }
+poseidon-server = { path = "crates/poseidon-server" }
 
 # Slim release binary for the Docker image + desktop installers. Kept
 # conservative (thin LTO, no panic=abort) so the Tauri shell + test

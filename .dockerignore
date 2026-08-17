@@ -7,7 +7,7 @@ target/
 *.db
 *.db-wal
 *.db-shm
-crates/poseiden-app/gen/
+crates/poseidon-app/gen/
 deploy/
 # Not needed to build the server image - and excluding them keeps a source edit
 # from busting the cargo build layer (see the cargo-chef split in the Dockerfile).
@@ -16,7 +16,7 @@ tenants/
 tools/
 .githooks/
 .toolbox/
-poseiden.sh
+poseidon.sh
 skaffold.yaml
 # NOTE: docs/ is NOT excluded - the builder copies docs/*.md into the web bundle
 # for the in-app docs viewer (see Dockerfile). Root-level *.md is dropped, but

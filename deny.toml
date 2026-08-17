@@ -1,7 +1,7 @@
 # cargo-deny config - license, advisory, banned-crate, and source policy.
 # Run: `cargo deny check` (all sections) or e.g. `cargo deny check licenses`.
 #
-# The allow-list is "common permissive licenses POSEIDEN's stack uses today";
+# The allow-list is "common permissive licenses POSEIDON's stack uses today";
 # expanding it should be deliberate. Banned crates is empty - add entries as
 # real problems surface.
 
@@ -23,14 +23,14 @@ yanked = "deny"
 # unmaintained (paste, proc-macro-error, the unic-* cluster pulled in by the AI
 # stack) is not actionable for us and shouldn't block the build.
 unmaintained = "workspace"
-# Kept in sync with `.cargo/audit.toml`. Empty to start - POSEIDEN's core
+# Kept in sync with `.cargo/audit.toml`. Empty to start - POSEIDON's core
 # stack (reqwest/rustls, axum, sqlx, tokio, serde) has no standing advisories.
 # Tauri's Linux webview backend (the GTK3 cluster) is the likely source of
 # future transitive advisories; add them here WITH a justification when they
 # land, don't blanket-ignore.
 ignore = [
     # rsa (transitive): Marvin Attack timing sidechannel, no upstream fix yet.
-    # POSEIDEN never does remote-observable RSA ops. See .cargo/audit.toml.
+    # POSEIDON never does remote-observable RSA ops. See .cargo/audit.toml.
     "RUSTSEC-2023-0071",
 ]
 

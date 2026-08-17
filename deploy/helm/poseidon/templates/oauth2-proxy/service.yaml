@@ -1,0 +1,17 @@
+{{- if include "poseidon.deployProxy" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "poseidon.oauth2proxy.fullname" . }}
+  labels:
+    {{- include "poseidon.oauth2proxy.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "poseidon.oauth2proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+{{- end }}

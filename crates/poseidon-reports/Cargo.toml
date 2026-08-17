@@ -1,0 +1,16 @@
+[package]
+publish = false
+name = "poseidon-reports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON report engine - runs a ReportSpec over loaded datasets and emits a ReportResult. Pure functions, no IO; drives the Reports screen and the home tiles."
+
+[dependencies]
+poseidon-core = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

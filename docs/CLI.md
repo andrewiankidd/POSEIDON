@@ -1,13 +1,13 @@
-# CLI guide - `poseiden`
+# CLI guide - `poseidon`
 
-The `poseiden` CLI drives the **same logic** as the web and desktop apps (the
+The `poseidon` CLI drives the **same logic** as the web and desktop apps (the
 shared `Service`) over the same local SQLite store, across every provider (Azure
 DevOps, GitHub, GitLab). It needs only read access - an Azure DevOps PAT with
 read scopes, or a GitHub / GitLab token (none at all for public repos) - so it
 runs anywhere that credential env var is set: a laptop, a cron job, or a CI stage.
 
 ```
-poseiden [--json] [--team <name>] [--owner <email>] <command>
+poseidon [--json] [--team <name>] [--owner <email>] <command>
 
 Commands:
   poll     Poll every configured team once and report what was fetched
@@ -27,15 +27,15 @@ Global flags:
   are keyed by owner, the user's auth email). Omit for the single-tenant
   `default` owner. Mirrors `config import --owner`.
 
-Every command prints the POSEIDEN emblem + a motto to stderr first (suppressed
+Every command prints the POSEIDON emblem + a motto to stderr first (suppressed
 under `--json`), so stdout stays machine-parseable.
 
 Setup is the same as the server: config (teams, rules) lives in the local DB and
 any provider credential in an env var (Azure DevOps defaults to
-`POSEIDEN_AZURE_PAT`; GitHub / GitLab name an optional token env var, or none for
+`POSEIDON_AZURE_PAT`; GitHub / GitLab name an optional token env var, or none for
 public repos). In a fresh/CI environment,
-load config declaratively with `poseiden config import config.yaml` (export it
-elsewhere with `poseiden config export`); the shared DB is otherwise empty.
+load config declaratively with `poseidon config import config.yaml` (export it
+elsewhere with `poseidon config export`); the shared DB is otherwise empty.
 
 ---
 
@@ -44,8 +44,8 @@ elsewhere with `poseiden config export`); the shared DB is otherwise empty.
 Poll fresh and see what's out of hygiene, right now:
 
 ```bash
-export POSEIDEN_AZURE_PAT=<read-only-pat>
-poseiden lint
+export POSEIDON_AZURE_PAT=<read-only-pat>
+poseidon lint
 ```
 
 ```
@@ -69,14 +69,14 @@ When everything's clean:
 To evaluate what's already stored without polling first (fast, offline):
 
 ```bash
-poseiden lint --no-poll
+poseidon lint --no-poll
 ```
 
 ---
 
 ## Use case 2 - gate a CI pipeline on backlog hygiene
 
-`poseiden lint` **exits non-zero when any error-severity flag is present**, so a
+`poseidon lint` **exits non-zero when any error-severity flag is present**, so a
 pipeline stage can fail the build when the backlog drifts. Warnings don't fail
 the build; only errors do (tune which rules are errors via `untagged_is_error`
 and the required-tags list in your rules).
@@ -85,22 +85,22 @@ Azure Pipelines:
 
 ```yaml
 - script: |
-    curl -sSL -o poseiden.tar.gz \
-      https://github.com/andrewiankidd/POSEIDEN/releases/latest/download/poseiden-cli-linux.tar.gz
-    tar xzf poseiden.tar.gz --strip-components=1
-    ./poseiden lint
+    curl -sSL -o poseidon.tar.gz \
+      https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-cli-linux.tar.gz
+    tar xzf poseidon.tar.gz --strip-components=1
+    ./poseidon lint
   displayName: Backlog hygiene gate
   env:
-    POSEIDEN_AZURE_PAT: $(POSEIDEN_AZURE_PAT)   # read-only PAT from a secret
+    POSEIDON_AZURE_PAT: $(POSEIDON_AZURE_PAT)   # read-only PAT from a secret
 ```
 
 GitHub Actions:
 
 ```yaml
 - name: Backlog hygiene gate
-  run: ./poseiden lint
+  run: ./poseidon lint
   env:
-    POSEIDEN_AZURE_PAT: ${{ secrets.POSEIDEN_AZURE_PAT }}
+    POSEIDON_AZURE_PAT: ${{ secrets.POSEIDON_AZURE_PAT }}
 ```
 
 The step fails (red) when there are error-severity flags, and its log lists
@@ -111,7 +111,7 @@ exactly which items and why.
 ## Use case 3 - a report for standup / retro
 
 ```bash
-poseiden report --from 2026-07-01 --to 2026-07-31
+poseidon report --from 2026-07-01 --to 2026-07-31
 ```
 
 ```
@@ -137,7 +137,7 @@ Omit the dates to default to the last 30 days. Add `--poll` to fetch fresh data
 before reporting (otherwise it reports over whatever's in the local store):
 
 ```bash
-poseiden report --poll
+poseidon report --poll
 ```
 
 ---
@@ -147,7 +147,7 @@ poseiden report --poll
 Every command takes `--json`. Stdout carries only the JSON; logs go to stderr.
 
 ```bash
-poseiden --json poll
+poseidon --json poll
 ```
 
 ```json
@@ -164,7 +164,7 @@ poseiden --json poll
 Pull just the failing pipeline count from a report:
 
 ```bash
-poseiden --json report --from 2026-07-01 --to 2026-07-31 | jq '.pipelines.failed'
+poseidon --json report --from 2026-07-01 --to 2026-07-31 | jq '.pipelines.failed'
 ```
 
 ```
@@ -174,7 +174,7 @@ poseiden --json report --from 2026-07-01 --to 2026-07-31 | jq '.pipelines.failed
 List every error-severity flag as JSON for an external notifier:
 
 ```bash
-poseiden --json lint --no-poll | jq '[.[] | select(.severity == "error")]'
+poseidon --json lint --no-poll | jq '[.[] | select(.severity == "error")]'
 ```
 
 ---
@@ -182,29 +182,29 @@ poseiden --json lint --no-poll | jq '[.[] | select(.severity == "error")]'
 ## Use case 5 - portable / air-gapped run
 
 Drop a `.portable` file next to the binary (or set
-`POSEIDEN_PORTABLE_MODE=true`) and everything - the SQLite DB, logs, cache -
+`POSEIDON_PORTABLE_MODE=true`) and everything - the SQLite DB, logs, cache -
 stays under `./.portable/`. Nothing is written to your home directory.
 
 ```bash
-POSEIDEN_PORTABLE_MODE=true poseiden poll
+POSEIDON_PORTABLE_MODE=true poseidon poll
 ```
 
-Useful for running POSEIDEN from a USB stick, or in an environment where you
+Useful for running POSEIDON from a USB stick, or in an environment where you
 don't want it touching system paths.
 
 ---
 
 ## Use case 6 - regenerate AI tag suggestions headlessly
 
-`poseiden tag` runs the owner's configured AI tagger over the backlog and
+`poseidon tag` runs the owner's configured AI tagger over the backlog and
 **stores** the results as advisory suggestions. Nothing is applied - a person
 reviews and applies them in the GUI (the tool never auto-applies tags). Polls
 fresh first unless `--no-poll`.
 
 ```bash
-poseiden tag                          # tag the whole scope
-poseiden tag --team Platform          # one team
-poseiden tag --assignee "Andrew Kidd" # only items assigned to a person
+poseidon tag                          # tag the whole scope
+poseidon tag --team Platform          # one team
+poseidon tag --assignee "Andrew Kidd" # only items assigned to a person
 ```
 
 `--assignee` is a case-insensitive substring of the display name. On a

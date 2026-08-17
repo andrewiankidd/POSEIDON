@@ -1,0 +1,13 @@
+[package]
+publish = false
+name = "poseidon-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON hygiene rules engine - evaluates work items against a RuleSet and emits Flags. Pure functions, no IO; the ideal test-first target."
+
+[dependencies]
+poseidon-core = { workspace = true }
+chrono = { workspace = true }

@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps (Tauri webview)
-        # Needed to compile poseiden-app (Tauri/wry) on Linux. The server, CLI,
+        # Needed to compile poseidon-app (Tauri/wry) on Linux. The server, CLI,
         # and library crates don't need these, but `--workspace` builds all.
         run: |
           sudo apt-get update
@@ -97,7 +97,7 @@ jobs:
           key: ${{ matrix.os }}
       # Exclude the Tauri app from the test run - it has no unit tests and
       # pulls the full webview toolchain; the `check` job already compiles it.
-      - run: cargo test --workspace --exclude poseiden-app
+      - run: cargo test --workspace --exclude poseidon-app
 
   helm:
     name: Helm lint + render + kubeconform
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - name: helm lint (also validates values against values.schema.json)
-        run: helm lint deploy/helm/poseiden
+        run: helm lint deploy/helm/poseidon
       - name: Install kubeconform
         run: |
           VERSION=0.6.7
@@ -123,14 +123,14 @@ jobs:
           set -euo pipefail
           scenarios=(
             ""  # default values
-            "-f deploy/helm/poseiden/ci/minikube-dex-values.yaml"
-            "-f deploy/helm/poseiden/ci/nginx-github-values.yaml"
-            "-f deploy/helm/poseiden/ci/istio-azure-values.yaml"
-            "-f deploy/helm/poseiden/ci/istio-external-values.yaml"
+            "-f deploy/helm/poseidon/ci/minikube-dex-values.yaml"
+            "-f deploy/helm/poseidon/ci/nginx-github-values.yaml"
+            "-f deploy/helm/poseidon/ci/istio-azure-values.yaml"
+            "-f deploy/helm/poseidon/ci/istio-external-values.yaml"
           )
           for s in "${scenarios[@]}"; do
             echo "::group::render + validate ${s:-<defaults>}"
-            helm template poseiden deploy/helm/poseiden --set azureDevOps.pat=dummy $s \
+            helm template poseidon deploy/helm/poseidon --set azureDevOps.pat=dummy $s \
               | kubeconform -strict -summary \
                   -kubernetes-version 1.30.0 \
                   -schema-location default \
@@ -146,11 +146,11 @@ jobs:
         # only ever pick app pods.
         run: |
           set -euo pipefail
-          vals="-f deploy/helm/poseiden/ci/minikube-dex-values.yaml"
-          svc=$(helm template poseiden deploy/helm/poseiden $vals --set azureDevOps.pat=dummy -s templates/service.yaml)
+          vals="-f deploy/helm/poseidon/ci/minikube-dex-values.yaml"
+          svc=$(helm template poseidon deploy/helm/poseidon $vals --set azureDevOps.pat=dummy -s templates/service.yaml)
           echo "$svc" | grep -q 'app.kubernetes.io/component: server' \
             || { echo "FAIL: app Service selector is not component-scoped"; echo "$svc"; exit 1; }
-          dep=$(helm template poseiden deploy/helm/poseiden $vals --set azureDevOps.pat=dummy -s templates/deployment.yaml)
+          dep=$(helm template poseidon deploy/helm/poseidon $vals --set azureDevOps.pat=dummy -s templates/deployment.yaml)
           echo "$dep" | grep -A5 'matchLabels:' | grep -q 'app.kubernetes.io/component: server' \
             || { echo "FAIL: app Deployment matchLabels is not component-scoped"; echo "$dep"; exit 1; }
           echo "OK: app Service + Deployment select only app pods"

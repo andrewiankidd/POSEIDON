@@ -1,5 +1,5 @@
 // Recap slide renderer - a self-contained, dependency-free port of OCTOGON's
-// slide deck. POSEIDEN's frontend is plain HTML/JS with no build step, so this
+// slide deck. POSEIDON's frontend is plain HTML/JS with no build step, so this
 // module has no imports and no external packages: it consumes a plain JS deck
 // object (not YAML) and renders an interactive, keyboard-navigable slide deck.
 //

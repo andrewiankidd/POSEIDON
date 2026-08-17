@@ -1,9 +1,9 @@
 # Running & debugging
 
-Every way to run POSEIDEN, ranked by how faithfully it mirrors a real
+Every way to run POSEIDON, ranked by how faithfully it mirrors a real
 deployment, plus the Docker-only development loop and a troubleshooting index.
 
-POSEIDEN is **one codebase, several shells**. The list below isn't "pick your
+POSEIDON is **one codebase, several shells**. The list below isn't "pick your
 favourite" - each entry is a different *product scenario*:
 
 | # | Mode | Mirrors | Inner loop |
@@ -19,7 +19,7 @@ container) you'd ship to a cluster. [Standalone](#standalone) is the
 zero-dependency local app a single user installs; [Develop with
 Docker](#develop-with-docker) is the fast contributor loop with only Docker
 installed. (`docker compose` is a build vehicle, not a deploy target - it isn't a
-recommended way to *run* POSEIDEN.)
+recommended way to *run* POSEIDON.)
 
 Every mode reads the same [configuration](#configuration) and uses the same
 per-provider [credential model](#authentication).
@@ -28,21 +28,21 @@ per-provider [credential model](#authentication).
 
 ## Hosted
 
-The closest 1:1 to a production deployment: the `poseiden-server` container
+The closest 1:1 to a production deployment: the `poseidon-server` container
 behind an ingress that runs the OAuth flow and injects the user's identity, with
 each user getting their own teams, rules, and data. Run the whole thing locally
 on minikube.
 
-**One command:** [`poseiden.sh`](../poseiden.sh) does the whole thing - checks your
+**One command:** [`poseidon.sh`](../poseidon.sh) does the whole thing - checks your
 tooling, starts minikube, installs the chart, and imports every bundle in
 [`tenants/`](../tenants/):
 
 ```bash
-./poseiden.sh up       # deps check -> minikube -> helm install -> import tenants/
-./poseiden.sh dev      # live-reload loop (skaffold): rebuild + redeploy on save
-./poseiden.sh status   # show what's running
-./poseiden.sh down     # tear it down  (--clean also stops minikube)
-./poseiden.sh help     # the full command list
+./poseidon.sh up       # deps check -> minikube -> helm install -> import tenants/
+./poseidon.sh dev      # live-reload loop (skaffold): rebuild + redeploy on save
+./poseidon.sh status   # show what's running
+./poseidon.sh down     # tear it down  (--clean also stops minikube)
+./poseidon.sh help     # the full command list
 ```
 
 `up` is the one-shot deploy; **`dev`** is the fast inner loop for iterating on the
@@ -52,15 +52,15 @@ on app *logic* without a cluster at all, prefer
 the stack self-check `verify` is covered under
 [Tenants and importing config](#tenants-and-importing-config).
 
-`poseiden.sh` is also the project's build entrypoint - thin wrappers over the same
+`poseidon.sh` is also the project's build entrypoint - thin wrappers over the same
 commands CI runs (see [DISTRIBUTION.md](DISTRIBUTION.md)), so you can produce any
 artifact locally to dogfood a build:
 
 ```bash
-./poseiden.sh build cli       # release CLI binary (target/release/poseiden)
-./poseiden.sh build desktop   # Tauri desktop app (installer per OS)
-./poseiden.sh build apk       # Tauri Android APK (needs android init + SDK/NDK)
-./poseiden.sh build image     # Docker server image
+./poseidon.sh build cli       # release CLI binary (target/release/poseidon)
+./poseidon.sh build desktop   # Tauri desktop app (installer per OS)
+./poseidon.sh build apk       # Tauri Android APK (needs android init + SDK/NDK)
+./poseidon.sh build image     # Docker server image
 ```
 
 The rest of this section is what the stack commands automate, step by step.
@@ -73,13 +73,13 @@ The rest of this section is what the stack commands automate, step by step.
 minikube start
 minikube addons enable ingress
 
-# 2. Install POSEIDEN with the bundled-Dex PoC values (nginx + an in-cluster
+# 2. Install POSEIDON with the bundled-Dex PoC values (nginx + an in-cluster
 #    identity provider, no external accounts needed).
-helm install poseiden deploy/helm/poseiden -f deploy/helm/poseiden/ci/minikube-dex-values.yaml
+helm install poseidon deploy/helm/poseidon -f deploy/helm/poseidon/ci/minikube-dex-values.yaml
 
 # 3. Point a hostname at the cluster and open it.
-echo "$(minikube ip) poseiden.localhost" | sudo tee -a /etc/hosts
-#    → http://poseiden.localhost   (log in: admin@example.com / password)
+echo "$(minikube ip) poseidon.localhost" | sudo tee -a /etc/hosts
+#    → http://poseidon.localhost   (log in: admin@example.com / password)
 ```
 
 The image the chart runs is built from the repo [`Dockerfile`](../Dockerfile);
@@ -91,7 +91,7 @@ minikube to validate the *auth + deployment* layer.
 
 **Going further:** real clusters, nginx vs Istio, the auth providers, the
 bundled-IdP split-horizon setup, and the multi-tenant model are all in the
-**[Helm chart README](../deploy/helm/poseiden/README.md)**. Publishing/other
+**[Helm chart README](../deploy/helm/poseidon/README.md)**. Publishing/other
 targets are in [DISTRIBUTION.md](DISTRIBUTION.md).
 
 ### Tenants and importing config
@@ -104,8 +104,8 @@ or `auth.enabled=false` - and every request is the one `default` owner.)
 
 A fresh install starts with an **empty** database - no teams until a tenant is
 seeded. Config lives in portable bundles under [`tenants/`](../tenants/):
-`demo-data.poseiden.import.yaml` (the committed offline demo tenant, backed by the
-`stub` provider - no Azure needed) and your own gitignored `*.poseiden.import.yaml`
+`demo-data.poseidon.import.yaml` (the committed offline demo tenant, backed by the
+`stub` provider - no Azure needed) and your own gitignored `*.poseidon.import.yaml`
 (see [tenants/README.md](../tenants/README.md)). Three ways to import one:
 
 1. **In the app** - log in (the Dex PoC seeds `admin@example.com` / `password`),
@@ -117,11 +117,11 @@ seeded. Config lives in portable bundles under [`tenants/`](../tenants/):
    which owner to seed:
 
    ```bash
-   kubectl port-forward deploy/poseiden 8737:8737 &
+   kubectl port-forward deploy/poseidon 8737:8737 &
    curl -X POST "http://127.0.0.1:8737/api/config/import?replace=true" \
      -H "X-Auth-Request-Email: you@example.com" \
      -H "Content-Type: application/x-yaml" \
-     --data-binary @tenants/demo-data.poseiden.import.yaml
+     --data-binary @tenants/demo-data.poseidon.import.yaml
    curl -X POST "http://127.0.0.1:8737/api/poll" -H "X-Auth-Request-Email: you@example.com"
    ```
 
@@ -129,11 +129,11 @@ seeded. Config lives in portable bundles under [`tenants/`](../tenants/):
    identity header, so it writes the `default` tenant:
 
    ```bash
-   kubectl exec -i deploy/poseiden -- poseiden config import --replace - \
-     < tenants/demo-data.poseiden.import.yaml
+   kubectl exec -i deploy/poseidon -- poseidon config import --replace - \
+     < tenants/demo-data.poseidon.import.yaml
    ```
 
-The **stack check** does exactly this: **`./poseiden.sh verify`** deploys an
+The **stack check** does exactly this: **`./poseidon.sh verify`** deploys an
 isolated release, imports the demo bundle under a test owner, asserts the exact
 stub counts, and checks that a second owner sees nothing - so the deploy, the
 import path, and multi-tenant isolation are all covered by one headless command.
@@ -151,9 +151,9 @@ VPS, Azure Web Apps. The published image is on GHCR:
 
 ```bash
 docker run -p 8737:8737 \
-  -v poseiden-data:/data \
-  -e POSEIDEN_AZURE_PAT="$POSEIDEN_AZURE_PAT" \
-  ghcr.io/andrewiankidd/poseiden:latest-main
+  -v poseidon-data:/data \
+  -e POSEIDON_AZURE_PAT="$POSEIDON_AZURE_PAT" \
+  ghcr.io/andrewiankidd/poseidon:latest-main
 ```
 
 - `/data` is the writable volume - SQLite DB, logs, and per-owner sign-in
@@ -180,7 +180,7 @@ Until tagged installers land on the Releases page, run from a clone. Needs
 **Desktop app** (the full GUI in a native window):
 
 ```bash
-cargo tauri dev --config crates/poseiden-app/tauri.conf.json
+cargo tauri dev --config crates/poseidon-app/tauri.conf.json
 ```
 
 Sign in from the app: **Sign in with Azure** runs a native device-code OAuth
@@ -190,12 +190,12 @@ flow built into the app - no PAT to paste, no app registration, no `az` CLI.
 database):
 
 ```bash
-cargo run -p poseiden-cli -- poll     # poll every configured team once
-cargo run -p poseiden-cli -- lint     # print hygiene flags; exits 1 on any error
-cargo run -p poseiden-cli -- report --from 2026-07-01 --to 2026-07-31
+cargo run -p poseidon-cli -- poll     # poll every configured team once
+cargo run -p poseidon-cli -- lint     # print hygiene flags; exits 1 on any error
+cargo run -p poseidon-cli -- report --from 2026-07-01 --to 2026-07-31
 ```
 
-`poseiden lint` exits non-zero on any error-severity flag - drop it into a CI
+`poseidon lint` exits non-zero on any error-severity flag - drop it into a CI
 stage to gate a pipeline on backlog hygiene. Full reference + worked use cases:
 [CLI.md](CLI.md).
 
@@ -203,7 +203,7 @@ stage to gate a pipeline on backlog hygiene. Full reference + worked use cases:
 poking at the API):
 
 ```bash
-cargo run -p poseiden-server     # serves the API + frontend on :8737
+cargo run -p poseidon-server     # serves the API + frontend on :8737
 ```
 
 ### Portable
@@ -214,7 +214,7 @@ Standalone, with **every write confined beside the binary** under `./.portable/`
 or set the env var:
 
 ```bash
-POSEIDEN_PORTABLE_MODE=true cargo run -p poseiden-cli -- poll
+POSEIDON_PORTABLE_MODE=true cargo run -p poseidon-cli -- poll
 ```
 
 Config then resolves from the portable dir first. See
@@ -250,11 +250,11 @@ stay fast and don't thrash the host filesystem. See [`compose.yaml`](../compose.
 - **Frontend changes** (`frontend/web/*.js`) → **instant**; the server serves them
   live from the mount, just refresh the browser. No recompile.
 - **Run the CLI in the same image:**
-  `docker compose run --rm dev cargo run -p poseiden-cli -- lint`.
+  `docker compose run --rm dev cargo run -p poseidon-cli -- lint`.
 
 First run compiles the whole workspace (minutes); subsequent runs reuse the
 cached `target` volume. No config file to set up - it boots empty; add a team in
-the app (or `poseiden config import`) once it's up.
+the app (or `poseidon config import`) once it's up.
 
 **Windows/macOS note:** the compose command uses `cargo watch --poll` because
 inotify file events don't cross the Docker Desktop / WSL2 mount boundary
@@ -270,9 +270,9 @@ worth it; build those [natively](#standalone).
 
 **There is no config file.** Configuration splits by concern:
 
-- **Instance settings** come from **environment variables**: `POSEIDEN_BIND_ADDR`,
-  `POSEIDEN_PORT` (default `8737`), `POSEIDEN_POLL_INTERVAL`, plus telemetry
-  (`POSEIDEN_OTLP_ENDPOINT`, `POSEIDEN_LOG_CONSOLE`/`_FILE`/`_LEVEL`, `RUST_LOG`).
+- **Instance settings** come from **environment variables**: `POSEIDON_BIND_ADDR`,
+  `POSEIDON_PORT` (default `8737`), `POSEIDON_POLL_INTERVAL`, plus telemetry
+  (`POSEIDON_OTLP_ENDPOINT`, `POSEIDON_LOG_CONSOLE`/`_FILE`/`_LEVEL`, `RUST_LOG`).
   The container image and Helm chart set these.
 - **Per-owner config** (teams, rules, tags, saved reports) lives in the **DB**,
   keyed by owner. Set it in the app's Settings, or declaratively with **config
@@ -284,10 +284,10 @@ Config is portable YAML - back it up, share a team's setup, migrate standalone
 ↔ hosted, or seed a headless run:
 
 ```bash
-poseiden config export --out config.yaml        # dump current config
-poseiden config import config.yaml               # merge (add what's missing)
-poseiden config import config.yaml --replace     # overwrite (declarative)
-poseiden config export | ...                     # stdout if --out is omitted
+poseidon config export --out config.yaml        # dump current config
+poseidon config import config.yaml               # merge (add what's missing)
+poseidon config import config.yaml --replace     # overwrite (declarative)
+poseidon config export | ...                     # stdout if --out is omitted
 ```
 
 Same in the app (Settings → Configuration) and over HTTP
@@ -306,7 +306,7 @@ per provider.
   extra binary in the image). On a hosted instance each owner's session is
   isolated on the data volume, so users never share a token cache.
 - **Headless / CI (PAT)** - config names the *environment variable* that holds a
-  Personal Access Token (default `POSEIDEN_AZURE_PAT`), never the token itself;
+  Personal Access Token (default `POSEIDON_AZURE_PAT`), never the token itself;
   your secret manager or shell sets it. Read-only scopes are enough for polling:
   Work Items (Read) + Build (Read). A PAT, if present, always wins over an
   interactive sign-in.
@@ -336,26 +336,26 @@ PAT.
 - *Desktop app:* the frontend is embedded at build time (`build.rs`), so a rebuild
   is needed. The build script has a `rerun-if-changed` on `frontend/web`, so a
   normal `cargo tauri dev` rebuild picks it up.
-- *Server / dev loop:* the server reads `POSEIDEN_STATIC_DIR` at runtime; edits to
+- *Server / dev loop:* the server reads `POSEIDON_STATIC_DIR` at runtime; edits to
   the mounted `frontend/web` are live - just refresh. If they're not, check the
-  container's `POSEIDEN_STATIC_DIR` points at the bind-mount.
+  container's `POSEIDON_STATIC_DIR` points at the bind-mount.
 
 **Hosted login redirects in a loop (bundled Dex/Keycloak).**
 A known nginx-ingress trap: auth annotations apply to *all* paths on an Ingress,
 so the auth endpoints get challenged too. The chart fixes this with a separate,
 annotation-free Ingress for `/oauth2` `/dex` `/auth` - if you've customised the
 ingress, keep that split. Details in the
-[Helm README](../deploy/helm/poseiden/README.md).
+[Helm README](../deploy/helm/poseidon/README.md).
 
 **Where's my data / logs / config?**
-Under the data root: `poseiden.db`, `logs/`, `cache/`, and hosted `az-sessions/`.
-Root resolution: portable (`./.portable/`) → `POSEIDEN_DATA_DIR` (container:
+Under the data root: `poseidon.db`, `logs/`, `cache/`, and hosted `az-sessions/`.
+Root resolution: portable (`./.portable/`) → `POSEIDON_DATA_DIR` (container:
 `/data`) → OS app-data dir. Logs also stream to the console (`RUST_LOG`, default
 `info`).
 
 **A frontend (webview) error I can't see in the browser.**
 Uncaught client errors are forwarded to the backend log stream under the
-`poseiden_client` target (via `POST /api/client-error`), so they show up in the
+`poseidon_client` target (via `POST /api/client-error`), so they show up in the
 server logs alongside backend errors.
 
 **Is anything actually broken?**
@@ -363,14 +363,14 @@ The in-app **Doctor** (traffic-light indicator + panel) self-checks sign-in,
 connectivity, and whether a newer build is out, with one-click fixes. Start there.
 
 **Observability / traces + metrics.**
-POSEIDEN emits structured logs, traces, and metrics via
-[`poseiden-telemetry`](../crates/poseiden-telemetry/). For a local Grafana LGTM
+POSEIDON emits structured logs, traces, and metrics via
+[`poseidon-telemetry`](../crates/poseidon-telemetry/). For a local Grafana LGTM
 stack (an opt-in profile on the same compose file):
 
 ```bash
 docker compose --profile telemetry up -d lgtm
 ```
 
-Then set `POSEIDEN_OTLP_ENDPOINT=http://localhost:4318` (there is no config file;
+Then set `POSEIDON_OTLP_ENDPOINT=http://localhost:4318` (there is no config file;
 telemetry is env-driven) and open Grafana at <http://localhost:3000>
 (admin / admin).

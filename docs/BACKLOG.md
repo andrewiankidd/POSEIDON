@@ -1,4 +1,4 @@
-# POSEIDEN Backlog
+# POSEIDON Backlog
 
 Ideas and directions worth not forgetting - not commitments. See
 [ROADMAP.md](ROADMAP.md) for what's crossed the line into "we're doing this,"
@@ -44,7 +44,7 @@ link chips, via `Service::update_work_item` / `link_work_item_pr`). Remaining:
   keyed by snapshot date; the report engine reads across snapshots.
 - **Trend lines.** Flag counts + success rate over time, not just point-in-time -
   needs the snapshots above.
-- **CLI report parity.** `poseiden report` still prints the fixed flow summary
+- **CLI report parity.** `poseidon report` still prints the fixed flow summary
   (`Service::ticket_report`); migrate it onto the configurable report engine the
   GUI uses (`/reports/specs` + `run`), so CLI and GUI reports come from one place.
 
@@ -58,12 +58,22 @@ link chips, via `Service::update_work_item` / `link_work_item_pr`). Remaining:
   and comment counts as Pull Request columns. Parked as lower-value than the
   write-back + view work; kept here so the decision isn't re-litigated from scratch.
 - **Notification digest.** Daily/weekly summary (flagged items, failing
-  pipelines) as an email or Slack/Teams message. POSEIDEN produces the summary;
+  pipelines) as an email or Slack/Teams message. POSEIDON produces the summary;
   delivery is an explicit, opt-in, bounded capability
-  (see SCOPE.md - POSEIDEN is not a general messaging actor).
+  (see SCOPE.md - POSEIDON is not a general messaging actor).
 - **More providers.** Jira, Linear next (GitHub and GitLab already ship). Each is
   a new `impl Provider`; the rules engine, store, server, and frontend are
   unchanged.
+- **Catalog integration (service catalog → taxonomy).** Scoped in
+  [design/catalog-integration.md](design/catalog-integration.md). A generic
+  `CatalogSource` (sibling of `Provider`; CSV / Port / Backstage impls) syncs the
+  repo→service→product→team graph from an internal developer portal into a `catalog`
+  table on the scheduler, so `product:*` resolves from the catalog live and the
+  static `repo_tags` map demotes to a manual-override/offline fallback. The allowed
+  product set can be derived from the catalog rather than hand-listed. Only hand bit:
+  a raw-id→taxonomy-slug canonicalisation map. Interim done: a one-off CSV export was
+  parsed to backfill `repo_tags` for the 57 missing products (tier-A snapshot by
+  hand) - unblocks tagging now and proves the CSV→taxonomy transform.
 - **Write-back beyond Azure DevOps.** Inline State/Tags edits and WI↔PR links
   currently write through the Azure DevOps provider only; the GitHub and GitLab
   providers are read-focused. Extending the write path (GitHub issue state /
@@ -82,9 +92,9 @@ link chips, via `Service::update_work_item` / `link_work_item_pr`). Remaining:
   this is additive. Gate remains Istio at the edge; app-level identity layers on
   top.
 - **Register a dedicated Entra app for device-code** *(hardening)*. Native
-  device-code sign-in now ships (pure-HTTP OAuth in `poseiden-providers::oauth`,
+  device-code sign-in now ships (pure-HTTP OAuth in `poseidon-providers::oauth`,
   no `az`), reusing the Azure CLI's public client id. Register a multi-tenant
-  POSEIDEN public client (allow public-client flows + Azure DevOps
+  POSEIDON public client (allow public-client flows + Azure DevOps
   `user_impersonation`) so it doesn't piggyback on Microsoft's client and survives
   tenants whose Conditional Access restricts the az client. One-time, publisher-side.
 - **Per-user ADO identity via OIDC token passthrough** *(deferred)*. Pass the
@@ -98,7 +108,7 @@ link chips, via `Service::update_work_item` / `link_work_item_pr`). Remaining:
 ## Hygiene rules depth
 
 - **Field-level rule-override merge.** Whole-ruleset per-team overrides now ship
-  (`[team.rules]` on a `[[team]]`, via `PoseidenConfig::rules_for`). Remaining: let
+  (`[team.rules]` on a `[[team]]`, via `PoseidonConfig::rules_for`). Remaining: let
   a team override *individual* rule fields and inherit the rest, rather than
   replacing the whole ruleset.
 - **Field-completeness rules.** Flag items missing an estimate, an area path, or

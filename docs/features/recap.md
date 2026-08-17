@@ -1,6 +1,6 @@
 # Recap
 
-A shareable highlights deck POSEIDEN generates from your **closed** work over a
+A shareable highlights deck POSEIDON generates from your **closed** work over a
 chosen window. It answers "what did we ship, and how do I show it?" - turning the
 backlog you already track into the skeleton of a stakeholder update, so you're
 editing a draft rather than starting from a blank slide. Merged in from a slide
@@ -34,13 +34,13 @@ Open **Recap** from the sidebar (hash route `#recap`), grouped with
     marquee items, and trim to a tight story.
 - **Download deck** - exports the deck as a **single self-contained HTML file**
   (deck data, slide renderer, and styles inlined). It opens and presents in any
-  browser with no POSEIDEN and no network - hand it to a stakeholder, drop it in a
+  browser with no POSEIDON and no network - hand it to a stakeholder, drop it in a
   wiki, or present from it directly.
 
 ## CLI
 
 No CLI surface - Recap is a GUI view. It reads the same stored work items the
-rest of the app polls (refresh them with `poseiden poll`, then generate the deck
+rest of the app polls (refresh them with `poseidon poll`, then generate the deck
 in the app).
 
 ## Where things live
@@ -48,7 +48,7 @@ in the app).
 - **Data** - computed on the fly from the stored work items (see the
   [User Guide](user-guide.md)); there's no separate recap store. The deck is a
   view over the same closed items, grouped by their `area:` / `source:` tags.
-- **The exported file** - a one-off artifact you download and own; POSEIDEN keeps
+- **The exported file** - a one-off artifact you download and own; POSEIDON keeps
   no copy.
 
 ## See also

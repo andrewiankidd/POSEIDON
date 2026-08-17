@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "POSEIDON",
+  "version": "0.1.0",
+  "identifier": "uk.co.andrewkidd.poseidon",
+  "build": {
+    "frontendDist": "../../frontend/web",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "POSEIDON",
+        "url": "app.html",
+        "width": 1100,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 540,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Backlog & operations-hygiene observer for Azure DevOps.",
+    "longDescription": "POSEIDON polls Azure DevOps work items and pipelines, validates them against configurable tag/state hygiene rules, surfaces items needing attention, and reports on ticket + pipeline flow over time. Read-only. Runs standalone or repointed at a hosted instance.",
+    "publisher": "Andrew Kidd",
+    "copyright": "Dual-licensed MIT / Apache-2.0",
+    "homepage": "https://github.com/andrewiankidd/POSEIDON",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

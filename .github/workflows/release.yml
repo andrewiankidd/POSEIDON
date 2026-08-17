@@ -36,8 +36,8 @@ jobs:
     # knows what it is. A v* tag build is that tag; a main build is the rolling
     # `latest-main`; the commit lets a moved rolling tag be detected.
     env:
-      POSEIDEN_COMMIT: ${{ github.sha }}
-      POSEIDEN_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.tag || 'latest-main') }}
+      POSEIDON_COMMIT: ${{ github.sha }}
+      POSEIDON_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.tag || 'latest-main') }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,21 +46,21 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-            cli_bin: poseiden.exe
+            cli_bin: poseidon.exe
             bundles: "msi,nsis"
             friendly: windows
           - name: "Linux 🐧"
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
-            cli_bin: poseiden
+            cli_bin: poseidon
             bundles: "deb,appimage"
             friendly: linux
           - name: "macOS 🍎"
             os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
-            cli_bin: poseiden
+            cli_bin: poseidon
             bundles: "app,dmg"
             friendly: macos
     steps:
@@ -92,11 +92,11 @@ jobs:
             tag="main-$(echo "$GITHUB_SHA" | cut -c1-7)"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "staged=poseiden-${tag}-${{ matrix.friendly }}" >> "$GITHUB_OUTPUT"
+          echo "staged=poseidon-${tag}-${{ matrix.friendly }}" >> "$GITHUB_OUTPUT"
 
       # ── CLI archive ──────────────────────────────────────────────────────
       - name: 🏗️ Build CLI
-        run: cargo build --release --target ${{ matrix.target }} -p poseiden-cli
+        run: cargo build --release --target ${{ matrix.target }} -p poseidon-cli
 
       - name: 📁 Stage CLI archive
         shell: bash
@@ -110,19 +110,19 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         working-directory: dist-cli
-        run: Compress-Archive -Path "${{ steps.meta.outputs.staged }}" -DestinationPath "poseiden-cli-${{ matrix.friendly }}.zip"
+        run: Compress-Archive -Path "${{ steps.meta.outputs.staged }}" -DestinationPath "poseidon-cli-${{ matrix.friendly }}.zip"
 
       - name: 🗜️ Pack CLI (tar.gz)
         if: matrix.archive == 'tar.gz'
         shell: bash
         working-directory: dist-cli
-        run: tar -czf "poseiden-cli-${{ matrix.friendly }}.tar.gz" "${{ steps.meta.outputs.staged }}"
+        run: tar -czf "poseidon-cli-${{ matrix.friendly }}.tar.gz" "${{ steps.meta.outputs.staged }}"
 
       - name: ⬆️ Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: poseiden-cli-${{ matrix.friendly }}
-          path: dist-cli/poseiden-cli-${{ matrix.friendly }}.${{ matrix.archive }}
+          name: poseidon-cli-${{ matrix.friendly }}
+          path: dist-cli/poseidon-cli-${{ matrix.friendly }}.${{ matrix.archive }}
           if-no-files-found: error
 
       # ── Tauri desktop installers ─────────────────────────────────────────
@@ -130,7 +130,7 @@ jobs:
         run: cargo install tauri-cli --version '^2' --locked
 
       - name: 🏗️ Build Tauri bundle
-        working-directory: crates/poseiden-app
+        working-directory: crates/poseidon-app
         run: cargo tauri build --bundles ${{ matrix.bundles }} --target ${{ matrix.target }}
 
       - name: 📁 Stage installers
@@ -145,7 +145,7 @@ jobs:
       - name: ⬆️ Upload desktop artifact
         uses: actions/upload-artifact@v4
         with:
-          name: poseiden-desktop-${{ matrix.friendly }}
+          name: poseidon-desktop-${{ matrix.friendly }}
           path: dist-desktop/*
           if-no-files-found: warn
 
@@ -154,8 +154,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
-      POSEIDEN_COMMIT: ${{ github.sha }}
-      POSEIDEN_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.tag || 'latest-main') }}
+      POSEIDON_COMMIT: ${{ github.sha }}
+      POSEIDON_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.tag || 'latest-main') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -174,7 +174,7 @@ jobs:
       - name: 📦 Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
       - name: 🌱 Init + build Android APK (debug-signed)
-        working-directory: crates/poseiden-app
+        working-directory: crates/poseidon-app
         env:
           NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
@@ -183,12 +183,12 @@ jobs:
       - name: 📁 Stage APK
         run: |
           mkdir -p dist
-          apk="$(find crates/poseiden-app/gen/android -type f -name '*.apk' | grep -i universal | head -n1 || true)"
-          [ -z "$apk" ] && apk="$(find crates/poseiden-app/gen/android -type f -name '*.apk' | head -n1 || true)"
-          if [ -n "$apk" ]; then cp "$apk" dist/poseiden-mobile-android.apk; else echo "::warning::no APK produced"; fi
+          apk="$(find crates/poseidon-app/gen/android -type f -name '*.apk' | grep -i universal | head -n1 || true)"
+          [ -z "$apk" ] && apk="$(find crates/poseidon-app/gen/android -type f -name '*.apk' | head -n1 || true)"
+          if [ -n "$apk" ]; then cp "$apk" dist/poseidon-mobile-android.apk; else echo "::warning::no APK produced"; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: poseiden-mobile-android
+          name: poseidon-mobile-android
           path: dist/*
           if-no-files-found: warn
 
@@ -218,7 +218,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: POSEIDEN ${{ steps.meta.outputs.tag }}
+          name: POSEIDON ${{ steps.meta.outputs.tag }}
           draft: true
           generate_release_notes: true
           files: dist/*

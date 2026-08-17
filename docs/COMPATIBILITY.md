@@ -1,6 +1,6 @@
 # Platform compatibility
 
-POSEIDEN is **one codebase, one logic layer (`Service`)**, exposed as several
+POSEIDON is **one codebase, one logic layer (`Service`)**, exposed as several
 shells. Most features come from that shared core, so they light up everywhere the
 core runs; the differences are about **where compute + data live** on each
 platform. This table maps features to platforms so you know what to expect.
@@ -12,7 +12,7 @@ platform. This table maps features to platforms so you know what to expect.
 - **Android** - the same app on mobile (Tauri). Same core; tighter CPU/RAM.
 - **Hosted (web)** - the `Service` in a container (Docker / Helm), used from a
   browser. Multi-user when fronted by the auth proxy.
-- **CLI** - `poseiden poll` / `lint` / `report` over the same `Service`.
+- **CLI** - `poseidon poll` / `lint` / `report` over the same `Service`.
 - **Client mode** - a browser on a **static host** (GitHub Pages) or a repointed
   desktop/mobile app. It holds **no data or compute of its own** - it shows
   whatever the **server it points at** supports (see the last row).
@@ -45,7 +45,7 @@ platform. This table maps features to platforms so you know what to expect.
 
 1. **CLI** exposes `poll` / `lint` / `report` (no interactive views); the data
    itself is the same as the app.
-2. **CLI report parity** - `poseiden report` still emits the fixed flow summary,
+2. **CLI report parity** - `poseidon report` still emits the fixed flow summary,
    not the configurable report engine the GUI uses (tracked in `BACKLOG.md`).
 3. A hosted instance *is* the server, so "standalone" / "repoint" don't apply to
    it; its browser UI is same-origin to the server.
@@ -70,10 +70,10 @@ platform. This table maps features to platforms so you know what to expect.
    demo-data-only in-browser playground is a separate, possible idea (see
    `BACKLOG.md`).
 9. **GPU (CUDA) embedded model** - the code is GPU-ready (`Device::cuda_if_available`
-   behind a `cuda` cargo feature, threaded `poseiden-ai` -> `poseiden-server` ->
-   `poseiden-app`), but off by default: the normal build stays pure-CPU and runs
+   behind a `cuda` cargo feature, threaded `poseidon-ai` -> `poseidon-server` ->
+   `poseidon-app`), but off by default: the normal build stays pure-CPU and runs
    anywhere. Build a GPU desktop binary on a machine with the CUDA toolkit:
-   `cargo tauri build --features cuda --config crates/poseiden-app/tauri.conf.json`.
+   `cargo tauri build --features cuda --config crates/poseidon-app/tauri.conf.json`.
    It links CUDA and needs an NVIDIA GPU + runtime to load, so it ships as a
    **separate** artifact, not the default download. Caveat: candle's *quantized*
    (GGUF) CUDA path is less mature than CPU - an f16 model may be needed. Not yet

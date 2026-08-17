@@ -2,7 +2,7 @@
 #
 #   docker compose up
 #
-# Brings up a live-reloading POSEIDEN web instance with NO Rust toolchain on the
+# Brings up a live-reloading POSEIDON web instance with NO Rust toolchain on the
 # host - Docker is the only dependency. The working tree is bind-mounted; the
 # Cargo registry and build cache live in named volumes so rebuilds stay fast and
 # don't thrash the host filesystem (important on Windows/macOS). Editing a crate
@@ -10,7 +10,7 @@
 # frontend is instant - just refresh the browser (it's served live from the mount).
 #
 # This is a DEV convenience, not a deployment artifact. To run the real hosted
-# image, use `docker run ghcr.io/andrewiankidd/poseiden` or the Helm chart - see
+# image, use `docker run ghcr.io/andrewiankidd/poseidon` or the Helm chart - see
 # docs/RUNNING.md.
 services:
   dev:
@@ -23,37 +23,37 @@ services:
     ports:
       - "8737:8737"
     environment:
-      POSEIDEN_STATIC_DIR: /build/frontend/web
-      POSEIDEN_DATA_DIR: /data
-      POSEIDEN_BIND_ADDR: 0.0.0.0
+      POSEIDON_STATIC_DIR: /build/frontend/web
+      POSEIDON_DATA_DIR: /data
+      POSEIDON_BIND_ADDR: 0.0.0.0
       RUST_LOG: info
-      # Headless auth: set a PAT in your shell (export POSEIDEN_AZURE_PAT=...) and
+      # Headless auth: set a PAT in your shell (export POSEIDON_AZURE_PAT=...) and
       # it flows through. The var name must match the team's `pat_env` (from its
-      # import bundle / DB config, default POSEIDEN_AZURE_PAT). Or leave it unset
+      # import bundle / DB config, default POSEIDON_AZURE_PAT). Or leave it unset
       # and use the in-app device-code sign-in.
-      POSEIDEN_AZURE_PAT: "${POSEIDEN_AZURE_PAT:-}"
+      POSEIDON_AZURE_PAT: "${POSEIDON_AZURE_PAT:-}"
     volumes:
       - .:/build                                   # live source
       - cargo-registry:/usr/local/cargo/registry   # cached crate downloads
       - target-cache:/build/target                 # cached build artifacts (NOT a host bind - perf)
-      - poseiden-data:/data                         # DB + logs, persisted across runs
+      - poseidon-data:/data                         # DB + logs, persisted across runs
 
   # Local Grafana LGTM stack (Grafana + Loki + Tempo + Prometheus behind one OTLP
   # endpoint). Opt-in via the `telemetry` profile so a plain `docker compose up`
   # stays lean:
   #   docker compose --profile telemetry up          # app + observability
   #   docker compose --profile telemetry up lgtm      # just the stack (app run natively)
-  # Then set POSEIDEN_OTLP_ENABLED=true and POSEIDEN_OTLP_ENDPOINT=http://localhost:4318
+  # Then set POSEIDON_OTLP_ENABLED=true and POSEIDON_OTLP_ENDPOINT=http://localhost:4318
   # and open Grafana at http://localhost:3000 (admin / admin).
-  # Traces/logs/metrics appear under service.name = poseiden-server/-app/-cli.
+  # Traces/logs/metrics appear under service.name = poseidon-server/-app/-cli.
   lgtm:
     image: grafana/otel-lgtm:latest
     profiles: ["telemetry"]
-    container_name: poseiden-lgtm
+    container_name: poseidon-lgtm
     ports:
       - "3000:3000"   # Grafana UI
       - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP (POSEIDEN uses this)
+      - "4318:4318"   # OTLP HTTP (POSEIDON uses this)
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -64,5 +64,5 @@ services:
 volumes:
   cargo-registry:
   target-cache:
-  poseiden-data:
+  poseidon-data:
   lgtm-data:

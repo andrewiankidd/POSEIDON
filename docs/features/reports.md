@@ -17,7 +17,7 @@ reports on the left and an inline editor with a live preview on the right.
 
 ### Built-in reports
 
-POSEIDEN ships five built-in templates:
+POSEIDON ships five built-in templates:
 
 | Report | What it shows | Render |
 |--------|---------------|--------|
@@ -67,7 +67,7 @@ Saving a custom report persists it (per user - see [Setup](setup.md)); the
 
 ## CLI
 
-`poseiden report` prints a fixed **flow summary** for a date range (default: the
+`poseidon report` prints a fixed **flow summary** for a date range (default: the
 last 30 days) from the stored data - work items opened/closed and pipeline run
 outcomes. It is a standalone summary, not the configurable engine (that lives in
 the GUI + HTTP API). Add `--poll` to refresh first.
@@ -124,7 +124,7 @@ Pipelines:
 
 ## Where things live
 
-- **Engine** - a pure function over the loaded rows (`poseiden-reports`): the
+- **Engine** - a pure function over the loaded rows (`poseidon-reports`): the
   service loads the sources a spec references, hands them to the engine, and gets
   back one series of points per query. No separate report store for the data
   itself; it is computed from the same work items, PRs, pipelines, and runs the

@@ -1,0 +1,94 @@
+# Demo tenant - the committed, offline showcase configuration.
+#
+# This is a POSEIDON config bundle (the same YAML `poseidon config import`
+# consumes). It provisions ONE team backed by the built-in `stub` provider, so it
+# needs no Azure, no credential, and no network. The actual work items, pipelines
+# and pull requests are SYNTHESISED by the StubProvider (crates/poseidon-providers
+# /src/stub.rs) on poll - deterministic every run - so this file carries config
+# only, never data.
+#
+# Used by:
+#   - the e2e tests (imported under a throwaway owner, asserted, torn down)
+#   - documentation screenshots (imported under the `poseidon+demo-data@example.com` owner)
+#   - a new dev who wants populated screens before wiring their real tracker
+#
+# Seed it into a running instance (or a local data dir) with:
+#   poseidon config import tenants/demo-data.poseidon.import.yaml --replace
+#   poseidon poll
+#
+# The stub returns 14 work items (3 tripping hygiene rules: one untagged, one
+# missing a required tag, one carrying a disallowed tag; plus 8 recently-closed
+# items tagged with the area:/source:/internal-external taxonomy so Recap and the
+# flow reports have real history), 3 pipelines (one never run), 5 runs, and 3
+# pull requests - so assertions against it are exact.
+poseidon:
+  schema: 1
+  # Target tenant for a trusted/system import (honored by the CLI + poseidon.sh;
+  # ignored by the public HTTP import, which uses the caller's own identity).
+  owner: poseidon+demo-data@example.com
+team:
+  - name: Platform
+    provider: stub
+    organization: https://stub.example
+    project: Platform
+    # The team's own area path - lets the "moved in from another board" signal tell a
+    # natively-created item from one handed over (stub item 1004 originates outside it).
+    area_path: "Platform\\Engineering"
+rules:
+  # Hygiene rules (what gets FLAGGED) - deliberately minimal so the demo's flag count
+  # is stable: exactly 3 open items trip a rule (untagged, missing type:*, disallowed).
+  required_tags: ["team:*", "type:*"]
+  disallowed_tags: ["wip", "temp"]
+  untagged_is_error: true
+  # Wildcard patterns drive the hygiene rules; the concrete tags below are the
+  # canonical set the AI tag suggester proposes from (it ignores the `*` patterns).
+  allowed_tags: ["team:*", "type:*", "priority:*", "area:*", "source:*", "product:*",
+    "internal", "external", "to refine",
+    "team:platform", "type:bug", "type:task", "type:story", "type:feature",
+    "priority:high", "priority:medium", "priority:low",
+    "area:backend", "area:frontend", "area:kubernetes", "area:observability",
+    "area:dev-platform", "area:idp", "area:azuredevops",
+    "product:platform", "product:idp",
+    "source:roadmap", "source:support", "source:incident", "source:request", "source:sre"]
+  # ── Everything below is ADVISORY (suggestions computed on read) - it never changes
+  #    the hygiene flag count, only what POSEIDON proposes. This is the showcase. ──
+  # Thin items (body under 40 chars) are flagged "to refine" instead of guessed at.
+  refine_tag: "to refine"
+  refine_min_chars: 40
+  # A child inherits its parent's product:/area: tags (stub 1004 & 1006 are children of
+  # the 1005 Feature, which carries product:platform).
+  inherit_parent_tags: true
+  # An item created on another board and moved in gets this source (stub 1004).
+  moved_in_source: "source:sre"
+  # Linked repo -> tag: a PR/commit to one of these repos implies its product/area more
+  # reliably than any keyword (stub 1004/1006/1002 link these).
+  repo_tags:
+    - { tag: "product:platform", keywords: ["platform-core"] }
+    - { tag: "area:kubernetes", keywords: ["platform-infra"] }
+    - { tag: "product:idp", keywords: ["portal-service"] }
+  # A team-background brief, fed verbatim to the AI tagger so it tags by MEANING. Edit it
+  # live in Settings -> Rules. (Fictional - this is the offline demo tenant.)
+  team_background: |
+    Team: Platform Engineering - we build and run the internal developer platform for a
+    fictional SaaS company. Two products are OURS:
+    - product:platform = the core platform services (the API, the poller, the report
+      engine, the deploy tooling).
+    - product:idp = the self-service developer portal (access requests, catalog).
+    AREA is the kind of work (kubernetes, observability, azuredevops CI/CD, frontend,
+    backend). SOURCE is how it arrived (roadmap, support, incident, request, sre = moved
+    in from the SRE board). Tag by what the work is FOR, not which tool was used.
+  # Title/body keyword auto-suggests (advisory, whole-word). They light up the stub's
+  # existing titles/descriptions so the Work Items screen shows live suggestions.
+  tag_keywords:
+    - { tag: "area:kubernetes", keywords: ["kubernetes", "k8s", "node pool", "node-pool", "cluster", "argo cd", "argocd"] }
+    - { tag: "area:observability", keywords: ["opentelemetry", "otel", "traces", "uptime", "slo", "slos", "dashboards"] }
+    - { tag: "area:azuredevops", keywords: ["yaml pipeline", "pipeline templates", "ci/cd", "cicd"] }
+    - { tag: "product:platform", keywords: ["report engine", "reports engine", "the poller", "config import"] }
+    - { tag: "product:idp", keywords: ["self-service", "self service", "developer portal", "portal access"] }
+    - { tag: "source:incident", keywords: ["incident", "outage", "latency"] }
+    - { tag: "source:support", keywords: ["support request", "support channel"] }
+  # Legacy -> canonical rewrites (deterministic; applying swaps them in one edit).
+  tag_aliases:
+    - { from: "k8s", to: "area:kubernetes" }
+    - { from: "otel", to: "area:observability" }
+    - { from: "idp", to: "product:idp" }

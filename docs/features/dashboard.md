@@ -28,8 +28,8 @@ last polled.
 ## CLI
 
 The Dashboard has no dedicated command - it's a visual roll-up of signals the CLI
-already exposes: `poseiden lint` (the same hygiene flags; see
-[Work Items](work-items.md)) and `poseiden report` (flow; see
+already exposes: `poseidon lint` (the same hygiene flags; see
+[Work Items](work-items.md)) and `poseidon report` (flow; see
 [Reports](reports.md)).
 
 ## Where things live

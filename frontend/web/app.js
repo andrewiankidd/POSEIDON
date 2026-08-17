@@ -1,4 +1,4 @@
-// POSEIDEN frontend controller. Hash-routed, no framework. Each view fetches
+// POSEIDON frontend controller. Hash-routed, no framework. Each view fetches
 // through the `api` dispatch (which resolves to invoke / remote / same-origin)
 // and renders into #main.
 
@@ -10,8 +10,11 @@ import { el, clear, esc, ago, shortDate, toast } from './lib/dom.js';
 import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
-import { webgpuAvailable, runWebGpuTagging, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
+import { webgpuAvailable, runWebGpuTagging, runWebGpuChat, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
+import { effectiveActiveId, activeBackend, resolveAiText, preserveMarkdownAssets, stripFieldLabelPrefix } from './lib/ai.js';
 import { renderDeck } from './lib/recap-slides.js';
+import { aiQueue } from './lib/aiQueue.js';
+import { mountActivityBar } from './lib/activityBar.js';
 
 const main = document.getElementById('main');
 
@@ -38,6 +41,37 @@ function routeParams() {
   return new URLSearchParams((location.hash || '').split('?')[1] || '');
 }
 
+// Persist the list-view toggles (Rule Breaks, Hide empty body) across refreshes,
+// keyed per view - mirrors the table's own filter/sort persistence. Best-effort.
+function loadToggles(key) {
+  try { return JSON.parse(localStorage.getItem(`poseidon.toggles.${key}`) || 'null') || {}; }
+  catch { return {}; }
+}
+function saveToggles(state) {
+  if (!state || !state.persistKey) return;
+  try {
+    const k = `poseidon.toggles.${state.persistKey}`;
+    const view = state.view && state.view !== 'table' ? state.view : null;
+    // Drop the entry at defaults so we don't leave empty state lying around.
+    if (!state.flaggedOnly && !state.hideEmpty && !view) { localStorage.removeItem(k); return; }
+    localStorage.setItem(k, JSON.stringify({
+      flaggedOnly: !!state.flaggedOnly, hideEmpty: !!state.hideEmpty, view: state.view || 'table',
+    }));
+  } catch { /* private mode / quota - persistence is best-effort */ }
+}
+// Build the shared filter state for a list view, restoring the persisted toggles +
+// view - unless a deep-link (?flagged=1 / ?flag=<code>) explicitly overrides them.
+function listState(persistKey, flagCode) {
+  const saved = loadToggles(persistKey);
+  return {
+    persistKey,
+    flagCode,
+    flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode || !!saved.flaggedOnly,
+    hideEmpty: !!saved.hideEmpty,
+    view: saved.view || 'table',
+  };
+}
+
 // A "Rule Breaks" toggle for a list screen: flips `state.flaggedOnly` and
 // refreshes the table (fetched lazily via `getTable`, since the table is often
 // built after this button). Reused across Work Items, PRs, and Pipelines. Also
@@ -52,6 +86,7 @@ function ruleBreaksToggle(state, getTable) {
       e.currentTarget.parentNode?.querySelector('.filter-chip')?.remove();
       e.currentTarget.classList.toggle('on', state.flaggedOnly);
       e.currentTarget.setAttribute('aria-pressed', String(state.flaggedOnly));
+      saveToggles(state);
       getTable().refresh();
     },
   }, [
@@ -77,9 +112,35 @@ function flagFilterChip(state, route) {
 // Does an entity carry the flag we're filtering to (or any flag if just "flagged
 // only")? `codes` is the entity's flag-code list. Shared predicate logic.
 function passesFlagFilter(state, codes) {
+  // "Hide empty body" - drop underspecified items so you can work the ones with real
+  // content first. Skipped when you're explicitly filtering TO empty-body items.
+  if (state.hideEmpty && state.flagCode !== 'underspecified' && codes.includes('underspecified')) {
+    return false;
+  }
   if (state.flagCode) return codes.includes(state.flagCode);
   if (state.flaggedOnly) return codes.length > 0;
   return true;
+}
+
+// A "Hide empty body" toggle for the Work Items toolbar - filters out underspecified
+// items (the "to refine" pile), so you can prioritise the ones with a real description
+// before tackling the empties.
+function hideEmptyToggle(state, getTable) {
+  return el('button', {
+    class: 'toggle-btn' + (state.hideEmpty ? ' on' : ''), type: 'button',
+    'aria-pressed': String(!!state.hideEmpty),
+    title: 'Hide items with an empty/very thin description (the "to refine" pile)',
+    onclick: (e) => {
+      state.hideEmpty = !state.hideEmpty;
+      e.currentTarget.classList.toggle('on', state.hideEmpty);
+      e.currentTarget.setAttribute('aria-pressed', String(state.hideEmpty));
+      saveToggles(state);
+      getTable().refresh();
+    },
+  }, [
+    el('span', { class: 'toggle-switch' }, el('span', { class: 'toggle-knob' })),
+    el('span', {}, 'Hide empty body'),
+  ]);
 }
 
 // Auth state ({ signed_in, method, message }) - refreshed at boot + after a
@@ -193,7 +254,7 @@ function updateDoctorIndicator() {
 // The build stamp this tab booted with (from env.js, loaded before app.js). A
 // long-open SPA keeps running the JS it loaded, so an HTTP no-cache header alone
 // can't save it from a mid-session redeploy - we compare against the live stamp.
-const BOOT_VERSION = (window.__POSEIDEN_ENV__ && window.__POSEIDEN_ENV__.version) || '';
+const BOOT_VERSION = (window.__POSEIDON_ENV__ && window.__POSEIDON_ENV__.version) || '';
 let updateNudged = false;
 
 // Detect a redeploy: the server's build stamp no longer matches the one this tab
@@ -215,7 +276,7 @@ function showUpdateBanner() {
     title: 'Reload to get the latest version',
     onclick: () => location.reload(),
   },
-    el('span', {}, '✨ A new version of POSEIDEN is available — '),
+    el('span', {}, '✨ A new version of POSEIDON is available — '),
     el('span', { class: 'update-banner-cta' }, 'Reload'),
     el('button', {
       class: 'update-banner-x', title: 'Dismiss',
@@ -340,9 +401,9 @@ function errorPanel(name, e) {
   // guide the user to connect the client to their running instance.
   if (mode() === 'web' && !getInstanceUrl()) {
     return el('div', { class: 'card' }, [
-      el('h2', {}, 'Connect POSEIDEN to an instance'),
+      el('h2', {}, 'Connect POSEIDON to an instance'),
       el('p', { class: 'muted' },
-        'This is the POSEIDEN web client. It needs a running POSEIDEN instance to show data - ' +
+        'This is the POSEIDON web client. It needs a running POSEIDON instance to show data - ' +
         'either the hosted (container) instance, or your own. Enter its URL in Settings to connect.'),
       el('div', { style: 'margin-top:10px' }, [
         el('button', { class: 'btn btn-primary', onclick: showSettings }, 'Open Settings →'),
@@ -353,7 +414,7 @@ function errorPanel(name, e) {
     el('h2', {}, 'Could not load ' + name),
     el('p', { class: 'muted' }, String(e.message || e)),
     e && e.stack ? el('pre', { style: 'font-size:11px;white-space:pre-wrap;color:var(--ink-soft);max-height:200px;overflow:auto' }, String(e.stack)) : null,
-    el('p', { class: 'muted' }, 'If you just started POSEIDEN, the first poll may still be running. Try Refresh.'),
+    el('p', { class: 'muted' }, 'If you just started POSEIDON, the first poll may still be running. Try Refresh.'),
   ].filter(Boolean));
 }
 
@@ -371,9 +432,13 @@ async function renderDashboard() {
   // there reads as "verified clean" when we simply never looked (fresh boot,
   // not signed in, or the first poll hasn't run). Distinguish the two: the
   // tiles show a muted placeholder until there's a real poll behind them.
-  const polled = !!d.last_polled_at;
+  // "Have we looked at the backlog?" - a real poll stamps `last_polled_at`, but even if
+  // that meta is missing, the mere presence of polled work items means we have genuine
+  // numbers to show (don't blank the whole dashboard just because the stamp is absent).
+  const polled = !!d.last_polled_at || (d.total_work_items || 0) > 0;
   const wrap = el('div', {});
-  wrap.appendChild(pageHead('Dashboard', polled ? `Last polled ${ago(d.last_polled_at)}` : 'Not polled yet'));
+  const subtitle = d.last_polled_at ? `Last polled ${ago(d.last_polled_at)}` : (polled ? 'Polled' : 'Not polled yet');
+  wrap.appendChild(pageHead('Dashboard', subtitle));
 
   // Velocity metrics come from the report engine (built-in Stat specs), run in
   // parallel. Failures degrade to a placeholder rather than breaking the page.
@@ -440,6 +505,12 @@ const FLAG_LABELS = {
   disallowed_tag: 'Disallowed tag',
   stale: 'Stale',
   stale_state_tag: 'Stale tag on resolved item',
+  underspecified: 'Empty body',
+  duplicate: 'Duplicate title',
+  bad_title: 'Bad title',
+  near_duplicate: 'Near-duplicate',
+  orphaned_child: 'Open under closed parent',
+  ai_audit: 'AI healthcheck',
   // Pull-request + pipeline entity-flag codes.
   'stale-open': 'Stale open PR',
   'stale-draft': 'Stale draft PR',
@@ -515,17 +586,24 @@ async function renderWorkItems() {
   async function refreshRows() {
     try {
       const fresh = await api.tickets();
+      // Guard: a malformed/thin response (e.g. under load) must not wipe the view.
+      if (!fresh || !Array.isArray(fresh.items)) return;
       flagsById.clear();
-      for (const f of fresh.flags) {
+      for (const f of (fresh.flags || [])) {
         if (!flagsById.has(f.work_item_id)) flagsById.set(f.work_item_id, []);
         flagsById.get(f.work_item_id).push(f);
       }
+      // `table.setRows` replaces the shared rows array IN PLACE - and the table was
+      // created over the SAME `items` reference, so this also refreshes what the board
+      // iterates. (Do NOT pass `items` here: it aliases the table's rows, so setRows
+      // would clear it and then re-push from the now-empty array, wiping everything.)
       if (table && table.setRows) table.setRows(fresh.items);
       else route();
+      if (typeof boardMode === 'function' && boardMode()) renderHost();
     } catch { route(); }
   }
 
-  const wrap = el('div', {});
+  const wrap = el('div', { class: 'view-fill' });
   wrap.appendChild(pageHead('Work Items', `${items.length} work items`,
     el('button', {
       class: 'btn btn-xs', title: 'Export the current filtered view (or your selection) to CSV - id, tags, suggestions, flags',
@@ -569,12 +647,15 @@ async function renderWorkItems() {
   // Pre-filter to rule-breaks (or one specific flag) when arrived from a
   // dashboard tile / Health-check row.
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('work-items', flagCode);
 
   // "Rule Breaks" toggle - a switch in the table toolbar that flips a predicate
   // the table re-reads (only items with hygiene-rule violations).
   let table;
-  const flaggedToggle = ruleBreaksToggle(state, () => table);
+  // The toggles live in the shared toolbar (above both views); `redraw` (hoisted below)
+  // re-renders whichever view is active, so they work in table AND board mode.
+  const flaggedToggle = ruleBreaksToggle(state, () => ({ refresh: redraw }));
+  const emptyToggle = hideEmptyToggle(state, () => ({ refresh: redraw }));
 
   // After an inline edit writes back to ADO, patch everything locally so the
   // view is correct without a re-poll: the row's fields, its recomputed flags
@@ -601,7 +682,16 @@ async function renderWorkItems() {
   const columns = [
     { label: 'ID', sort: 'number', value: (it) => it.id, render: (it) => linkOut('#' + it.id, it.url) },
     showTeam ? { label: 'Team', filterChoices: true, value: (it) => it.team || '' } : null,
-    { label: 'Title', class: 'wrap', value: (it) => it.title || '', render: (it) => it.title || '(untitled)' },
+    {
+      label: 'Title', class: 'wrap', value: (it) => it.title || '',
+      render: (it) => el('span', { class: 'wi-title' }, [
+        el('button', {
+          class: 'wi-edit', type: 'button', title: 'Edit work-item fields',
+          onclick: (e) => { e.stopPropagation(); openWorkItemEditor(it, refreshRows); },
+        }, '✎'),
+        el('span', {}, it.title || '(untitled)'),
+      ]),
+    },
     { label: 'Type', filterChoices: true, value: (it) => it.work_item_type || '' },
     {
       label: 'State', filterChoices: true, value: (it) => it.state || '',
@@ -694,19 +784,22 @@ async function renderWorkItems() {
   // chip is click-to-apply. Selection-scoped so a slow model never grinds the whole
   // backlog - you pick the handful you want.
   let aiBtn = null;
-  let aiRunning = false;
+  let hcBtn = null;
+  // AI concurrency is owned by `aiQueue` (lib/aiQueue.js): only ONE heavy job (tag
+  // suggest, healthcheck audit, duplicate scan, bulk improve) runs at a time - WebGPU
+  // can't sanely run two inference loops on the GPU at once, and overlapping refreshes
+  // blanked the view. The rest QUEUE and show in the activity bar. So buttons stay
+  // enabled whenever there's a selection - a click ENQUEUES, never blocks - and there's
+  // no busy-disable here; each handler guards double-clicks with `aiQueue.has(name)`.
   try {
     const st = await api.aiStatus().catch(() => ({ enabled: false }));
     // Decide the engine: if the top client-usable integration is a WebGPU one (and
     // this browser has WebGPU), inference runs IN-PAGE on the user's GPU; otherwise
     // the server handles it (offline candle / online / custom endpoint).
-    let webgpuInteg = null;
-    try {
-      const cfg = await api.llmConfig();
-      const activeId = effectiveActiveId(cfg.integrations || [], cfg.caps || {});
-      const top = (cfg.integrations || []).find((i) => i.id === activeId);
-      if (top && top.kind === 'webgpu') webgpuInteg = top;
-    } catch { /* no registry - server path only */ }
+    // Shared client dispatcher decides the backend (see lib/ai.js). A 'browser' verdict
+    // means WebGPU inference runs in-page on the user's GPU.
+    const be = await activeBackend();
+    const webgpuInteg = be.where === 'browser' ? { offline_model: be.model } : null;
 
     if ((st && st.enabled) || webgpuInteg) {
       aiBtn = el('button', {
@@ -714,85 +807,135 @@ async function renderWorkItems() {
         title: webgpuInteg
           ? 'Suggest tags for the selected items IN YOUR BROWSER on the GPU (WebGPU, experimental)'
           : 'Select work items, then suggest canonical tags for them with AI (advisory)',
-        onclick: async (e) => {
-          const b = e.currentTarget;
+        onclick: () => {
           const rows = table ? table.getSelection() : [];
           if (!rows.length) return; // disabled when empty; guard anyway
+          if (aiQueue.has('Suggest tags')) { toast('Tag suggestion is already running or queued.'); return; }
           const ids = rows.map((r) => r.id);
-          const orig = b.textContent;
-          aiRunning = true;
-          b.disabled = true;
-          b.textContent = 'Starting…';
-          try {
-            if (webgpuInteg) {
-              // Pull descriptions for the selected items (the list omits bodies) so the
-              // in-browser tagger can use them when the owner opted in; title-only if not.
-              let rowsForTagging = rows;
-              try {
-                const descs = await api.workItemDescriptions(getTeamScope(), ids);
-                if (descs && Object.keys(descs).length) {
-                  rowsForTagging = rows.map((r) => ({ ...r, description: descs[r.id] ?? null }));
+          // Enqueue: runs now if the AI slot is free, else waits behind the current job.
+          // Progress + result show in the activity bar (see lib/activityBar.js).
+          aiQueue.enqueue({
+            name: 'Suggest tags', icon: '✨', where: webgpuInteg ? 'gpu' : 'server',
+            run: async (report) => {
+              if (webgpuInteg) {
+                // Pull descriptions for the selected items (the list omits bodies) so the
+                // in-browser tagger can use them when the owner opted in; title-only if not.
+                let rowsForTagging = rows;
+                try {
+                  const descs = await api.workItemDescriptions(getTeamScope(), ids);
+                  if (descs && Object.keys(descs).length) {
+                    rowsForTagging = rows.map((r) => ({ ...r, description: descs[r.id] ?? null }));
+                  }
+                } catch { /* body optional - fall back to title-only */ }
+                // Skip underspecified items (too little body to tag from): they get the
+                // deterministic "to refine" suggestion server-side; don't let the model
+                // guess an area from nothing. Mirrors poseidon-rules::is_underspecified.
+                const refineTag = (rules.refine_tag || '').trim();
+                if (refineTag) {
+                  const min = rules.refine_min_chars ?? 40;
+                  const before = rowsForTagging.length;
+                  rowsForTagging = rowsForTagging.filter((r) => (r.description || '').trim().length >= min);
+                  const skipped = before - rowsForTagging.length;
+                  if (skipped) toast(`Skipped ${skipped} item${skipped === 1 ? '' : 's'} too sparse to AI-tag - needs refinement.`);
                 }
-              } catch { /* body optional - fall back to title-only */ }
-              // Skip underspecified items (too little body to tag from): they get the
-              // deterministic "to refine" suggestion server-side; don't let the model
-              // guess an area from nothing. Mirrors poseiden-rules::is_underspecified.
-              const refineTag = (rules.refine_tag || '').trim();
-              if (refineTag) {
-                const min = rules.refine_min_chars ?? 40;
-                const before = rowsForTagging.length;
-                rowsForTagging = rowsForTagging.filter((r) => (r.description || '').trim().length >= min);
-                const skipped = before - rowsForTagging.length;
-                // Don't claim a "to refine" suggestion was made - the server only adds
-                // it when the item is missing a required tag AND isn't already tagged
-                // (an item already carrying it, like one flagged "To Refine", gets
-                // nothing). Just state honestly why these were left out of the AI run.
-                if (skipped) toast(`Skipped ${skipped} item${skipped === 1 ? '' : 's'} too sparse to AI-tag - needs refinement.`);
-              }
-              if (!rowsForTagging.length) { await refreshRows(); return; }
-              // In-browser inference on the user's GPU, then POST results to the
-              // server which re-validates + stores them (trust boundary).
-              const results = await runWebGpuTagging(
-                webgpuInteg.offline_model, rowsForTagging, aiCandidates,
-                (s) => { b.textContent = s || 'Loading…'; },
-                (done, total) => { b.textContent = `Suggesting… ${done}/${total}`; },
-                rules.required_tags || [], aiHints);
-              b.textContent = 'Storing…';
-              const sum = await api.storeTagSuggestions(getTeamScope(), results);
-              toast(`WebGPU: tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} items (${sum.suggestions ?? 0} tags)`);
-              await refreshRows();
-              return;
-            }
-            // Server path: background run + poll (slow offline models never block).
-            await api.runTagSuggestions(getTeamScope(), ids);
-            for (;;) {
-              await new Promise((r) => setTimeout(r, 2000));
-              let s;
-              try { s = await api.tagSuggestionsStatus(); } catch { continue; }
-              if (s.state === 'running') {
-                b.textContent = s.total ? `Suggesting… ${s.done}/${s.total}` : 'Suggesting…';
-                continue;
-              }
-              if (s.state === 'done') {
-                const sum = s.summary || {};
-                toast(`AI suggested tags for ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} items (${sum.suggestions ?? 0} tags)`);
+                if (!rowsForTagging.length) { await refreshRows(); return 'nothing to tag'; }
+                // In-browser inference on the user's GPU, then POST results to the
+                // server which re-validates + stores them (trust boundary).
+                const results = await runWebGpuTagging(
+                  webgpuInteg.offline_model, rowsForTagging, aiCandidates,
+                  (s) => report(s || 'loading model'),
+                  (done, total) => report({ done, total }),
+                  rules.required_tags || [], aiHints, rules.team_background || '',
+                  rules.max_suggestions);
+                report('storing');
+                const sum = await api.storeTagSuggestions(getTeamScope(), results);
                 await refreshRows();
-                return;
+                return `tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} (${sum.suggestions ?? 0} tags)`;
               }
-              toast('AI suggestion failed: ' + (s.error || 'unknown error'), true);
-              break;
-            }
-          } catch (err) {
-            toast('AI suggestion failed: ' + (err?.message || err), true);
-          } finally {
-            // Runs even on the early returns above, so the button always resets and
-            // the (preserved) selection re-enables it.
-            aiRunning = false;
-            b.textContent = orig;
-            b.disabled = !(table && table.getSelection().length); // re-enable only if still selected
-          }
+              // Server path: background run + poll (slow offline models never block).
+              await api.runTagSuggestions(getTeamScope(), ids);
+              for (;;) {
+                await new Promise((r) => setTimeout(r, 2000));
+                let s;
+                try { s = await api.tagSuggestionsStatus(); } catch { continue; }
+                if (s.state === 'running') {
+                  report(s.total ? { done: s.done, total: s.total } : 'suggesting');
+                  continue;
+                }
+                if (s.state === 'done') {
+                  const sum = s.summary || {};
+                  await refreshRows();
+                  return `tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} (${sum.suggestions ?? 0} tags)`;
+                }
+                throw new Error(s.error || 'unknown error');
+              }
+            },
+          });
         },
       }, '✨ Suggest tags');
+    }
+
+    // "Run healthcheck": an on-demand AI audit of the selected items' DATA QUALITY
+    // (vague titles, contradictory / boilerplate bodies) - distinct from tagging.
+    // Same backend split as tagging: WebGPU runs in-page, otherwise the server. The
+    // findings land as advisory `ai_audit` flags (chips + dashboard count + filter).
+    if ((st && st.enabled) || webgpuInteg) {
+      hcBtn = el('button', {
+        class: 'btn btn-xs', type: 'button', disabled: true,
+        title: webgpuInteg
+          ? 'Audit the selected items for data-quality problems IN YOUR BROWSER on the GPU (WebGPU, experimental)'
+          : 'Select work items, then run an AI healthcheck for data-quality problems (advisory)',
+        onclick: () => {
+          const rows = table ? table.getSelection() : [];
+          if (!rows.length) return;
+          if (aiQueue.has('Run healthcheck')) { toast('Healthcheck is already running or queued.'); return; }
+          const ids = rows.map((r) => r.id);
+          aiQueue.enqueue({
+            name: 'Run healthcheck', icon: '🩺', where: webgpuInteg ? 'gpu' : 'server',
+            run: async (report) => {
+              if (webgpuInteg) {
+                // The server builds the exact prompts (single source of truth); the
+                // browser's GPU runs each, and replies are posted back to be re-parsed
+                // + stored server-side (trust boundary). Mirrors the drafting handshake.
+                const prompts = await api.healthcheckAuditPrompts(getTeamScope(), ids);
+                const results = [];
+                for (let i = 0; i < prompts.length; i++) {
+                  const p = prompts[i];
+                  report({ done: i, total: prompts.length });
+                  try {
+                    const text = await runWebGpuChat(webgpuInteg.offline_model, p.system, p.user,
+                      (s) => { if (s) report(s); });
+                    results.push({ id: p.id, text });
+                  } catch (err) {
+                    console.warn('WebGPU audit failed for item', p.id, err);
+                  }
+                }
+                report('storing');
+                const sum = await api.storeHealthcheckAudit(getTeamScope(), results);
+                await refreshRows();
+                return `flagged ${sum.flagged ?? 0}/${sum.considered ?? 0} (${sum.findings ?? 0} concerns)`;
+              }
+              // Server path: background run + poll (slow models never block the request).
+              await api.runHealthcheckAudit(getTeamScope(), ids);
+              for (;;) {
+                await new Promise((r) => setTimeout(r, 2000));
+                let s;
+                try { s = await api.healthcheckAuditStatus(); } catch { continue; }
+                if (s.state === 'running') {
+                  report(s.total ? { done: s.done, total: s.total } : 'auditing');
+                  continue;
+                }
+                if (s.state === 'done') {
+                  const sum = s.summary || {};
+                  await refreshRows();
+                  return `flagged ${sum.flagged ?? 0}/${sum.considered ?? 0} (${sum.findings ?? 0} concerns)`;
+                }
+                throw new Error(s.error || 'unknown error');
+              }
+            },
+          });
+        },
+      }, '🩺 Run healthcheck');
     }
   } catch { /* status unavailable - just hide the button */ }
 
@@ -810,6 +953,11 @@ async function renderWorkItems() {
   const bulkState = el('select', { class: 'bulk-state-select' },
     [el('option', { value: '' }, 'set state…'), ...['New', 'Resolved', 'Closed'].map((s) => el('option', { value: s }, s))]);
   const bulkCount = el('span', { class: 'bulk-count muted' }, '');
+  // Clear the selection - lives here (the selection bar), not duplicated in the top toolbar.
+  const bulkClear = el('a', {
+    class: 'bulk-clear', href: '#', title: 'Clear selection',
+    onclick: (e) => { e.preventDefault(); table.clearSelection(); },
+  }, 'clear');
   const bulkStatus = el('span', { class: 'bulk-status muted' }, '');
   const bulkButtons = [];
   const setBulkBusy = (busy) => {
@@ -889,14 +1037,26 @@ async function renderWorkItems() {
   // Backfill accelerator: accept EVERY suggestion (keyword + AI adds, and alias
   // rewrites) on each selected row in one sweep - the Suggested column, applied en
   // masse. Rewrites drop their legacy tag; adds that are already present are skipped.
-  const applySuggBtn = mkBulkBtn('✓ Apply suggestions', 'Apply every suggested add + rewrite on each selected item', () => {
+  const applySuggBtn = mkBulkBtn('✓ Apply suggestions', 'Apply every suggested add, rewrite, and flagged removal on each selected item', () => {
     applyBulk('Apply suggestions', (it) => {
+      // Mirror the per-row Suggested column: apply the ADD/REWRITE chips (from
+      // tag_suggestions) AND the "- tag" REMOVAL chips (from stale/disallowed flags).
+      // Removals were previously skipped here, so a bulk apply left "to refine on a
+      // resolved item" (and other flagged tags) in place - "apply did nothing".
       const sugg = it.tag_suggestions || [];
-      if (!sugg.length) return null;
+      const flags = flagsOf(it) || [];
       let tags = [...(it.tags || [])];
+      const rewritten = new Set(sugg.filter((s) => s.replaces).map((s) => s.replaces.toLowerCase()));
       for (const s of sugg) {
         if (s.replaces) tags = tags.filter((t) => t.toLowerCase() !== s.replaces.toLowerCase());
         if (!tags.some((t) => t.toLowerCase() === s.tag.toLowerCase())) tags.push(s.tag);
+      }
+      // Removals last, so a removal wins over any add; skip ones a rewrite migrates.
+      for (const f of flags) {
+        if ((f.code === 'stale_state_tag' || f.code === 'disallowed_tag') && f.tag
+            && !rewritten.has(f.tag.toLowerCase())) {
+          tags = tags.filter((t) => t.toLowerCase() !== f.tag.toLowerCase());
+        }
       }
       const cur = it.tags || [];
       const unchanged = tags.length === cur.length && tags.every((t) => cur.some((c) => c.toLowerCase() === t.toLowerCase()));
@@ -904,39 +1064,287 @@ async function renderWorkItems() {
     }, { refetch: true });
   });
 
+  // Bulk "Improve all fields": pre-compute the editor's two-phase Improve-all pass for
+  // every selected item (AI, no ADO write), caching each item's suggestions. The user
+  // then opens items one by one and the review panes are already filled - keep/discard
+  // each. Uses the shared AI lock (one heavy run at a time), not the ADO-write bulk lock.
+  const improveAllBtn = mkBulkBtn('✨ Improve all fields', 'Pre-compute an "Improve all fields" pass for each selected item — then open each to review and keep/discard (nothing is saved automatically)', () => {
+    const rows = table.getSelection();
+    if (!rows.length) { toast('Select some work items first.'); return; }
+    if (aiQueue.has('Improve all fields')) { toast('Improve all is already running or queued.'); return; }
+    if (!confirm(`Pre-compute "Improve all fields" for ${rows.length} item${rows.length === 1 ? '' : 's'}? This runs the AI per field — nothing is saved; open each item afterwards to review.`)) return;
+    aiQueue.enqueue({
+      name: 'Improve all fields', icon: '✨', where: 'gpu',
+      run: async (report) => {
+        let done = 0; const failed = [];
+        for (let i = 0; i < rows.length; i++) {
+          const it = rows[i];
+          report({ done: i, total: rows.length, text: `#${it.id}` });
+          try {
+            const sugg = await computeImproveAll(it, (s) => report({ done: i, total: rows.length, text: `#${it.id} · ${s}` }));
+            if (Object.keys(sugg).length) { improveAllCache.set(String(it.id), sugg); done++; }
+          } catch (err) {
+            console.error('Bulk improve failed for #' + it.id, err);
+            failed.push(`#${it.id}`);
+          }
+        }
+        // Refresh so the tag suggestions (final step) show in the Suggested column.
+        await refreshRows();
+        if (failed.length) toast(`Improve all: ${done} ready, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
+        else toast(done ? `Improve all: ${done} item${done === 1 ? '' : 's'} ready — open each to review the suggestions` : 'Improve all: nothing to suggest');
+        return `${done} ready` + (failed.length ? `, ${failed.length} failed` : '');
+      },
+    });
+  });
+
   const bulkBar = el('div', { class: 'bulk-bar', hidden: true }, [
-    bulkCount, bulkTag, addTagBtn, removeTagBtn, applySuggBtn, bulkState, bulkStatus, bulkTagList,
+    bulkCount, bulkClear, el('span', { class: 'dt-sep', 'aria-hidden': 'true' }),
+    bulkTag, addTagBtn, removeTagBtn, applySuggBtn, improveAllBtn, bulkState, bulkStatus, bulkTagList,
   ]);
 
+  // "Find duplicates": a whole-backlog scan (not a selection) for reworded near-dupes,
+  // deterministic + server-side (no AI), storing near_duplicate flags. Always available.
+  const dupBtn = el('button', {
+    class: 'btn btn-xs', type: 'button',
+    title: 'Scan the whole backlog for near-duplicate (reworded) titles — advisory flags',
+    onclick: () => {
+      if (aiQueue.has('Find duplicates')) { toast('A duplicate scan is already running or queued.'); return; }
+      // Not AI (deterministic TF-IDF, server-side), but it shares the single slot: it
+      // does a whole-backlog scan + refreshRows, which shouldn't overlap an AI run.
+      aiQueue.enqueue({
+        name: 'Find duplicates', icon: '🔎', where: 'server',
+        run: async (report) => {
+          report('scanning');
+          const sum = await api.scanDuplicates(getTeamScope());
+          await refreshRows();
+          toast(`Duplicate scan: ${sum.flagged ?? 0} of ${sum.scanned ?? 0} items resemble another`);
+          return `${sum.flagged ?? 0} of ${sum.scanned ?? 0} resemble another`;
+        },
+      });
+    },
+  }, '🔎 Find duplicates');
+
+  // Shared-toolbar elements + board selection registry, defined BEFORE the table so its
+  // initial render (which fires onRender / onSelectionChange) can safely reference them.
+  const keywordInput = el('input', {
+    class: 'dt-filter-input wi-keyword', type: 'search', placeholder: 'search id / title / tags…',
+    value: state.keyword || '',
+    oninput: (e) => { state.keyword = e.target.value.trim().toLowerCase(); redraw(); },
+  });
+  const countEl = el('span', { class: 'dt-count dt-count-link', title: 'Rows shown / total — click to change page size', onclick: () => showSettings('display') }, '');
+  const clearFilters = el('a', {
+    class: 'dt-clear', href: '#', title: 'Clear the search and all column filters',
+    onclick: (e) => { e.preventDefault(); state.keyword = ''; keywordInput.value = ''; table.resetFilters(); redraw(); },
+  }, 'Clear filters');
+  let boardChecks = new Map();
+  let boardColHeads = [];
+
   table = dataTable(columns, items, {
+    persistKey: 'work-items',
+    fill: true, // fill the view height; scroll rows, keep header + toolbar fixed
+    noToolbar: true, // a single lifted toolbar (below) drives BOTH the table and board
     initialSort: { index: 0, dir: -1 }, // ID descending - newest work items first
     emptyText: 'No matching work items.',
-    // Rule-break filtering (all flagged, or one specific flag code); tag
-    // filtering is the Tags column's own per-column filter input.
-    predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    toolbar: [flaggedToggle, aiBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    // Rule-break filter + the shared keyword search (per-column filters live in the
+    // table header row and are table-only).
+    predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
     onCountClick: () => showSettings('display'),
-    // Reveal the bulk bar only while rows are selected; keep the count in sync.
-    onSelectionChange: (n) => {
-      bulkBar.hidden = n === 0;
-      bulkCount.textContent = n ? `${n} selected` : '';
-      // Enable "Suggest tags" only when rows are selected (and not mid-run); label
-      // it with the count so it's clear it acts on the selection.
-      if (aiBtn && !aiRunning) {
-        aiBtn.disabled = n === 0;
-        aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags';
-      }
-    },
+    onRender: (shown, totl) => { countEl.textContent = shown === totl ? `${totl}` : `${shown} of ${totl}`; },
+    onSelectionChange: onSelChange,
   });
+
+  // One shared toolbar for both views. Selection lives in the table; the board drives
+  // the SAME selection (via table.setSelected), so the action buttons act on whatever
+  // is ticked in either view. Keyword search filters both; per-column filters (table
+  // header) stay table-only.
+  // Grouped left→right with hairline separators so each control reads with its group:
+  //   [view] | [filter toggles] | search(grows) | [AI actions] | [count · clear]
+  // The search grows (flex:1, .wi-keyword) to fill the slack, so actions + count pin
+  // right with no jumpy gap when a button's label changes width.
+  const sep = () => el('span', { class: 'dt-sep', 'aria-hidden': 'true' });
+  const sharedToolbar = el('div', { class: 'dt-toolbar' }, [
+    mkViewSelect(), sep(),
+    flaggedToggle, emptyToggle, sep(),
+    keywordInput,
+    // Flexible spacer takes the slack so the search keeps a sane width and the
+    // actions + count group pins to the right (filters left, actions right).
+    el('span', { class: 'dt-spacer' }),
+    dupBtn, hcBtn, aiBtn, sep(),
+    countEl, clearFilters,
+    flagFilterChip(state, 'work-items'),
+  ].filter(Boolean));
+  wrap.appendChild(sharedToolbar);
   wrap.appendChild(bulkBar);
-  wrap.appendChild(table);
+  // The content host swaps the table body and the board (Kanban); both sit under the
+  // shared toolbar. The table node persists (its per-column filters/sort survive a
+  // round trip); the board is rebuilt each show.
+  const host = el('div', { class: 'wi-host' });
+  wrap.appendChild(host);
+  redraw();
   return wrap;
+
+  // ── declarations (hoisted, so the toolbar above can reference them) ──────────
+  function boardMode() { return !!(state.view && state.view !== 'table'); }
+  function redraw() { table.refresh(); renderHost(); }
+  function renderHost() { clear(host); host.appendChild(boardMode() ? buildBoard(state.view) : table); }
+
+  function matchesKeyword(it, kw) {
+    if (!kw) return true;
+    const hay = `#${it.id} ${it.title || ''} ${(it.tags || []).join(' ')} ${it.state || ''} ${it.assigned_to || ''}`.toLowerCase();
+    return hay.includes(kw);
+  }
+
+  // Selection changed (in either view): update the shared count + action buttons + bulk
+  // bar, and re-sync the board checkboxes when the board is showing.
+  function onSelChange(n) {
+    // Selection count + clear live ONLY in the bulk bar below (no redundant copy up top).
+    bulkBar.hidden = n === 0;
+    bulkCount.textContent = n ? `${n} selected` : '';
+    if (aiBtn) { aiBtn.disabled = n === 0; aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags'; }
+    if (hcBtn) { hcBtn.disabled = n === 0; hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck'; }
+    if (boardMode()) syncBoardChecks();
+  }
+
+  // The View <select>: Table, Board · State, and a Board · <prefix> per tag axis found
+  // in the data (area / product / source / …).
+  function mkViewSelect() {
+    const prefixes = [...new Set((items || [])
+      .flatMap((it) => it.tags || [])
+      .map((t) => (t.includes(':') ? t.split(':')[0].toLowerCase() : ''))
+      .filter(Boolean))].sort();
+    const opts = [
+      { v: 'table', label: '▤ Table' },
+      { v: 'state', label: '▦ Board · State' },
+      ...prefixes.map((p) => ({ v: p, label: `▦ Board · ${p[0].toUpperCase()}${p.slice(1)}` })),
+    ];
+    return el('select', {
+      class: 'view-select', title: 'Switch between table and board views', 'aria-label': 'View',
+      onchange: (e) => { state.view = e.target.value; saveToggles(state); redraw(); },
+    }, opts.map((o) => {
+      const opt = el('option', { value: o.v }, o.label);
+      if ((state.view || 'table') === o.v) opt.selected = true;
+      return opt;
+    }));
+  }
+
+  // Board checkbox registry (declared above) is rebuilt each buildBoard, so selection
+  // changes from any source (a card, a column select-all, the shared clear, the table)
+  // stay reflected.
+  function syncBoardChecks() {
+    for (const [id, cb] of boardChecks) cb.checked = table.isSelected(id);
+    for (const h of boardColHeads) {
+      const inSel = h.ids.filter((id) => table.isSelected(id)).length;
+      h.cb.checked = h.ids.length > 0 && inSel === h.ids.length;
+      h.cb.indeterminate = inSel > 0 && inSel < h.ids.length;
+    }
+  }
+
+  // Build the Kanban board for `axis` ('state' or a tag prefix). No own toolbar - it
+  // uses the shared one above. Cards carry a checkbox driving the table's selection.
+  function buildBoard(axis) {
+    boardChecks = new Map();
+    boardColHeads = [];
+    const shown = items.filter((it) =>
+      passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword));
+    const cols = el('div', { class: 'board-cols' });
+    const groups = groupForBoard(shown, axis, rules.board_state_order);
+    for (const g of groups) {
+      const colIds = g.items.map((it) => it.id);
+      const headCb = el('input', {
+        type: 'checkbox', class: 'dt-check', title: 'Select all in this column',
+        onchange: (e) => table.selectKeys(colIds, e.target.checked),
+      });
+      boardColHeads.push({ cb: headCb, ids: colIds });
+      cols.appendChild(el('div', { class: 'board-col' }, [
+        el('div', { class: 'board-col-head' }, [
+          headCb,
+          el('span', { class: 'board-col-name', title: g.key }, g.key),
+          el('span', { class: 'board-col-count' }, String(g.items.length)),
+        ]),
+        el('div', { class: 'board-col-cards' }, g.items.map(boardCard)),
+      ]));
+    }
+    if (!groups.length) cols.appendChild(el('div', { class: 'empty' }, 'No matching work items.'));
+    const node = el('div', { class: 'board-view' }, [cols]);
+    syncBoardChecks();
+    return node;
+  }
+
+  // One card. The checkbox drives the shared selection; clicking the card body opens
+  // the editor; the id link goes out to the provider item.
+  function boardCard(it) {
+    const fl = flagsOf(it) || [];
+    const openEditor = () => openWorkItemEditor(it, () => route());
+    const cb = el('input', {
+      type: 'checkbox', class: 'dt-check board-card-check', title: 'Select',
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => table.setSelected(it.id, e.target.checked),
+    });
+    cb.checked = table.isSelected(it.id);
+    boardChecks.set(it.id, cb);
+    const idLink = el('a', {
+      class: 'link board-card-id', href: it.url || '#', title: 'Open in provider',
+      onclick: (e) => { e.preventDefault(); e.stopPropagation(); if (it.url) openExternal(it.url); },
+    }, '#' + it.id);
+    return el('div', {
+      class: 'board-card board-card-click', role: 'button', tabindex: '0',
+      title: 'Edit work-item fields',
+      onclick: openEditor,
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEditor(); } },
+    }, [
+      el('div', { class: 'board-card-head' }, [
+        cb, idLink,
+        el('span', { class: 'board-card-type' }, it.work_item_type || ''),
+      ]),
+      el('div', { class: 'board-card-title' }, it.title || ''),
+      it.assigned_to ? el('div', { class: 'board-card-assignee' }, it.assigned_to) : null,
+      (it.tags || []).length
+        ? el('div', { class: 'board-card-tags' }, it.tags.map((t) => el('span', { class: 'board-chip' }, t)))
+        : null,
+      fl.length
+        ? el('div', { class: 'board-card-flags' }, fl.map((f) => el('span', {
+            class: 'flagchip ' + (f.severity === 'error' ? 'err' : 'warn'), title: f.message,
+          }, flagShort(f))))
+        : null,
+    ].filter(Boolean));
+  }
 }
 
-// Mirror of poseiden-rules::tag_matches - trailing-`*` prefix wildcard, else
+// Group work items into ordered board columns. State axis uses a sensible lifecycle
+// order; a tag axis (`area`/`product`/…) groups by each matching tag value (an item
+// with two `area:` tags shows in both columns), untagged items in a "(none)" column.
+const BOARD_STATE_ORDER = [
+  'new', 'proposed', 'to do', 'approved', 'ready', 'open',
+  'blocked', 'active', 'committed', 'in progress', 'doing', 'review',
+  'resolved', 'done', 'completed', 'closed', 'removed',
+];
+// `order` (rules.board_state_order) pins a team's exact State-column order; empty falls
+// back to the built-in lifecycle. States not in the chosen order sort to the end (alpha).
+function groupForBoard(items, axis, order) {
+  const map = new Map();
+  const push = (k, it) => { (map.get(k) || map.set(k, []).get(k)).push(it); };
+  if (axis === 'state') {
+    for (const it of items) push(it.state || '(no state)', it);
+    const pref = ((order && order.length) ? order : BOARD_STATE_ORDER).map((s) => String(s).toLowerCase());
+    const rank = (k) => { const i = pref.indexOf(k.toLowerCase()); return i === -1 ? 500 : i; };
+    const keys = [...map.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    return keys.map((k) => ({ key: k, items: map.get(k) }));
+  }
+  const pfx = axis + ':';
+  for (const it of items) {
+    const vals = (it.tags || []).filter((t) => t.toLowerCase().startsWith(pfx)).map((t) => t.slice(pfx.length));
+    if (!vals.length) push('(none)', it);
+    else for (const v of vals) push(v, it);
+  }
+  const keys = [...map.keys()].sort((a, b) =>
+    (a === '(none)' ? 1 : b === '(none)' ? -1 : a.localeCompare(b)));
+  return keys.map((k) => ({ key: k, items: map.get(k) }));
+}
+
+// Mirror of poseidon-rules::tag_matches - trailing-`*` prefix wildcard, else
 // exact match, case-insensitive.
 function tagMatches(pattern, tag) {
   const p = (pattern || '').trim().toLowerCase();
@@ -974,7 +1382,55 @@ function aiCandidateTags(rules, observed) {
   return out;
 }
 
-// Classify a tag against a ruleset (mirrors poseiden-rules: trailing-`*`
+// Suggest tags for ONE work item (the final step of "Improve all fields", and any
+// single-item tagging). Self-contained: resolves the team's rules + candidates + hints
+// from config, then runs the same backend split as the toolbar tagger - WebGPU in-page,
+// else the server background job. Stores the result (so it lands in the Suggested column)
+// and returns the tag strings for the WebGPU path (null for the server path - the caller
+// refetches). Callers wrap it in aiQueue.enqueue so it can't overlap another GPU run.
+async function suggestTagsForItem(item, onStatus) {
+  const cfg = await api.config().catch(() => null);
+  const team = (cfg?.team || []).find((t) => t.name === item.team);
+  const rules = (team && team.rules) || cfg?.rules || {};
+  const candidates = aiCandidateTags(rules, item.tags || []);
+  if (!candidates.length) return [];
+  const hints = Object.fromEntries(
+    (rules.tag_keywords || [])
+      .filter((k) => k.tag && (k.keywords || []).length)
+      .map((k) => [k.tag.toLowerCase(), k.keywords]));
+  const be = await activeBackend();
+  const teamScope = item.team || getTeamScope();
+
+  if (be.where === 'browser' && be.model) {
+    let row = { ...item };
+    try {
+      const d = await api.workItemDescriptions(teamScope, [item.id]);
+      if (d && d[item.id] != null) row.description = d[item.id];
+    } catch { /* title-only fallback */ }
+    // Skip an underspecified item (mirrors the toolbar tagger): let the deterministic
+    // "to refine" nudge handle it rather than the model guessing from nothing.
+    const min = rules.refine_min_chars ?? 40;
+    if ((rules.refine_tag || '').trim() && (row.description || '').trim().length < min) return [];
+    const results = await runWebGpuTagging(
+      be.model, [row], candidates, (s) => onStatus && onStatus(s || 'tagging'),
+      () => {}, rules.required_tags || [], hints, rules.team_background || '', rules.max_suggestions);
+    await api.storeTagSuggestions(teamScope, results);
+    const r = (results || []).find((x) => String(x.id) === String(item.id));
+    return r ? r.tags : [];
+  }
+  // Server path: background run + poll; results land server-side (Suggested column).
+  await api.runTagSuggestions(teamScope, [item.id]);
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2000));
+    let s;
+    try { s = await api.tagSuggestionsStatus(); } catch { continue; }
+    if (s.state === 'running') { if (onStatus) onStatus('suggesting'); continue; }
+    break;
+  }
+  return null;
+}
+
+// Classify a tag against a ruleset (mirrors poseidon-rules: trailing-`*`
 // wildcard, case-insensitive). Returns 'valid', 'invalid', or 'neutral' (no tag
 // policy configured, so no colour).
 function classifyTag(tag, rules) {
@@ -997,7 +1453,7 @@ function flagShort(f) {
   if (f.code === 'missing_required_tag') return f.tag ? `missing ${f.tag}` : 'missing tag';
   if (f.code === 'disallowed_tag') return f.tag ? `bad: ${f.tag}` : 'bad tag';
   if (f.code === 'stale_state_tag') return f.tag ? `stale: ${f.tag}` : 'stale tag';
-  return { untagged: 'untagged', stale: 'stale' }[f.code] || f.code;
+  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title', near_duplicate: 'near-dup', orphaned_child: 'orphan child', ai_audit: 'AI flag' }[f.code] || f.code;
 }
 
 // Work-items -> CSV: id, title, type, state, assignee, tags, suggestions (adds and
@@ -1145,6 +1601,551 @@ function suggestionChips(it, afterEdit, flags, onChanged) {
   return el('span', {}, [...addChips, ...removeChips]);
 }
 
+// ─────────────────────────── Work-item field editor ───────────────────────────
+// A modal to edit a work item's provider fields (type-specific on Azure DevOps -
+// Repro Steps, Acceptance Criteria, …; title + body on GitHub/GitLab). Fields are
+// discovered live from the provider and rendered by kind; rich fields get an AI
+// "Draft/Improve" button. Save writes ONLY the changed fields back (explicit,
+// user-initiated). `onSaved(item)` refreshes the row.
+// Pre-computed "Improve all" suggestions, keyed by work-item id -> { reference: value }.
+// A bulk run fills this headlessly; opening an item's editor drains its entry into the
+// per-field review panes (one-shot), so the user reviews/keeps each without re-running.
+const improveAllCache = new Map();
+
+// Headless "Improve all fields" for ONE item: the same two-phase flow the editor runs
+// (draft/improve each AI-eligible field, then one consistency sweep), but with no modal
+// open, so a bulk action can pre-compute it. Returns { reference: suggestedValue } to
+// review later. Never auto-applies; on any per-field failure it falls back to the current
+// value so nothing is lost. `onStatus(text)` surfaces coarse progress.
+async function computeImproveAll(it, onStatus) {
+  const fields = (await api.workItemFields(it.id, it.team)).fields || [];
+  const ai = fields.filter((f) => fieldAllowsAi(f));
+  if (!ai.length) return {};
+  // Current writable values feed the AI as the item's on-record state (headless: there's
+  // no unsaved on-screen edit to prefer).
+  const writable = fields.filter((f) => !f.read_only)
+    .map((f) => ({ reference: f.reference, value: f.value || '' }));
+  // Phase 1: draft/improve each eligible field on its own.
+  const proposals = {};
+  for (let i = 0; i < ai.length; i++) {
+    const f = ai[i];
+    if (onStatus) onStatus(`field ${i + 1}/${ai.length}`);
+    try {
+      const improve = !!(f.value || '').trim();
+      const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve, fields: writable });
+      let text = await resolveAiText(res, () => {});
+      text = stripFieldLabelPrefix(text, f.label);
+      text = preserveMarkdownAssets(f.value || '', text);
+      proposals[f.reference] = (text && text.trim()) ? text : (f.value || '');
+    } catch (err) {
+      console.warn('Bulk improve: draft failed for #' + it.id, f.reference, err);
+      proposals[f.reference] = f.value || '';
+    }
+  }
+  // Phase 2: one consistency sweep over the proposed set (value-or-prompt handshake).
+  if (onStatus) onStatus('harmonising');
+  const proposed = ai.map((f) => ({ reference: f.reference, value: proposals[f.reference] }));
+  let refined = null;
+  try {
+    const res = await api.refineFields(it.id, { team: it.team, fields: proposed });
+    refined = res.fields;
+    if (!refined && res.prompt) {
+      const be = await activeBackend();
+      if (be.where !== 'browser') throw new Error('no browser AI model for the consistency pass');
+      const text = await runWebGpuChat(be.model, res.prompt.system, res.prompt.user, () => {});
+      const parsed = await api.parseFieldsConsistency(it.id, { team: it.team, fields: proposed, text });
+      refined = parsed.fields;
+    }
+  } catch (err) {
+    console.warn('Bulk improve: consistency pass failed for #' + it.id, err);
+  }
+  const byRef = {};
+  (refined || []).forEach((f) => { byRef[f.reference] = f.value; });
+  // Harmonised value where the sweep touched it, else the phase-1 proposal.
+  const out = {};
+  for (const f of ai) {
+    let v = (byRef[f.reference] != null && byRef[f.reference] !== '') ? byRef[f.reference] : proposals[f.reference];
+    if (v != null && v !== '') {
+      v = stripFieldLabelPrefix(v, f.label);
+      v = preserveMarkdownAssets(proposals[f.reference] ?? (f.value || ''), v);
+      out[f.reference] = v;
+    }
+  }
+  // Final step: suggest tags for the item too (stored server-side -> Suggested column).
+  // Runs inside the caller's queue job (the bulk sweep), so no extra queue entry.
+  if (onStatus) onStatus('tags');
+  try { await suggestTagsForItem(it, onStatus); } catch (err) { console.warn('Bulk improve: tag step failed for #' + it.id, err); }
+  return out;
+}
+
+async function openWorkItemEditor(it, onSaved) {
+  const overlay = el('div', {
+    class: 'dc-overlay',
+    onclick: (e) => { if (e.target === overlay) close(); },
+  });
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+  document.addEventListener('keydown', onKey, true);
+
+  const body = el('div', { class: 'editor-body' }, el('span', { class: 'muted' }, 'Loading fields…'));
+  const card = el('div', { class: 'dc-modal editor-modal', onclick: (e) => e.stopPropagation() }, [
+    el('h3', {}, `Edit #${it.id} — ${it.title || ''}`),
+    body,
+  ]);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  let fields = [];
+  try {
+    fields = (await api.workItemFields(it.id, it.team)).fields || [];
+  } catch (err) {
+    clear(body).appendChild(el('div', { class: 'err' }, 'Failed to load fields: ' + (err?.message || err)));
+    return;
+  }
+  if (!fields.length) {
+    clear(body).appendChild(el('span', { class: 'muted' }, 'No editable fields for this item.'));
+    return;
+  }
+  // Title always leads the editor (it's the item's primary field), whatever order the
+  // provider returned; the rest keep their existing order.
+  const ti = fields.findIndex((f) => {
+    const r = (f.reference || '').toLowerCase();
+    return r === 'system.title' || r === 'title' || r.endsWith('.title') || (f.label || '').toLowerCase() === 'title';
+  });
+  if (ti > 0) fields.unshift(fields.splice(ti, 1)[0]);
+
+  // The editor's current (unsaved) values for every writable field - handed to the AI
+  // so a draft operates on what's ON SCREEN (a just-generated body feeds a later title
+  // improve), not the last-saved provider state. Forward-referenced: the closure reads
+  // `controls` at call time, after it's populated below.
+  let controls = [];
+  const workingFields = () => controls
+    .filter((c) => !c.field.read_only)
+    .map((c) => ({ reference: c.field.reference, value: c.get() }));
+  controls = fields.map((f) => ({ field: f, ...buildFieldControl(f, it, workingFields) }));
+  clear(body);
+  const form = el('div', { class: 'editor-fields' });
+  for (const c of controls) {
+    form.appendChild(el('div', { class: 'editor-field' }, [
+      el('div', { class: 'editor-field-head' }, [
+        el('span', { class: 'editor-field-label' }, c.field.label + (c.field.required ? ' *' : '')),
+        c.field.read_only ? el('span', { class: 'editor-field-tag' }, 'read-only') : null,
+        c.field.help ? el('span', { class: 'editor-field-help', title: c.field.help }, 'ⓘ') : null,
+      ]),
+      c.node,
+    ]));
+  }
+  // Top-level "Improve all": draft/improve every AI-eligible field individually (the
+  // same per-field calls), then ONE consistency sweep over the proposed set so the
+  // fields read as a coherent ticket. Every result lands in its field's review pane -
+  // the user keeps or discards each, nothing is auto-applied.
+  const aiControls = controls.filter((c) => c.ai);
+  if (aiControls.length) {
+    const allBtn = el('button', {
+      class: 'btn btn-xs', type: 'button',
+      title: 'Draft or improve every field, a consistency pass, then suggest tags — review and keep each',
+    }, '✨ Improve all fields');
+    // Inline suggested-tags row filled by the "Improve all" phase-3 tag step: clickable
+    // "+ tag" chips that add the tag to the item (they also land in the Suggested column).
+    const tagSuggestSlot = el('div', { class: 'editor-tag-suggest' });
+    const renderTagSuggest = (tags) => {
+      clear(tagSuggestSlot);
+      if (!tags || !tags.length) return;
+      tagSuggestSlot.appendChild(el('div', { class: 'editor-ai-result' }, [
+        el('div', { class: 'editor-ai-result-head' }, '✨ Suggested tags — click to add (also in the Suggested column)'),
+        el('div', { class: 'editor-ai-result-body' }, tags.map((t) =>
+          el('button', {
+            class: 'suggest-chip', type: 'button', title: 'add this tag',
+            onclick: async (e) => {
+              const chip = e.currentTarget;
+              chip.disabled = true;
+              try {
+                const next = [...(it.tags || []), t];
+                await api.updateWorkItem(it.id, { team: it.team, tags: next });
+                it.tags = next;
+                chip.classList.add('applied');
+                chip.textContent = `✓ ${t}`;
+                toast(`#${it.id}: +${t}`);
+              } catch (err) {
+                chip.disabled = false;
+                toast('Add tag failed: ' + (err?.message || err), true);
+              }
+            },
+          }, `+ ${t}`))),
+      ]));
+    };
+    allBtn.addEventListener('click', async () => {
+      allBtn.disabled = true;
+      const orig = allBtn.textContent;
+      aiControls.forEach((c) => c.ai.setBusy(true));
+      try {
+        // Phase 1: draft/improve each field on its own (fills each review pane). Collect
+        // the proposed text per field (fall back to the current value when it declined).
+        const proposals = {};
+        for (let i = 0; i < aiControls.length; i++) {
+          const c = aiControls[i];
+          allBtn.textContent = `✨ Field ${i + 1}/${aiControls.length}…`;
+          try {
+            const text = await c.ai.run();
+            proposals[c.field.reference] = (text && text.trim()) ? text : c.get();
+          } catch (err) {
+            console.warn('Improve all: draft failed for', c.field.reference, err);
+            proposals[c.field.reference] = c.get();
+          }
+        }
+        // Phase 2: one consistency sweep over the proposed rich fields.
+        allBtn.textContent = '✨ Harmonising…';
+        const proposed = aiControls.map((c) => ({ reference: c.field.reference, value: proposals[c.field.reference] ?? c.get() }));
+        let res;
+        try {
+          res = await api.refineFields(it.id, { team: it.team, fields: proposed });
+        } catch (err) {
+          toast('Consistency pass failed: ' + (err?.message || err), true);
+          return;
+        }
+        let refined = res.fields;
+        if (!refined && res.prompt) {
+          // Browser (WebGPU) path: run the built prompt locally, then re-parse server-side.
+          // Enqueued so this GPU pass can't overlap another run (ALL GPU work is queued).
+          const be = await activeBackend();
+          if (be.where !== 'browser') { toast('No AI model available for the consistency pass.', true); return; }
+          const text = await aiQueue.enqueue({
+            name: `Harmonise · #${it.id}`, icon: '✨', where: 'gpu',
+            run: async (report) => runWebGpuChat(be.model, res.prompt.system, res.prompt.user,
+              (s) => report(s || 'harmonising')),
+          });
+          const parsed = await api.parseFieldsConsistency(it.id, { team: it.team, fields: proposed, text });
+          refined = parsed.fields;
+        }
+        // Replace each harmonised field's pane; fields the sweep didn't touch keep their
+        // phase-1 proposal, so nothing is lost.
+        const byRef = {};
+        (refined || []).forEach((f) => { byRef[f.reference] = f.value; });
+        let shown = 0;
+        for (const c of aiControls) {
+          let v = byRef[c.field.reference];
+          if (v != null && v !== '') {
+            v = stripFieldLabelPrefix(v, c.field.label);
+            // Preserve against the phase-1 proposal (which already kept the original's
+            // assets), so the consistency sweep can't drop an attachment either.
+            v = preserveMarkdownAssets(proposals[c.field.reference] ?? c.get(), v);
+            c.ai.showSuggestion(v, true, '✨ Consistency pass — review, then keep or discard');
+            shown++;
+          }
+        }
+        // Phase 3: suggest tags for the item as a final step (advisory). Enqueued so it
+        // can't overlap another GPU run; lands in the Suggested column + inline chips.
+        allBtn.textContent = '✨ Suggesting tags…';
+        let tags = null;
+        try {
+          tags = await aiQueue.enqueue({
+            name: `Suggest tags · #${it.id}`, icon: '✨', where: 'gpu',
+            run: async (report) => await suggestTagsForItem(it, (s) => report(s || 'tagging')),
+          });
+        } catch (err) { console.warn('Improve all: tag step failed', err); }
+        renderTagSuggest(tags);
+        const tagNote = tags && tags.length ? `, ${tags.length} tag${tags.length === 1 ? '' : 's'} suggested` : '';
+        toast((shown ? `Improve all: ${shown} field${shown === 1 ? '' : 's'} to review` : 'Improve all: fields unchanged') + tagNote);
+      } catch (err) {
+        toast('Improve all failed: ' + (err?.message || err), true);
+      } finally {
+        aiControls.forEach((c) => c.ai.setBusy(false));
+        allBtn.disabled = false;
+        allBtn.textContent = orig;
+      }
+    });
+    body.appendChild(el('div', { class: 'editor-topbar' }, [
+      el('span', { class: 'editor-topbar-hint muted' }, 'Draft every field, harmonise for consistency, then suggest tags — review each before saving.'),
+      allBtn,
+    ]));
+    body.appendChild(tagSuggestSlot);
+  }
+  // Bulk "Improve all fields" pre-computed suggestions for this item: surface them in the
+  // per-field review panes now (same as running Improve all here), then drain the cache so
+  // a later reopen starts clean. Nothing is auto-applied - the user keeps/discards each.
+  const pre = improveAllCache.get(String(it.id));
+  if (pre) {
+    improveAllCache.delete(String(it.id));
+    let n = 0;
+    for (const c of controls) {
+      const v = pre[c.field.reference];
+      if (c.ai && v != null && v !== '') {
+        c.ai.showSuggestion(v, true, '✨ Bulk improve — review, then keep or discard');
+        n++;
+      }
+    }
+    if (n) toast(`${n} pre-computed suggestion${n === 1 ? '' : 's'} to review`);
+  }
+  body.appendChild(form);
+
+  const status = el('span', { class: 'editor-status' }, '');
+  const saveBtn = el('button', { class: 'btn btn-primary', onclick: save }, 'Save changes');
+
+  // "Mark as duplicate of #__" - a real provider write-back (explicit + confirmed):
+  // ADO adds a "Duplicate Of" link; GitLab/GitHub also CLOSE the item. The target id is
+  // the one named in the item's near-dup flag tooltip (FLAGS column).
+  const dupTarget = el('input', { class: 'editor-input dup-target', type: 'number', placeholder: 'id' });
+  const dupBtn = el('button', {
+    class: 'btn btn-xs', type: 'button',
+    title: 'Mark this item as a duplicate of another - writes to the provider (ADO links; GitLab/GitHub also close it)',
+    onclick: async () => {
+      const target = parseInt(dupTarget.value, 10);
+      if (!target || target === it.id) { status.textContent = 'Enter the id of the item this duplicates.'; return; }
+      if (!confirm(`Mark #${it.id} as a duplicate of #${target}?\n\n• Azure DevOps: adds a "Duplicate Of" link.\n• GitLab / GitHub: also CLOSES this item.`)) return;
+      dupBtn.disabled = true;
+      status.textContent = 'Marking duplicate…';
+      try {
+        const res = await api.markDuplicate(it.id, { team: it.team, duplicateOf: target });
+        toast(`#${it.id} marked as duplicate of #${target}`);
+        close();
+        if (onSaved) await onSaved(res.item);
+      } catch (err) {
+        dupBtn.disabled = false;
+        status.textContent = 'Mark duplicate failed: ' + (err?.message || err);
+      }
+    },
+  }, 'Mark duplicate');
+  const dupControl = el('div', { class: 'editor-dup' }, [
+    el('span', { class: 'muted' }, 'Duplicate of #'), dupTarget, dupBtn,
+  ]);
+
+  card.appendChild(el('div', { class: 'editor-footer' }, [
+    dupControl, status, el('span', { class: 'dt-spacer' }),
+    el('button', { class: 'btn', onclick: close }, 'Cancel'),
+    saveBtn,
+  ]));
+
+  async function save() {
+    const changes = controls
+      .filter((c) => !c.field.read_only && c.get() !== (c.field.value || ''))
+      .map((c) => ({ reference: c.field.reference, value: c.get() }));
+    if (!changes.length) { status.textContent = 'No changes to save.'; return; }
+    saveBtn.disabled = true;
+    status.textContent = `Saving ${changes.length} field${changes.length === 1 ? '' : 's'}…`;
+    try {
+      const res = await api.updateWorkItemFields(it.id, { team: it.team, changes });
+      toast(`#${it.id}: ${changes.length} field${changes.length === 1 ? '' : 's'} saved`);
+      close();
+      if (onSaved) await onSaved(res.item);
+    } catch (err) {
+      saveBtn.disabled = false;
+      status.textContent = 'Save failed: ' + (err?.message || err);
+    }
+  }
+}
+
+// Wrap the textarea's selection with `before`/`after` (e.g. ** ** for bold). With no
+// selection, inserts the markers and puts the cursor between them.
+function mdSurround(ta, before, after) {
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  const sel = ta.value.slice(s, e);
+  ta.value = ta.value.slice(0, s) + before + sel + after + ta.value.slice(e);
+  ta.focus();
+  const pos = sel ? s + before.length + sel.length + after.length : s + before.length;
+  ta.selectionStart = ta.selectionEnd = pos;
+}
+
+// Prefix every line touched by the selection with `prefix` (headings, lists, quotes).
+function mdLinePrefix(ta, prefix) {
+  const s = ta.selectionStart, e = ta.selectionEnd, val = ta.value;
+  const lineStart = val.lastIndexOf('\n', s - 1) + 1;
+  const seg = val.slice(lineStart, e);
+  const out = seg.split('\n').map((l) => prefix + l).join('\n');
+  ta.value = val.slice(0, lineStart) + out + val.slice(e);
+  ta.focus();
+  ta.selectionStart = lineStart;
+  ta.selectionEnd = lineStart + out.length;
+}
+
+// A markdown field: a formatting toolbar + an Edit/Preview toggle (rendered with the
+// shared `renderMarkdown`) + the AI Draft/Improve button. Returns { node, get }.
+function buildMarkdownField(f, it, workingFields) {
+  const ta = el('textarea', { class: 'editor-textarea', rows: 9 });
+  ta.value = f.value || '';
+  const preview = el('div', { class: 'editor-md-preview docs-view', hidden: true });
+  let previewing = false;
+
+  const tbBtn = (label, title, fn) => el('button', {
+    class: 'md-tb-btn', type: 'button', title,
+    onclick: (e) => { e.preventDefault(); if (!previewing) fn(); },
+  }, label);
+
+  const previewBtn = el('button', { class: 'md-tb-btn md-tb-preview', type: 'button', title: 'Toggle preview' }, 'Preview');
+  previewBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    previewing = !previewing;
+    if (previewing) preview.innerHTML = renderMarkdown(ta.value || '') || '<span class="muted">(empty)</span>';
+    ta.hidden = previewing;
+    preview.hidden = !previewing;
+    previewBtn.textContent = previewing ? 'Edit' : 'Preview';
+    previewBtn.classList.toggle('md-tb-on', previewing);
+  });
+
+  const toolbar = el('div', { class: 'md-toolbar' }, [
+    tbBtn('B', 'Bold', () => mdSurround(ta, '**', '**')),
+    tbBtn('I', 'Italic', () => mdSurround(ta, '_', '_')),
+    tbBtn('H', 'Heading', () => mdLinePrefix(ta, '## ')),
+    tbBtn('“', 'Quote', () => mdLinePrefix(ta, '> ')),
+    tbBtn('•', 'Bulleted list', () => mdLinePrefix(ta, '- ')),
+    tbBtn('1.', 'Numbered list', () => mdLinePrefix(ta, '1. ')),
+    tbBtn('</>', 'Inline code', () => mdSurround(ta, '`', '`')),
+    tbBtn('🔗', 'Link', () => mdSurround(ta, '[', '](url)')),
+    el('span', { class: 'md-tb-spacer' }),
+    previewBtn,
+  ]);
+
+  // AI draft/improve, shown in a review pane before it replaces the field. Drops out
+  // of preview first so the result lands in the editable box.
+  const ai = buildAiAssist(f, it, () => ta.value, (t) => { ta.value = t; },
+    () => { if (previewing) previewBtn.click(); }, workingFields);
+
+  return {
+    node: el('div', { class: 'editor-rich' }, [toolbar, ta, preview, ai.row, ai.result]),
+    get: () => ta.value,
+    set: (t) => { ta.value = t; if (previewing) previewBtn.click(); },
+    ai,
+  };
+}
+
+// Shared AI Draft/Improve affordance: a ✨ button + a REVIEW pane. The generated text
+// is shown in the pane (the current value stays put) with Use / Discard, so nothing is
+// silently overwritten - the user sees the proposal and chooses. `read()`/`apply(text)`
+// access the field's value; `beforeRun` (optional) runs before generating.
+function buildAiAssist(f, it, read, apply, beforeRun, workingFields) {
+  const result = el('div', { class: 'editor-ai-result-slot' });
+  const btn = el('button', { class: 'btn btn-xs editor-ai', type: 'button' });
+  const label = () => (read().trim() ? '✨ Improve' : '✨ Draft');
+  btn.textContent = label();
+
+  // Render a proposal into the review pane with Use / Discard. Shared by the per-field
+  // button and the top-level "Improve all" sweep, so both surface suggestions the same
+  // way - nothing is silently overwritten; the user keeps or discards each.
+  function showSuggestion(text, improve, head) {
+    if (!text) return;
+    clear(result);
+    result.appendChild(el('div', { class: 'editor-ai-result' }, [
+      el('div', { class: 'editor-ai-result-head' }, head
+        || (improve ? '✨ Suggested rewrite — review, then keep or discard' : '✨ Draft — review, then keep or discard')),
+      el('div', { class: 'editor-ai-result-body' }, text),
+      el('div', { class: 'editor-ai-result-actions' }, [
+        el('button', { class: 'btn btn-xs btn-primary', type: 'button',
+          onclick: () => { if (beforeRun) beforeRun(); apply(text); clear(result); btn.textContent = label(); } }, '✓ Use this'),
+        el('button', { class: 'btn btn-xs', type: 'button', onclick: () => clear(result) }, '✕ Discard'),
+      ]),
+    ]));
+  }
+
+  // Run one draft/improve and show it in the review pane; return the proposed text (''
+  // if the model declined). One call to the server (runs it if it has a model, else
+  // hands back the prompt); the shared dispatcher resolves it - in-browser on the same
+  // WebGPU model the tagger uses. `fields` carries the editor's current UNSAVED values
+  // so the AI drafts from what's on screen, not the saved state.
+  // Runs through the shared AI queue (lib/aiQueue.js) so an interactive per-field
+  // draft/improve never runs a second GPU inference loop alongside a toolbar sweep - it
+  // waits its turn and shows in the activity bar. Returns the proposed text ('' if the
+  // model declined / the job was cancelled). The result lands in the review pane.
+  function run() {
+    const improve = !!read().trim();
+    return aiQueue.enqueue({
+      name: `${improve ? 'Improve' : 'Draft'} · ${f.label} #${it.id}`,
+      icon: '✨', where: 'gpu',
+      run: async (report) => {
+        const fields = workingFields ? workingFields() : [];
+        const res = await api.draftWorkItemField(it.id, { team: it.team, reference: f.reference, improve, fields });
+        let text = await resolveAiText(res, (s) => report(s || 'drafting'));
+        // Deterministic guards: never let the model echo the field label into its
+        // value, and never let it drop an image/link that was in the current value.
+        text = stripFieldLabelPrefix(text, f.label);
+        text = preserveMarkdownAssets(read(), text);
+        if (text) showSuggestion(text, improve);
+        return text || '';
+      },
+    });
+  }
+
+  btn.addEventListener('click', async () => {
+    if (beforeRun) beforeRun();
+    btn.disabled = true;
+    btn.textContent = '✨ Working…'; // progress shows in the activity bar; may sit queued
+    try {
+      await run();
+    } catch (err) {
+      toast('AI draft failed: ' + (err?.message || err), true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label();
+    }
+  });
+  return { row: el('div', { class: 'editor-ai-row' }, btn), result, run, showSuggestion, setBusy: (b) => { btn.disabled = b; } };
+}
+
+// Whether a field should offer AI drafting: rich/plain text always; a single-line text
+// field only when it's the Title (drafting an Area/Iteration path is nonsensical).
+function fieldAllowsAi(f) {
+  if (f.read_only) return false;
+  if (f.kind === 'markdown' || f.kind === 'plain_text') return true;
+  if (f.kind === 'text') {
+    const r = (f.reference || '').toLowerCase();
+    return r === 'title' || r.endsWith('.title');
+  }
+  return false;
+}
+
+// Build the input control for one field, keyed by its `kind`. Returns { node, get }
+// where `get()` reads the current value as the string the API expects (markdown for
+// rich fields). Rich fields also get an AI Draft/Improve button.
+function buildFieldControl(f, it, workingFields) {
+  if (f.read_only) {
+    return {
+      node: el('div', { class: 'editor-ro' }, f.value || el('span', { class: 'muted' }, '(empty)')),
+      get: () => f.value || '',
+    };
+  }
+  switch (f.kind) {
+    case 'markdown':
+      return buildMarkdownField(f, it, workingFields);
+    case 'plain_text': {
+      const ta = el('textarea', { class: 'editor-textarea', rows: 4 });
+      ta.value = f.value || '';
+      const ai = buildAiAssist(f, it, () => ta.value, (t) => { ta.value = t; }, null, workingFields);
+      return { node: el('div', { class: 'editor-rich' }, [ta, ai.row, ai.result]), get: () => ta.value, set: (t) => { ta.value = t; }, ai };
+    }
+    case 'select': {
+      const sel = el('select', { class: 'editor-input' }, [
+        el('option', { value: '' }, '(none)'),
+        ...(f.options || []).map((o) => el('option', { value: o }, o)),
+      ]);
+      sel.value = f.value || '';
+      return { node: sel, get: () => sel.value };
+    }
+    case 'integer':
+    case 'float': {
+      const inp = el('input', { class: 'editor-input', type: 'number', step: f.kind === 'float' ? 'any' : '1' });
+      inp.value = f.value || '';
+      return { node: inp, get: () => inp.value.trim() };
+    }
+    case 'boolean': {
+      const inp = el('input', { type: 'checkbox' });
+      inp.checked = /^true$/i.test(f.value || '');
+      return {
+        node: el('label', { class: 'editor-check' }, [inp, el('span', {}, 'Yes')]),
+        get: () => (inp.checked ? 'true' : 'false'),
+      };
+    }
+    default: {
+      // text / date_time (edited as its ISO string) / anything unmapped.
+      const inp = el('input', { class: 'editor-input', type: 'text' });
+      inp.value = f.value || '';
+      if (fieldAllowsAi(f)) {
+        // e.g. Title - offer a suggestion with the same review pane.
+        const ai = buildAiAssist(f, it, () => inp.value, (t) => { inp.value = t.replace(/\s+/g, ' ').trim(); }, null, workingFields);
+        return { node: el('div', { class: 'editor-rich' }, [inp, ai.row, ai.result]), get: () => inp.value, set: (t) => { inp.value = t.replace(/\s+/g, ' ').trim(); }, ai };
+      }
+      return { node: inp, get: () => inp.value };
+    }
+  }
+}
+
 // Linked-work-item chips on a PR, each a link to the item in ADO. `meta` is the
 // team's config ({ organization, project }); without it the chip is a plain tag.
 function wiLinkChips(ids, meta) {
@@ -1164,6 +2165,7 @@ function wiLinkChips(ids, meta) {
 async function renderPipelines() {
   const pipelines = await api.pipelines();
   const wrap = el('div', {});
+  wrap.className = 'view-fill';
   wrap.appendChild(pageHead('Pipelines', `${pipelines.length} monitored`));
 
   if (!pipelines.length) {
@@ -1173,7 +2175,7 @@ async function renderPipelines() {
 
   let pipeTable;
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('pipelines', flagCode);
 
   const columns = [
     { label: 'ID', sort: 'number', value: (p) => p.pipeline_id, render: (p) => linkOut('#' + p.pipeline_id, p.url) },
@@ -1205,6 +2207,8 @@ async function renderPipelines() {
   ];
 
   pipeTable = dataTable(columns, pipelines, {
+    persistKey: 'pipelines',
+    fill: true,
     initialSort: { index: 0, dir: 1 },
     emptyText: 'No matching pipelines.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
@@ -1222,6 +2226,7 @@ async function renderPipelines() {
 async function renderPulls() {
   const prs = await api.pullRequests();
   const wrap = el('div', {});
+  wrap.className = 'view-fill';
   wrap.appendChild(pageHead('Pull Requests', `${prs.length} open`));
 
   if (!prs.length) {
@@ -1238,7 +2243,7 @@ async function renderPulls() {
   const teamMeta = (name) => (cfg?.team || []).find((t) => t.name === name) || {};
   let prTable;
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('pull-requests', flagCode);
   // After a PR-side link edit, patch the row locally (the write returns the work
   // item, not the PR): update the linked ids and clear the "no work item" flag
   // once at least one link exists.
@@ -1284,6 +2289,8 @@ async function renderPulls() {
   ].filter(Boolean);
 
   prTable = dataTable(columns, prs, {
+    persistKey: 'pull-requests',
+    fill: true,
     initialSort: { index: 0, dir: -1 }, // newest PRs first (highest id)
     emptyText: 'No matching pull requests.',
     predicate: (p) => passesFlagFilter(state, (p.flags || []).map((f) => f.code)),
@@ -1746,7 +2753,7 @@ function buildSpec(draft) {
 
 // ── Settings ────────────────────────────────────────────────────────
 // ── Recap (a shareable highlights deck, generated from closed work) ──
-// POSEIDEN builds the data-driven SKELETON - what closed, grouped by area:/
+// POSEIDON builds the data-driven SKELETON - what closed, grouped by area:/
 // source:, internal vs external - and renders it as slides. The human finishes
 // the narrative + screenshots (that context isn't in the backlog). Merged in
 // from the OCTOGON slide tool; the renderer lives in lib/recap-slides.js.
@@ -1764,7 +2771,7 @@ async function renderRecap() {
   let lastDeck = null;
   const dlBtn = el('button', {
     class: 'btn', disabled: true,
-    title: 'Download this deck as a single self-contained HTML file - opens and presents in any browser, no POSEIDEN needed',
+    title: 'Download this deck as a single self-contained HTML file - opens and presents in any browser, no POSEIDON needed',
     onclick: () => { if (lastDeck) downloadRecapHtml(lastDeck); },
   }, '⬇ Download deck');
 
@@ -1864,7 +2871,7 @@ function buildRecapDeck(items, days) {
 
 // Export the deck as ONE self-contained HTML file - the deck data, the slide
 // renderer, and the styles all inlined - so it opens and presents in any browser
-// with no POSEIDEN and no network. This is the shareable artifact: hand it to
+// with no POSEIDON and no network. This is the shareable artifact: hand it to
 // management, attach it to an email, drop it in Teams.
 async function downloadRecapHtml(deck) {
   let js, css;
@@ -1900,7 +2907,7 @@ renderDeck(${deckLiteral}, document.getElementById('recap-deck'));
 </scr${''}ipt>
 </body></html>`;
   const stamp = new Date().toISOString().slice(0, 10);
-  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `poseiden-recap-${stamp}.html`);
+  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `poseidon-recap-${stamp}.html`);
 }
 
 // ── Rules (team-scoped hygiene policy) ──────────────────────────────
@@ -1966,6 +2973,12 @@ function rulesEditorCard(rules, opts) {
     ignore_types: [...(r.ignore_types || [])],
     resolved_states: [...(r.resolved_states || [])],
     stale_when_resolved_tags: [...(r.stale_when_resolved_tags || [])],
+    // Carried through so a UI save doesn't drop them (no dedicated editor for the
+    // first two; team_background gets the textarea below).
+    refine_tag: r.refine_tag ?? null,
+    refine_min_chars: r.refine_min_chars ?? null,
+    moved_in_source: r.moved_in_source ?? null,
+    team_background: r.team_background || '',
     pipelines: {
       flag_failing: !!(r.pipelines && r.pipelines.flag_failing),
       flag_never_run: !!(r.pipelines && r.pipelines.flag_never_run),
@@ -1998,6 +3011,7 @@ function rulesEditorCard(rules, opts) {
     field('Required tags', 'every item must carry a tag matching each pattern', chipListEditor(draft.required_tags)),
     field('Untagged item', 'severity when an item has no tags at all', untaggedToggle(draft)),
     field('Auto-suggest keywords', 'suggest a tag when an item title contains a keyword (advisory - never applied automatically)', tagKeywordsEditor(draft.tag_keywords)),
+    field('Team background (AI)', 'context / glossary fed verbatim to the AI tagger so it understands your internal naming - never applied as a tag', teamBackgroundEditor(draft)),
     field('Stale limits', 'days an item may sit in a state before it is flagged stale', staleEditor(draft.stale_days)),
     field('Resolved states', 'states that count as "done" - a "still needs work" tag here is flagged (runs even on ignored states)', chipListEditor(draft.resolved_states)),
     field('Stale-when-resolved tags', 'tags meaning outstanding work; flagged on a resolved item, e.g. "to refine" on a Closed story', chipListEditor(draft.stale_when_resolved_tags)),
@@ -2053,7 +3067,7 @@ function rulesEditorCard(rules, opts) {
   return card;
 }
 
-// POSEIDEN's recommended sanctioned-tag set (GitHub's canonical labels + our
+// POSEIDON's recommended sanctioned-tag set (GitHub's canonical labels + our
 // additions). Not locked - just a one-click starting point users can restore.
 const RECOMMENDED_ALLOWED_TAGS = [
   'bug', 'documentation', 'duplicate', 'enhancement',
@@ -2081,6 +3095,17 @@ function tagKeywordsEditor(list) {
   };
   draw();
   return box;
+}
+
+// Free-text team background / AI glossary editor. Bound to draft.team_background.
+function teamBackgroundEditor(draft) {
+  const ta = el('textarea', {
+    class: 'rule-textarea', rows: '10', 'aria-label': 'Team background',
+    placeholder: 'Context fed verbatim to the AI tagger, e.g.\n- Our core billing service and its satellites are all product:platform.\n- The internal developer portal = product:idp.\n- Crossplane / Terraform / Argo = product:dev-platform (the platform tooling itself).\n- The "deployment" repos are IaC that provisions customer environments = area:platform-deployment.',
+    oninput: (e) => { draft.team_background = e.target.value; },
+  });
+  ta.value = draft.team_background || '';
+  return ta;
 }
 
 // A tag/string list editor: removable chips + an add-on-Enter input. Mutates the
@@ -2206,6 +3231,50 @@ function ruleInheritanceCard(teams) {
 // Import / export the whole configuration (teams, rules, saved reports) as a
 // portable YAML file — backup, share, migrate standalone <-> hosted, or seed a
 // headless run. Never includes secrets (the PAT stays in the environment).
+// Service-catalog import: upload a Port "Service" CSV export to map repos -> products,
+// so product:* resolves from an item's linked repos (repo_tags rules override it).
+function catalogCard() {
+  const status = el('p', { class: 'muted', style: 'margin-top:0' }, 'Loading catalog…');
+  const fileInput = el('input', { type: 'file', accept: '.csv,text/csv' });
+  const importBtn = el('button', { class: 'btn btn-primary' }, 'Import CSV');
+  async function refresh() {
+    try {
+      const c = await api.catalog();
+      status.textContent = c.count
+        ? `${c.count} service${c.count === 1 ? '' : 's'} currently mapped.`
+        : 'No catalog imported yet.';
+    } catch { status.textContent = 'Catalog status unavailable.'; }
+  }
+  importBtn.addEventListener('click', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) { toast('Choose a Port CSV export first.'); return; }
+    importBtn.disabled = true;
+    const orig = importBtn.textContent;
+    importBtn.textContent = 'Importing…';
+    try {
+      const res = await api.importCatalog(await file.text());
+      toast(`Catalog imported: ${res.rows ?? 0} services mapped`);
+      fileInput.value = '';
+      await refresh();
+    } catch (err) {
+      toast('Catalog import failed: ' + (err?.message || err), true);
+    } finally {
+      importBtn.disabled = false;
+      importBtn.textContent = orig;
+    }
+  });
+  refresh();
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Service catalog'),
+    el('p', { class: 'muted', style: 'margin-top:0' },
+      'Upload a Port "Service" export (CSV) to map repos → products. Resolves product:* '
+      + 'from an item\'s linked repos; your repo_tags rules take precedence.'),
+    status,
+    el('label', { class: 'field' }, [el('span', {}, 'Port Service export (.csv)'), fileInput]),
+    el('div', { class: 'row' }, [importBtn]),
+  ]);
+}
+
 function configCard() {
   const replace = el('input', { type: 'checkbox' });
   const fileInput = el('input', {
@@ -2244,10 +3313,10 @@ async function doExport() {
   try {
     const yaml = await exportConfig();
     const url = URL.createObjectURL(new Blob([yaml], { type: 'application/x-yaml' }));
-    const a = el('a', { href: url, download: 'poseiden-config.yaml' });
+    const a = el('a', { href: url, download: 'poseidon-config.yaml' });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast('Exported poseiden-config.yaml');
+    toast('Exported poseidon-config.yaml');
   } catch (err) {
     toast('Export failed: ' + (err.message || err), true);
   }
@@ -2261,11 +3330,11 @@ async function showSettings(focus) {
   const overlay = el('div', { class: 'dc-overlay', id: 'settings-overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   const close = () => overlay.remove();
 
-  const urlInput = el('input', { type: 'url', placeholder: 'https://poseiden.your-company.com', value: getInstanceUrl() });
+  const urlInput = el('input', { type: 'url', placeholder: 'https://poseidon.your-company.com', value: getInstanceUrl() });
   const connectionCard = el('div', { class: 'card' }, [
     el('h2', {}, 'Connection'),
     el('p', { class: 'muted', style: 'margin-top:0' },
-      'Repoint this client at a hosted POSEIDEN instance to see your web-configured boards on the go. Currently: ' + mode() + '.'),
+      'Repoint this client at a hosted POSEIDON instance to see your web-configured boards on the go. Currently: ' + mode() + '.'),
     el('label', { class: 'field' }, [
       el('span', {}, "Remote instance URL (leave empty to use this instance's own data)"),
       urlInput,
@@ -2306,7 +3375,7 @@ async function showSettings(focus) {
     { id: 'display', label: 'Display 📺', nodes: [displayCard] },
   ];
   if (cfg) tabs.push({ id: 'polling', label: 'Polling 🔄', nodes: [pollingCard(cfg), instanceConfigCard(cfg)] });
-  tabs.push({ id: 'config', label: 'Import / Export 📦', nodes: [configCard()] });
+  tabs.push({ id: 'config', label: 'Import / Export 📦', nodes: [configCard(), catalogCard()] });
 
   const panels = tabs.map((t) => el('div', { class: 'settings-tab-panel', 'data-tab': t.id }, t.nodes));
   const tabBar = el('div', { class: 'rule-tabs settings-tabs' });
@@ -2377,7 +3446,7 @@ function instanceConfigCard(cfg) {
     el('h2', {}, 'Instance'),
     el('p', { class: 'muted', style: 'margin-top:0' }, [
       `Polling every ${cfg.server?.poll_interval || 'default'} · ${teams.length} team(s). `,
-      'Set POSEIDEN_POLL_INTERVAL to change it (applied on restart).',
+      'Set POSEIDON_POLL_INTERVAL to change it (applied on restart).',
     ]),
     el('p', { class: 'muted', style: 'margin:0' },
       'Manage teams with the ✎ button beside the Team selector; edit hygiene rules on the Rules screen.'),
@@ -2484,15 +3553,6 @@ function renderIntegrations(holder, data) {
       } }, 'Reset to defaults'),
   ]));
   holder.append(benchOut);
-}
-
-// What actually runs for THIS client, in priority order: WebGPU entries are usable
-// only where the browser has WebGPU; every other kind uses the server's platform
-// verdict. First usable + configured one wins (matches the Suggest engine choice).
-function effectiveActiveId(list, caps) {
-  const usable = (i) => (i.kind === 'webgpu' ? webgpuAvailable() : i.compatible) && i.configured !== false;
-  const hit = (list || []).find(usable);
-  return hit ? hit.id : null;
 }
 
 // Fixed benchmark probe - a small, unambiguous work item + allowed set, mirrored on
@@ -2744,7 +3804,7 @@ const DOC_GROUPS = [
     { file: 'COMPATIBILITY.md', name: 'Compatibility', blurb: 'Feature × platform support.' },
     { file: 'ROADMAP.md', name: 'Roadmap', blurb: 'Committed next steps.' },
     { file: 'BACKLOG.md', name: 'Backlog', blurb: 'Everything considered, ranked.' },
-    { file: 'SCOPE.md', name: 'Scope', blurb: 'What POSEIDEN is not.' },
+    { file: 'SCOPE.md', name: 'Scope', blurb: 'What POSEIDON is not.' },
     { file: 'CLI.md', name: 'CLI guide', blurb: 'Commands + worked examples.' },
     { file: 'DISTRIBUTION.md', name: 'Distribution', blurb: 'Every deploy target.' },
   ] },
@@ -3048,10 +4108,10 @@ function openMenu() {
 function showAbout() {
   const overlay = el('div', { class: 'dc-overlay', onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
   overlay.appendChild(el('div', { class: 'about-modal' }, [
-    el('img', { class: 'about-logo', src: 'assets/logo.png', width: 72, height: 72, alt: 'POSEIDEN' }),
+    el('img', { class: 'about-logo', src: 'assets/logo.png', width: 72, height: 72, alt: 'POSEIDON' }),
     el('div', { class: 'about-wordmark' }, [el('span', { class: 'po' }, 'PO'), el('span', {}, 'SEIDEN')]),
     el('p', { class: 'about-tag' },
-      "Work comes in never-ending waves. POSEIDEN is a Product Owner support tool that helps you see them, sort them, and show what's adrift - backlog hygiene, pipeline observation, and velocity in one place."),
+      "Work comes in never-ending waves. POSEIDON is a Product Owner support tool that helps you see them, sort them, and show what's adrift - backlog hygiene, pipeline observation, and velocity in one place."),
     el('p', { class: 'muted' }, 'Version 0.1.0 · Dual-licensed MIT / Apache-2.0'),
     el('button', { class: 'btn btn-primary', onclick: () => overlay.remove() }, 'Close'),
   ]));
@@ -3132,15 +4192,15 @@ function renderTeamForm(panel, existing) {
     { id: 'azure-dev-ops', label: 'Azure DevOps', azure: true,
       orgLabel: 'Organization URL', orgPh: 'https://dev.azure.com/your-org',
       projLabel: 'Project', projPh: 'Platform Engineering',
-      patPh: 'POSEIDEN_AZURE_PAT (optional; sign-in works too)' },
+      patPh: 'POSEIDON_AZURE_PAT (optional; sign-in works too)' },
     { id: 'github', label: 'GitHub', azure: false,
       orgLabel: 'Repository owner', orgPh: 'octocat  (user or org)',
       projLabel: 'Repository', projPh: 'hello-world',
-      patPh: 'POSEIDEN_GITHUB_TOKEN (optional; public repos need none)' },
+      patPh: 'POSEIDON_GITHUB_TOKEN (optional; public repos need none)' },
     { id: 'gitlab', label: 'GitLab', azure: false,
       orgLabel: 'Namespace or base URL', orgPh: 'gitlab-org  (or https://gitlab.example.com)',
       projLabel: 'Project path', projPh: 'gitlab-runner',
-      patPh: 'POSEIDEN_GITLAB_TOKEN (optional; public projects need none)' },
+      patPh: 'POSEIDON_GITLAB_TOKEN (optional; public projects need none)' },
   ];
   const providerOf = (id) => PROVIDERS.find((p) => p.id === id) || PROVIDERS[0];
   let providerId = (existing && existing.provider) || 'azure-dev-ops';
@@ -3249,7 +4309,7 @@ document.getElementById('refresh-btn').addEventListener('click', async (e) => {
 });
 
 // ── Motto ───────────────────────────────────────────────────────────
-// Nautical mottos, mirrored from poseiden-core's MOTDS (Rust side, used by the
+// Nautical mottos, mirrored from poseidon-core's MOTDS (Rust side, used by the
 // CLI banner). One is picked per launch and shown under the wordmark, in the
 // browser-tab title, and - on desktop - the native window title.
 const MOTDS = [
@@ -3264,7 +4324,7 @@ function initMotto() {
   const motto = MOTDS[Math.floor(Math.random() * MOTDS.length)];
   const badge = document.getElementById('brand-motd');
   if (badge) badge.textContent = motto;
-  const title = `POSEIDEN - ${motto}`;
+  const title = `POSEIDON - ${motto}`;
   document.title = title;
   // On the desktop shell, also set the native window title (withGlobalTauri).
   try {
@@ -3298,7 +4358,7 @@ async function bootApp() {
     return showOnboarding(caps);
   }
 
-  // Browser served by a poseiden server: we are already on that instance.
+  // Browser served by a poseidon server: we are already on that instance.
   if (caps.sameOriginApi) return finishBoot();
 
   // Static host (no local store, no backend): the only move is to become a
@@ -3314,6 +4374,7 @@ function finishBoot() {
   startDoctorPolling();
   renderUserMenu();
   autotuneAi();
+  mountActivityBar(); // the AI activity bar (bottom of the content area; hidden when idle)
 }
 
 // Best-effort, fire-and-forget: detect this browser's capabilities (WebGPU + coarse
@@ -3425,10 +4486,10 @@ function onboardChoice(title, desc, onClick) {
 function onboardWelcome(modal) {
   clear(modal);
   modal.append(
-    el('h3', {}, 'Welcome to POSEIDEN'),
+    el('h3', {}, 'Welcome to POSEIDON'),
     el('div', { class: 'muted', style: 'margin-bottom:12px' }, 'How do you want to run it?'),
     onboardChoice('Run on this device', 'Keep your own local database and poll your work tracker directly. No server needed.', () => onboardStorage(modal)),
-    onboardChoice('Connect to a shared instance', 'Point at a POSEIDEN instance your team already hosts.', () => onboardRemote(modal)),
+    onboardChoice('Connect to a shared instance', 'Point at a POSEIDON instance your team already hosts.', () => onboardRemote(modal)),
   );
 }
 
@@ -3458,7 +4519,7 @@ function onboardStorage(modal) {
 
 function onboardRemote(modal) {
   clear(modal);
-  const input = el('input', { type: 'url', placeholder: 'https://poseiden.example.com', style: 'width:100%' });
+  const input = el('input', { type: 'url', placeholder: 'https://poseidon.example.com', style: 'width:100%' });
   const connect = el('button', {
     class: 'btn btn-primary', onclick: () => {
       const url = input.value.trim();
@@ -3473,8 +4534,8 @@ function onboardRemote(modal) {
     ? [el('button', { class: 'btn', onclick: () => onboardWelcome(modal) }, 'Back'), connect]
     : [connect];
   const lead = onboardCaps.localService
-    ? 'Enter the URL of your team’s POSEIDEN instance. You can change or clear this later in Settings.'
-    : 'This is a web client - point it at your team’s POSEIDEN instance to get started. You can change or clear this later in Settings.';
+    ? 'Enter the URL of your team’s POSEIDON instance. You can change or clear this later in Settings.'
+    : 'This is a web client - point it at your team’s POSEIDON instance to get started. You can change or clear this later in Settings.';
   modal.append(
     el('h3', {}, 'Connect to an instance'),
     el('div', { class: 'muted', style: 'margin-bottom:8px' }, lead),
@@ -3507,7 +4568,7 @@ async function onboardAi(modal) {
   modal.append(
     el('h3', {}, 'LLM integration (optional)'),
     el('div', { class: 'muted', style: 'margin-bottom:10px' },
-      'POSEIDEN can suggest canonical tags. Add an integration - an on-device model, your own GPU endpoint, or a hosted provider - or skip and add one later in Settings. You can configure several and reorder them.'),
+      'POSEIDON can suggest canonical tags. Add an integration - an on-device model, your own GPU endpoint, or a hosted provider - or skip and add one later in Settings. You can configure several and reorder them.'),
   );
   let data = { presets: { online: [], offline: [] }, caps: {} };
   try { data = await api.llmConfig(); } catch { /* presets unavailable */ }
@@ -3630,7 +4691,7 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
 window.addEventListener('hashchange', route);
 // Build/version stamp in the sidebar foot (git sha in CI/prod, timestamp locally).
 {
-  const v = (window.__POSEIDEN_ENV__ && window.__POSEIDEN_ENV__.version) || '';
+  const v = (window.__POSEIDON_ENV__ && window.__POSEIDON_ENV__.version) || '';
   const el = document.getElementById('version-stamp');
   if (el && v) el.textContent = v;
 }

@@ -1,6 +1,6 @@
 name: Docker image → GHCR
 
-# Builds the POSEIDEN web-instance image and pushes it to the GitHub Container
+# Builds the POSEIDON web-instance image and pushes it to the GitHub Container
 # Registry. On main → `latest-main` + a sha tag. On a `v*` tag → the semver
 # tag + `latest`. PRs build only (no push) as a "does the image still build?"
 # gate.
@@ -65,5 +65,5 @@ jobs:
           # Stamp version + commit so the Doctor's update check works. A v* tag
           # build gets that tag; a main build is the rolling `latest-main`.
           build-args: |
-            POSEIDEN_VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-main' }}
-            POSEIDEN_COMMIT=${{ github.sha }}
+            POSEIDON_VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-main' }}
+            POSEIDON_COMMIT=${{ github.sha }}

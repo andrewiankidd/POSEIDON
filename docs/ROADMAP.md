@@ -18,13 +18,13 @@ model.
 
 ## Next
 
-1. **Harden against live orgs.** POSEIDEN has been run against a real Azure DevOps
+1. **Harden against live orgs.** POSEIDON has been run against a real Azure DevOps
    org (polling + write-backs exercised end-to-end); the remaining work is
    tuning the default WIQL + field list and validating rule outcomes across more
    projects. Polling needs read scopes; the write-back features need Work Items
    Write.
 2. **In-app demo mode.** The `stub` provider + demo tenant bundle
-   (`tenants/demo-data.poseiden.import.yaml`) already give a deterministic offline
+   (`tenants/demo-data.poseidon.import.yaml`) already give a deterministic offline
    dataset (used for the e2e + documentation screenshots); the remaining piece is a
    built-in one-click `--demo` mode so the UI can be evaluated without importing anything.
 3. **Sprint / iteration view.** The first view beyond the day-one set - the data

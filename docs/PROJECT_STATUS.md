@@ -1,6 +1,6 @@
 # Project status
 
-Where POSEIDEN is **today**. For what's next see [ROADMAP.md](ROADMAP.md); for
+Where POSEIDON is **today**. For what's next see [ROADMAP.md](ROADMAP.md); for
 everything else considered, [BACKLOG.md](BACKLOG.md).
 
 ## Working now
@@ -13,27 +13,27 @@ everything else considered, [BACKLOG.md](BACKLOG.md).
   Actions runs and PRs; GitLab Issues, Pipelines and MRs - active +
   recently-closed throughout. Public GitHub / GitLab repos poll without a token
   (a token is optional, for private repos or higher rate limits).
-  (`poseiden-providers`)
+  (`poseidon-providers`)
 - **Write-back (Azure DevOps)** - edit a work item's State + Tags
   (`Service::update_work_item`) and add/remove work-item↔PR links
   (`Service::link_work_item_pr`), written through the provider; hygiene flags
   recompute on the post-write view. Write-back is Azure DevOps only today; the
-  GitHub and GitLab providers are read-focused. (`poseiden-server`)
+  GitHub and GitLab providers are read-focused. (`poseidon-server`)
 - **Config-driven hygiene rules** - required tags, allowed/denied tag lists (with
   `type:*` wildcard patterns), untagged detection, per-state staleness limits, and
-  pipeline + pull-request checks. Pure engine, fully unit-tested. (`poseiden-rules`)
+  pipeline + pull-request checks. Pure engine, fully unit-tested. (`poseidon-rules`)
 - **SQLite persistence** - `sqlx` with migrations embedded in the binary
   (auto-provisions on first run), upserts, list queries, and date-range work-item +
-  pipeline report aggregates. (`poseiden-store`)
+  pipeline report aggregates. (`poseidon-store`)
 - **Poll scheduler** - polls once on startup, then on the configured interval.
-  Per-project failures are logged and skipped, never fatal. (`poseiden-server`)
+  Per-project failures are logged and skipped, never fatal. (`poseidon-server`)
 
 ### Surfaces
 - **Web / Docker instance** - axum API + static frontend, multi-stage Docker
   image, Helm chart with an RWO PVC template + Istio notes.
 - **Desktop app** - Tauri shell embedding the same `Service`, reached via invoke.
   Builds to a native binary (~30 MB) on Windows today; Linux/macOS via CI.
-- **CLI** - `poseiden poll` / `lint` / `report` / `config` / `tag`. `lint` exits
+- **CLI** - `poseidon poll` / `lint` / `report` / `config` / `tag`. `lint` exits
   non-zero on error-severity flags for CI gating; `tag` generates advisory AI tag
   suggestions.
 - **Frontend** - Dashboard (with a Health-check flag breakdown), Work Items
@@ -68,10 +68,10 @@ everything else considered, [BACKLOG.md](BACKLOG.md).
 - **Demo mode is static-host only** - on a static host (GitHub Pages) the landing
   page offers a "View Demo" button that runs the app client-side against baked
   sample fixtures, no backend needed. The built-in `stub` provider (imported via
-  the demo tenant bundle, `tenants/demo-data.poseiden.import.yaml`) gives the same
+  the demo tenant bundle, `tenants/demo-data.poseidon.import.yaml`) gives the same
   deterministic dataset for the e2e + documentation screenshots. A native
   one-click `--demo` in the desktop shell is still a backlog item.
 - **Icons are placeholders** - the Tauri bundle reuses a placeholder icon set;
-  a POSEIDEN-specific icon is a polish item.
+  a POSEIDON-specific icon is a polish item.
 - **iOS build not wired** - the release matrix covers desktop + Android; iOS is a
   backlog item (the primary mobile story is a repointed client).

@@ -1,6 +1,6 @@
-# POSEIDEN documentation
+# POSEIDON documentation
 
-POSEIDEN is a Product Owner support tool that keeps a backlog legible - hygiene
+POSEIDON is a Product Owner support tool that keeps a backlog legible - hygiene
 rules, pipeline health, and flow reporting across Azure DevOps, GitHub, and
 GitLab (the provider layer is a trait, so other trackers are a plug-in away). It
 runs as a local app or a shared server from **one codebase**; this hub is the map
@@ -19,7 +19,7 @@ commands.
 |------|-----------|------------------|
 | **Standalone** | Desktop / mobile / CLI with embedded SQLite. Zero external dependencies; single tenant (`default` owner). | Azure DevOps: device-code sign-in or a PAT env var. GitHub / GitLab: public repos poll with no sign-in; an optional token env var covers private repos or higher rate limits. |
 | **Portable** | Standalone with all state confined under `./.portable/` beside the binary (desktop OSes). | Same as standalone. |
-| **Hosted** | The `poseiden-server` container as a shared, multi-user instance. Owner comes from the `X-Auth-Request-Email` header; auth is done at the ingress (oauth2-proxy), not in the app. | Azure DevOps: per-owner device-code sign-in (isolated token cache) or a shared PAT. GitHub / GitLab: optional token env var (none needed for public repos). |
+| **Hosted** | The `poseidon-server` container as a shared, multi-user instance. Owner comes from the `X-Auth-Request-Email` header; auth is done at the ingress (oauth2-proxy), not in the app. | Azure DevOps: per-owner device-code sign-in (isolated token cache) or a shared PAT. GitHub / GitLab: optional token env var (none needed for public repos). |
 | **Repointed client** | A desktop / mobile / web client pointed at a hosted instance via one Settings field (an instance URL). | The hosted instance's. |
 
 The standalone and hosted shells are the *same* `Service`; the frontend picks
@@ -61,7 +61,7 @@ code sits at the root.
 - [Setup](features/setup.md) - sign-in, teams, and first-run configuration.
 - [CLI guide](CLI.md) - `poll` / `lint` / `report` / `config` / `tag`, with worked use cases (CI gating, portable/air-gapped, machine output).
 - [Distribution & deployment](DISTRIBUTION.md) - every publish/deploy target (Pages, Cloudflare, Docker/GHCR, Helm, desktop, mobile) and how each is built.
-- [Helm chart](../deploy/helm/poseiden/README.md) - the Kubernetes chart: nginx vs Istio, auth providers, bundled IdPs, multi-tenant notes.
+- [Helm chart](../deploy/helm/poseidon/README.md) - the Kubernetes chart: nginx vs Istio, auth providers, bundled IdPs, multi-tenant notes.
 
 **Use the app**
 - [Feature guides](features/README.md) - Dashboard, Work Items, Pull Requests, Pipelines, Reports, Rules - GUI and CLI side by side.
@@ -71,11 +71,11 @@ code sits at the root.
 - [Compatibility](COMPATIBILITY.md) - which features are supported on which platforms.
 - [Roadmap](ROADMAP.md) - committed next steps.
 - [Backlog](BACKLOG.md) - everything else worth not forgetting.
-- [Scope](SCOPE.md) - what POSEIDEN deliberately is *not*.
+- [Scope](SCOPE.md) - what POSEIDON deliberately is *not*.
 - [CLAUDE.md](../CLAUDE.md) - build principles + conventions for contributors.
 
 ## Next steps
 
 - **Just want to see it?** [Run it standalone](RUNNING.md#standalone) - one `cargo run`, no server.
-- **Hosting for a team?** Start with the [minikube walkthrough](RUNNING.md#hosted), then the [Helm chart](../deploy/helm/poseiden/README.md) for a real cluster.
+- **Hosting for a team?** Start with the [minikube walkthrough](RUNNING.md#hosted), then the [Helm chart](../deploy/helm/poseidon/README.md) for a real cluster.
 - **Contributing?** [Develop with Docker](RUNNING.md#develop-with-docker) (no Rust install), then read [CLAUDE.md](../CLAUDE.md).
