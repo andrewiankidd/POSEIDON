@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: helm lint (also validates values against values.schema.json)
         run: helm lint deploy/helm/poseidon
       - name: Install kubeconform
