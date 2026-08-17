@@ -160,7 +160,10 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
             "/api/healthcheck/audit/prompts",
             post(healthcheck_audit_prompts),
         )
-        .route("/api/healthcheck/audit/store", post(store_healthcheck_audit))
+        .route(
+            "/api/healthcheck/audit/store",
+            post(store_healthcheck_audit),
+        )
         .route("/env.js", get(env_js))
         .with_state(service);
 
@@ -459,7 +462,10 @@ async fn refine_work_item_fields(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(body): Json<RefineFieldsBody>,
 ) -> ApiResult {
-    match svc.refine_work_item_fields(&body.team, id, &body.fields).await {
+    match svc
+        .refine_work_item_fields(&body.team, id, &body.fields)
+        .await
+    {
         Ok(crate::service::RefineOutcome::Value(fields)) => {
             Ok(Json(serde_json::json!({ "fields": fields })))
         }

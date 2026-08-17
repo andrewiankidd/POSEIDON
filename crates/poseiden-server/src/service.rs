@@ -2303,7 +2303,10 @@ impl Service {
                     return Ok(RefineOutcome::Value(
                         pairs
                             .into_iter()
-                            .map(|(reference, value)| poseiden_core::FieldChange { reference, value })
+                            .map(|(reference, value)| poseiden_core::FieldChange {
+                                reference,
+                                value,
+                            })
                             .collect(),
                     ))
                 }
@@ -2387,7 +2390,11 @@ impl Service {
                         team: team.clone(),
                         code: FlagCode::AiAudit,
                         severity: Severity::Warn,
-                        message: format!("AI healthcheck ({}): {}", audit_kind_label(&kind), detail),
+                        message: format!(
+                            "AI healthcheck ({}): {}",
+                            audit_kind_label(&kind),
+                            detail
+                        ),
                         tag: None,
                     });
                 }
@@ -3363,22 +3370,39 @@ mod tests {
         let svc = test_service().await;
         let owner = svc.owner.clone();
         svc.store
-            .replace_team_work_items(&owner, "Platform", &[work_item(1, "Platform", "Fix it", &[])])
+            .replace_team_work_items(
+                &owner,
+                "Platform",
+                &[work_item(1, "Platform", "Fix it", &[])],
+            )
             .await
             .unwrap();
         // A finding for an item in scope surfaces as an ai_audit flag...
         svc.store
-            .set_ai_audit(&owner, "Platform", 1, &[("unclear".into(), "No component named".into())])
+            .set_ai_audit(
+                &owner,
+                "Platform",
+                1,
+                &[("unclear".into(), "No component named".into())],
+            )
             .await
             .unwrap();
         // ...while a finding for an id not in this read's items is ignored (no ghost flag).
         svc.store
-            .set_ai_audit(&owner, "Platform", 999, &[("bad_data".into(), "orphan".into())])
+            .set_ai_audit(
+                &owner,
+                "Platform",
+                999,
+                &[("bad_data".into(), "orphan".into())],
+            )
             .await
             .unwrap();
 
         let flags = svc.flags(None).await.unwrap();
-        let audit: Vec<&Flag> = flags.iter().filter(|f| f.code == FlagCode::AiAudit).collect();
+        let audit: Vec<&Flag> = flags
+            .iter()
+            .filter(|f| f.code == FlagCode::AiAudit)
+            .collect();
         assert_eq!(audit.len(), 1, "only the in-scope finding surfaces");
         let f = audit[0];
         assert_eq!(f.work_item_id, 1);
@@ -3387,7 +3411,10 @@ mod tests {
         // The message carries the human kind label + the model's detail.
         assert!(f.message.contains("unclear"), "{}", f.message);
         assert!(f.message.contains("No component named"), "{}", f.message);
-        assert!(!flags.iter().any(|f| f.work_item_id == 999), "orphan finding excluded");
+        assert!(
+            !flags.iter().any(|f| f.work_item_id == 999),
+            "orphan finding excluded"
+        );
     }
 
     #[tokio::test]

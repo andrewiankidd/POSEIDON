@@ -1623,7 +1623,9 @@ mod tests {
         let map = store.ai_audit(DEFAULT_OWNER, None).await.unwrap();
         let got = map.get(&1).unwrap();
         assert_eq!(got.len(), 2);
-        assert!(got.iter().any(|(k, d)| k == "unclear" && d == "Title says nothing"));
+        assert!(got
+            .iter()
+            .any(|(k, d)| k == "unclear" && d == "Title says nothing"));
 
         // Re-audit overwrites the whole set (no stale concerns left behind).
         store
@@ -1645,7 +1647,11 @@ mod tests {
             .set_ai_audit(DEFAULT_OWNER, "Platform", 1, &[])
             .await
             .unwrap();
-        assert!(!store.ai_audit(DEFAULT_OWNER, None).await.unwrap().contains_key(&1));
+        assert!(!store
+            .ai_audit(DEFAULT_OWNER, None)
+            .await
+            .unwrap()
+            .contains_key(&1));
     }
 
     #[tokio::test]

@@ -256,7 +256,12 @@ impl AuditKind {
     }
     /// Parse a model-supplied kind, case/space-insensitively. Unknown -> None (dropped).
     pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().replace([' ', '-'], "_").as_str() {
+        match s
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '-'], "_")
+            .as_str()
+        {
             "unclear" | "vague" | "underspecified" => Some(AuditKind::Unclear),
             "bad_title" | "title" | "placeholder_title" => Some(AuditKind::BadTitle),
             "bad_data" | "data" | "invalid" | "contradiction" => Some(AuditKind::BadData),
@@ -1467,7 +1472,10 @@ mod tests {
     fn audit_kind_slug_round_trips() {
         for k in [AuditKind::Unclear, AuditKind::BadTitle, AuditKind::BadData] {
             assert_eq!(AuditKind::parse(k.as_str()), Some(k));
-            assert_eq!(serde_json::to_value(k).unwrap(), serde_json::json!(k.as_str()));
+            assert_eq!(
+                serde_json::to_value(k).unwrap(),
+                serde_json::json!(k.as_str())
+            );
         }
         assert_eq!(AuditKind::parse("VAGUE"), Some(AuditKind::Unclear));
         assert_eq!(AuditKind::parse("nonsense-kind"), None);
