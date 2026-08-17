@@ -359,6 +359,17 @@ pub async fn store_healthcheck_audit(
     serde_json::to_value(summary).map_err(|e| e.to_string())
 }
 
+/// Run the deterministic near-duplicate scan over a team's items and store the flags.
+#[tauri::command]
+pub async fn scan_duplicates(state: State<'_, AppState>, team: Option<String>) -> CmdResult {
+    let service = state.service()?;
+    let summary = service
+        .run_duplicate_scan(team.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(summary).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_llm_config(state: State<'_, AppState>) -> CmdResult {
     let service = state.service()?;

@@ -469,6 +469,7 @@ const FLAG_LABELS = {
   underspecified: 'Empty body',
   duplicate: 'Duplicate title',
   bad_title: 'Bad title',
+  near_duplicate: 'Near-duplicate',
   ai_audit: 'AI healthcheck',
   // Pull-request + pipeline entity-flag codes.
   'stale-open': 'Stale open PR',
@@ -1033,6 +1034,29 @@ async function renderWorkItems() {
     bulkCount, bulkTag, addTagBtn, removeTagBtn, applySuggBtn, bulkState, bulkStatus, bulkTagList,
   ]);
 
+  // "Find duplicates": a whole-backlog scan (not a selection) for reworded near-dupes,
+  // deterministic + server-side (no AI), storing near_duplicate flags. Always available.
+  const dupBtn = el('button', {
+    class: 'btn btn-xs', type: 'button',
+    title: 'Scan the whole backlog for near-duplicate (reworded) titles — advisory flags',
+    onclick: async () => {
+      const b = dupBtn;
+      const orig = b.textContent;
+      b.disabled = true;
+      b.textContent = '🔎 Scanning…';
+      try {
+        const sum = await api.scanDuplicates(getTeamScope());
+        toast(`Duplicate scan: ${sum.flagged ?? 0} of ${sum.scanned ?? 0} items resemble another`);
+        await refreshRows();
+      } catch (err) {
+        toast('Duplicate scan failed: ' + (err?.message || err), true);
+      } finally {
+        b.disabled = false;
+        b.textContent = orig;
+      }
+    },
+  }, '🔎 Find duplicates');
+
   table = dataTable(columns, items, {
     persistKey: 'work-items',
     fill: true, // fill the view height; scroll rows, keep header + toolbar fixed
@@ -1041,7 +1065,7 @@ async function renderWorkItems() {
     // Rule-break filtering (all flagged, or one specific flag code); tag
     // filtering is the Tags column's own per-column filter input.
     predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)),
-    toolbar: [flaggedToggle, emptyToggle, aiBtn, hcBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
+    toolbar: [flaggedToggle, emptyToggle, aiBtn, hcBtn, dupBtn, flagFilterChip(state, 'work-items')].filter(Boolean),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
@@ -1128,7 +1152,7 @@ function flagShort(f) {
   if (f.code === 'missing_required_tag') return f.tag ? `missing ${f.tag}` : 'missing tag';
   if (f.code === 'disallowed_tag') return f.tag ? `bad: ${f.tag}` : 'bad tag';
   if (f.code === 'stale_state_tag') return f.tag ? `stale: ${f.tag}` : 'stale tag';
-  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title', ai_audit: 'AI flag' }[f.code] || f.code;
+  return { untagged: 'untagged', stale: 'stale', underspecified: 'empty body', duplicate: 'duplicate', bad_title: 'bad title', near_duplicate: 'near-dup', ai_audit: 'AI flag' }[f.code] || f.code;
 }
 
 // Work-items -> CSV: id, title, type, state, assignee, tags, suggestions (adds and

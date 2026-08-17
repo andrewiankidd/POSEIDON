@@ -40,6 +40,10 @@ pub enum FlagCode {
     /// Item's title is a placeholder / junk (`test`, `asdf`, `Untitled`, too short) -
     /// it tells you nothing about the work. Driven by the configured `bad_title_terms`.
     BadTitle,
+    /// Item closely resembles another item's title (reworded / near-duplicate), found
+    /// by the on-demand duplicate scan's cosine similarity - beyond the exact-title
+    /// `Duplicate` check. Advisory; the specific matches + score are in [`Flag::message`].
+    NearDuplicate,
     /// An on-demand AI healthcheck judged this item's data quality as poor (a vague
     /// title, contradictory / missing description, malformed data). Advisory and
     /// AI-sourced - the specific concern is in [`Flag::message`]. Only present after a
@@ -107,6 +111,7 @@ mod tests {
             (FlagCode::Underspecified, "underspecified"),
             (FlagCode::Duplicate, "duplicate"),
             (FlagCode::BadTitle, "bad_title"),
+            (FlagCode::NearDuplicate, "near_duplicate"),
             (FlagCode::AiAudit, "ai_audit"),
         ];
         for (code, slug) in cases {

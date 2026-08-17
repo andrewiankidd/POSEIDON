@@ -332,6 +332,13 @@ export const api = {
       method: 'POST', query: { team }, body: { results },
       invokeCmd: 'store_healthcheck_audit', invokeArgs: { team, results },
     }),
+  /** Run the deterministic near-duplicate scan over the team's items (all teams when
+   *  no team); stores `near_duplicate` flags. Returns { scanned, flagged, pairs }. */
+  scanDuplicates: (team) =>
+    request('/healthcheck/duplicates/scan', {
+      method: 'POST', query: { team },
+      invokeCmd: 'scan_duplicates', invokeArgs: { team },
+    }),
   /** Tag-input settings: { use_description }. */
   tagSettings: () => request('/tag-settings', { invokeCmd: 'get_tag_settings' }),
   setTagSettings: (useDescription) =>

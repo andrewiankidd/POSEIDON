@@ -63,6 +63,7 @@ pub fn run() {
             commands::healthcheck_audit_status,
             commands::healthcheck_audit_prompts,
             commands::store_healthcheck_audit,
+            commands::scan_duplicates,
             commands::get_llm_config,
             commands::set_llm_config,
             commands::reset_llm_config,

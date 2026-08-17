@@ -306,6 +306,12 @@ pub struct RuleSet {
     /// empty = no background. Only reaches the model, never applied as a tag.
     #[serde(default)]
     pub team_background: Option<String>,
+    /// Cosine-similarity threshold (0..1) above which two items are reported as
+    /// near-duplicates by the on-demand duplicate scan (semantic-ish: reworded titles
+    /// that share vocabulary, beyond the exact-title `flag_duplicate_titles` check).
+    /// `None` uses the default (0.7). Lower = more (noisier) matches.
+    #[serde(default)]
+    pub near_duplicate_threshold: Option<f32>,
     /// House style for how the AI writes/refines an **Acceptance Criteria** field.
     /// `None` (the default) and `"gwt"` mean Given-When-Then scenarios (Given <context>,
     /// When <action>, Then <expected>); `"checklist"` (or `"plain"`) means a free-form
@@ -458,6 +464,14 @@ impl RuleSet {
             self.acceptance_criteria_style.as_deref().map(str::trim),
             Some("checklist") | Some("plain") | Some("freeform") | Some("none")
         )
+    }
+
+    /// The near-duplicate cosine threshold, defaulted (0.7) and clamped to a sane
+    /// 0.3..=0.99 range so a misconfigured value can't flag everything or nothing.
+    pub fn near_duplicate_threshold(&self) -> f32 {
+        self.near_duplicate_threshold
+            .unwrap_or(0.7)
+            .clamp(0.3, 0.99)
     }
 
     /// The staleness rules as typed pairs, for the engine to iterate.
