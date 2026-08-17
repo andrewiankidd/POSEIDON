@@ -1910,6 +1910,59 @@ impl Service {
         Ok(summary)
     }
 
+    /// Run the on-demand near-duplicate scan over a team's active items (all teams when
+    /// `team` is `None`), storing the results as `near_duplicate` flags until the next
+    /// scan. Deterministic (TF-IDF cosine, no model) so it runs inline. Each item judged
+    /// by ITS team's threshold; the scan is partitioned per team so cross-team titles
+    /// aren't compared (different backlogs, different vocab).
+    pub async fn run_duplicate_scan(&self, team: Option<&str>) -> anyhow::Result<DupScanSummary> {
+        let items = self.store.list_work_items(&self.owner, team).await?;
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        // Partition by team so each group is scanned against its own ruleset/threshold.
+        let mut groups: std::collections::BTreeMap<&str, Vec<WorkItem>> =
+            std::collections::BTreeMap::new();
+        for it in &items {
+            groups.entry(it.team.as_str()).or_default().push(it.clone());
+        }
+        let mut rows: Vec<(i64, String, String)> = Vec::new();
+        let mut pairs = 0usize;
+        for (team_name, group) in &groups {
+            let rules = rules_for_team(&cfg, team_name);
+            for nd in poseiden_rules::find_near_duplicates(group, rules) {
+                let listed: Vec<String> = nd
+                    .matches
+                    .iter()
+                    .map(|(id, score)| format!("#{} ({}%)", id, (score * 100.0).round() as i64))
+                    .collect();
+                pairs += nd.matches.len();
+                rows.push((
+                    nd.id,
+                    team_name.to_string(),
+                    format!("resembles {}", listed.join(", ")),
+                ));
+            }
+        }
+        let flagged = rows.len();
+        self.store
+            .replace_near_duplicates(&self.owner, team, &rows)
+            .await?;
+        info!(
+            team = team.unwrap_or("all"),
+            scanned = items.len(),
+            flagged,
+            "near-duplicate scan complete"
+        );
+        Ok(DupScanSummary {
+            scanned: items.len(),
+            flagged,
+            pairs,
+        })
+    }
+
     /// Populate each item's `linked_prs` (the coloured chips) from its stored
     /// `linked_pr_ids`, resolving status/url against the polled PR set. Abandoned
     /// links are hidden unless the team's rule opts them in; a linked PR we never
@@ -2378,6 +2431,22 @@ impl Service {
         // ones. Advisory (Warn) and only present for items a person audited; scoped to
         // the items in this read via their id + team.
         let team_of: HashMap<i64, String> = items.iter().map(|i| (i.id, i.team.clone())).collect();
+        // Stored near-duplicate findings (from the on-demand scan) as flags, scoped to
+        // the items in this read.
+        if let Ok(dups) = self.store.near_duplicates(&self.owner, None).await {
+            for (id, detail) in dups {
+                if let Some(team) = team_of.get(&id) {
+                    flags.push(Flag {
+                        work_item_id: id,
+                        team: team.clone(),
+                        code: FlagCode::NearDuplicate,
+                        severity: Severity::Warn,
+                        message: format!("possible duplicate: {detail}"),
+                        tag: None,
+                    });
+                }
+            }
+        }
         if let Ok(audit) = self.store.ai_audit(&self.owner, None).await {
             for (id, findings) in audit {
                 let Some(team) = team_of.get(&id) else {
@@ -2655,6 +2724,7 @@ fn code_str(code: FlagCode) -> &'static str {
         FlagCode::Underspecified => "underspecified",
         FlagCode::Duplicate => "duplicate",
         FlagCode::BadTitle => "bad_title",
+        FlagCode::NearDuplicate => "near_duplicate",
         FlagCode::AiAudit => "ai_audit",
     }
 }
@@ -2950,6 +3020,17 @@ pub struct AiSuggestSummary {
     pub with_suggestions: usize,
     /// Total suggestions stored across all items.
     pub suggestions: usize,
+}
+
+/// Outcome of a near-duplicate scan over the scoped items.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DupScanSummary {
+    /// Items considered.
+    pub scanned: usize,
+    /// Items that resemble at least one other (i.e. carry a near_duplicate flag).
+    pub flagged: usize,
+    /// Total match edges recorded across all flagged items.
+    pub pairs: usize,
 }
 
 /// Outcome of an AI healthcheck audit run, over the scoped items.

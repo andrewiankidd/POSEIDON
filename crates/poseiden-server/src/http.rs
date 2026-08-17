@@ -164,6 +164,7 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
             "/api/healthcheck/audit/store",
             post(store_healthcheck_audit),
         )
+        .route("/api/healthcheck/duplicates/scan", post(scan_duplicates))
         .route("/env.js", get(env_js))
         .with_state(service);
 
@@ -999,6 +1000,17 @@ async fn store_healthcheck_audit(
 ) -> ApiResult {
     let summary = svc
         .store_healthcheck_audit(scope(&q.team), body.results)
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(summary).unwrap()))
+}
+
+/// Run the deterministic near-duplicate scan over a team's items (all teams when no
+/// `team`), storing `near_duplicate` flags. Synchronous - it's a fast TF-IDF pass, no
+/// model. Returns a scan summary.
+async fn scan_duplicates(svc: Scoped, Query(q): Query<ScopeQuery>) -> ApiResult {
+    let summary = svc
+        .run_duplicate_scan(scope(&q.team))
         .await
         .map_err(err500)?;
     Ok(Json(serde_json::to_value(summary).unwrap()))

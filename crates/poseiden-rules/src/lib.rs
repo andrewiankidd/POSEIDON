@@ -559,6 +559,199 @@ fn detect_duplicate_titles(items: &[WorkItem], rules: &RuleSet, flags: &mut Vec<
     }
 }
 
+// ─────────────────────────── Near-duplicate detection ───────────────────────
+//
+// Beyond the exact-title `detect_duplicate_titles`, this finds items whose titles
+// are REWORDED versions of each other - "Configure Istio alerting" vs "Set up
+// alerting for Istio". A TF-IDF cosine over title tokens: IDF down-weights words
+// common across the backlog (so shared boilerplate like "add"/"update" doesn't
+// create false matches) and up-weights the distinctive terms. Corpus-wide + O(n^2)
+// in the worst case, so it's an ON-DEMAND scan (never part of `evaluate`), run over
+// one team's active items. Deterministic - no model, so it runs anywhere.
+
+/// One item's near-duplicate matches: the other items it closely resembles, with the
+/// cosine similarity (0..1) of each, strongest first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearDuplicate {
+    pub id: i64,
+    pub team: String,
+    pub matches: Vec<(i64, f32)>,
+}
+
+/// Grammatical stopwords dropped before similarity - they carry no signal and would
+/// inflate matches. Domain-frequent words (e.g. "add", "service") are NOT listed:
+/// IDF handles those, down-weighting them in proportion to how common they actually
+/// are in THIS backlog rather than a fixed guess.
+const STOPWORDS: &[&str] = &[
+    "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "with", "is", "are", "be", "as",
+    "at", "by", "from", "this", "that", "it", "its", "we", "our", "you", "your", "into", "when",
+    "then", "than", "but", "not", "no", "if", "so", "do", "does",
+];
+
+/// Tokenise text for similarity: lowercase, split on non-alphanumerics, drop
+/// stopwords and very short tokens, and lightly singularise (trailing "s") so
+/// "widget"/"widgets" match. Returns tokens in order (duplicates kept for term freq).
+fn tokenize(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .filter(|t| t.len() >= 3 && !STOPWORDS.contains(&t.as_str()))
+        .map(|t| {
+            // Light stem: drop a trailing plural "s" on longer tokens (keeps "css").
+            if t.len() > 4 && t.ends_with('s') && !t.ends_with("ss") {
+                t[..t.len() - 1].to_string()
+            } else {
+                t
+            }
+        })
+        .collect()
+}
+
+/// L2-normalised TF-IDF vector for a document's tokens, keyed by token. Normalised so
+/// a plain dot product of two vectors IS their cosine similarity.
+fn tfidf_vector(
+    tokens: &[String],
+    idf: &std::collections::HashMap<String, f32>,
+) -> std::collections::HashMap<String, f32> {
+    let mut tf: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+    for t in tokens {
+        *tf.entry(t.as_str()).or_insert(0.0) += 1.0;
+    }
+    let mut vec: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    let mut norm = 0.0f32;
+    for (tok, freq) in tf {
+        let w = freq * idf.get(tok).copied().unwrap_or(0.0);
+        if w != 0.0 {
+            vec.insert(tok.to_string(), w);
+            norm += w * w;
+        }
+    }
+    if norm > 0.0 {
+        let inv = 1.0 / norm.sqrt();
+        for w in vec.values_mut() {
+            *w *= inv;
+        }
+    }
+    vec
+}
+
+/// Cosine similarity of two L2-normalised sparse vectors (iterate the smaller).
+fn cosine(
+    a: &std::collections::HashMap<String, f32>,
+    b: &std::collections::HashMap<String, f32>,
+) -> f32 {
+    let (small, big) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    small
+        .iter()
+        .filter_map(|(k, w)| big.get(k).map(|w2| w * w2))
+        .sum()
+}
+
+/// Find near-duplicate items by TF-IDF cosine over their titles, at or above the
+/// ruleset's [`RuleSet::near_duplicate_threshold`]. Terminal items (ignored states/
+/// types or resolved) are excluded, same as the exact-title check, so the scan is
+/// about the live backlog. Candidate pairs are generated via an inverted index (only
+/// items sharing a token are compared), so it scales past a naive all-pairs sweep.
+pub fn find_near_duplicates(items: &[WorkItem], rules: &RuleSet) -> Vec<NearDuplicate> {
+    let threshold = rules.near_duplicate_threshold();
+    let terminal = |it: &WorkItem| {
+        is_ignored(it, rules)
+            || rules
+                .resolved_states
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&it.state))
+    };
+    // Eligible items with their tokens (skip terminal + empty-token titles).
+    let docs: Vec<(&WorkItem, Vec<String>)> = items
+        .iter()
+        .filter(|it| !terminal(it))
+        .map(|it| (it, tokenize(&it.title)))
+        .filter(|(_, toks)| !toks.is_empty())
+        .collect();
+    let n = docs.len();
+    if n < 2 {
+        return Vec::new();
+    }
+
+    // Document frequency -> IDF (smoothed).
+    let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (_, toks) in &docs {
+        let uniq: std::collections::HashSet<&String> = toks.iter().collect();
+        for t in uniq {
+            *df.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+    let n_f = n as f32;
+    let idf: std::collections::HashMap<String, f32> = df
+        .iter()
+        .map(|(t, &d)| (t.clone(), ((n_f + 1.0) / (d as f32 + 1.0)).ln() + 1.0))
+        .collect();
+
+    let vectors: Vec<std::collections::HashMap<String, f32>> = docs
+        .iter()
+        .map(|(_, toks)| tfidf_vector(toks, &idf))
+        .collect();
+
+    // Inverted index token -> doc indices, skipping tokens that appear in more than
+    // half the corpus (non-discriminative, and they'd bloat every candidate set).
+    let mut inverted: std::collections::HashMap<&str, Vec<usize>> =
+        std::collections::HashMap::new();
+    // Only drop a token from BLOCKING when it's genuinely ubiquitous - in over half the
+    // corpus AND in an absolute-large number of docs. On a small backlog nothing is
+    // dropped (or two reworded items sharing only their few distinctive words would
+    // never be compared); at scale it prunes the handful of non-discriminative tokens
+    // that would otherwise create huge candidate buckets. Truly similar items always
+    // also share rarer tokens, which stay indexed, so this can't hide a real match.
+    let common_cut = (n / 2).max(50);
+    for (i, (_, toks)) in docs.iter().enumerate() {
+        let uniq: std::collections::HashSet<&String> = toks.iter().collect();
+        for t in uniq {
+            if df.get(t).copied().unwrap_or(0) <= common_cut {
+                inverted.entry(t.as_str()).or_default().push(i);
+            }
+        }
+    }
+
+    // For each doc, gather candidate partners (sharing a discriminative token), compare
+    // once (i < j), and record symmetric matches at/above the threshold.
+    let mut matches: Vec<Vec<(i64, f32)>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for tok in vectors[i].keys() {
+            let Some(bucket) = inverted.get(tok.as_str()) else {
+                continue;
+            };
+            for &j in bucket {
+                if j <= i || !seen.insert(j) {
+                    continue;
+                }
+                let score = cosine(&vectors[i], &vectors[j]);
+                if score >= threshold {
+                    matches[i].push((docs[j].0.id, score));
+                    matches[j].push((docs[i].0.id, score));
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (i, (it, _)) in docs.iter().enumerate() {
+        if matches[i].is_empty() {
+            continue;
+        }
+        let mut m = std::mem::take(&mut matches[i]);
+        // Strongest first; cap so one item can't emit a wall of matches.
+        m.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        m.truncate(5);
+        out.push(NearDuplicate {
+            id: it.id,
+            team: it.team.clone(),
+            matches: m,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1315,5 +1508,89 @@ mod tests {
         assert!(suggest_tags(&tagged, &refine_rules(), true)
             .iter()
             .all(|x| x.tag != "to refine"));
+    }
+
+    // ── near-duplicate detection ─────────────────────────────────────────────
+
+    fn titled(id: i64, title: &str) -> WorkItem {
+        item(|w| {
+            w.id = id;
+            w.title = title.into();
+        })
+    }
+
+    #[test]
+    fn near_duplicates_match_reworded_titles_but_not_unrelated_ones() {
+        let items = vec![
+            titled(
+                1,
+                "Configure monitoring and alerting for Istio in Kubernetes",
+            ),
+            titled(2, "Set up alerting and monitoring for Istio on Kubernetes"),
+            titled(3, "Rotate the database backup credentials"),
+        ];
+        let rules = RuleSet {
+            near_duplicate_threshold: Some(0.4),
+            ..Default::default()
+        };
+        let dups = find_near_duplicates(&items, &rules);
+        // #1 and #2 are reworded versions of each other -> mutual match.
+        let one = dups.iter().find(|d| d.id == 1).expect("1 flagged");
+        assert!(one.matches.iter().any(|(id, _)| *id == 2));
+        let two = dups.iter().find(|d| d.id == 2).expect("2 flagged");
+        assert!(two.matches.iter().any(|(id, _)| *id == 1));
+        // #3 shares nothing distinctive -> not flagged.
+        assert!(!dups.iter().any(|d| d.id == 3));
+    }
+
+    #[test]
+    fn near_duplicate_threshold_gates_matches() {
+        let items = vec![
+            titled(1, "Add retry logic to the payment poller"),
+            titled(2, "Add retry logic to the invoice poller"),
+        ];
+        // A high threshold rejects the partial overlap...
+        let strict = RuleSet {
+            near_duplicate_threshold: Some(0.95),
+            ..Default::default()
+        };
+        assert!(find_near_duplicates(&items, &strict).is_empty());
+        // ...a lower one accepts it.
+        let loose = RuleSet {
+            near_duplicate_threshold: Some(0.4),
+            ..Default::default()
+        };
+        assert!(!find_near_duplicates(&items, &loose).is_empty());
+    }
+
+    #[test]
+    fn near_duplicates_skip_resolved_and_ignored_items() {
+        let mut resolved = titled(2, "Set up alerting and monitoring for Istio on Kubernetes");
+        resolved.state = "Closed".into();
+        let items = vec![
+            titled(
+                1,
+                "Configure monitoring and alerting for Istio in Kubernetes",
+            ),
+            resolved,
+        ];
+        let rules = RuleSet {
+            near_duplicate_threshold: Some(0.3),
+            resolved_states: vec!["Closed".into()],
+            ..Default::default()
+        };
+        // The only potential partner is resolved -> nothing to pair with.
+        assert!(find_near_duplicates(&items, &rules).is_empty());
+    }
+
+    #[test]
+    fn tokenize_drops_stopwords_and_singularises() {
+        let toks = tokenize("Add the widgets and gadgets to Kubernetes");
+        assert!(toks.contains(&"widget".to_string())); // singularised
+        assert!(toks.contains(&"gadget".to_string()));
+        // Naive plural-strip is only required to be CONSISTENT, not linguistically
+        // perfect: "kubernetes" -> "kubernete" is fine as long as it's stable.
+        assert!(toks.iter().any(|t| t.starts_with("kubernete")));
+        assert!(!toks.iter().any(|t| t == "the" || t == "and" || t == "to")); // stopwords gone
     }
 }

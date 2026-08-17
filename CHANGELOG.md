@@ -66,6 +66,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (likely raised-twice items, excluding resolved/recurring work) and **placeholder
   titles** (`test`, `asdf`, `Untitled`, …, via `bad_title_terms`). Surface as flags,
   so they reuse the chips, dashboard counts, and filters.
+- **Near-duplicate scan** — a *Find duplicates* action that scans the whole backlog
+  for **reworded** duplicate titles (e.g. "Configure Istio alerting" vs "Set up
+  alerting for Istio") that the exact-title check misses. Deterministic TF-IDF cosine
+  over titles (IDF down-weights backlog-common words, blocking keeps it scalable), no
+  model needed; surfaces as `near_duplicate` flags with the matches + similarity score.
+  Threshold per team via `near_duplicate_threshold` (default 0.7).
 - **AI healthcheck (on-demand)** — a *Run healthcheck* action over the selected
   work items that asks the model to judge each item's **data quality** (a vague
   title, a description that contradicts the title, boilerplate left unfilled) and

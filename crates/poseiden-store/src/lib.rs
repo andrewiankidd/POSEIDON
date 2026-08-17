@@ -366,6 +366,58 @@ impl Store {
         Ok(map)
     }
 
+    /// Replace the near-duplicate findings for a team scope in one shot: delete the
+    /// scope's existing rows, then insert `findings` = `(work_item_id, team, detail)`.
+    /// A `None` team replaces every team's findings for the owner (an all-teams scan);
+    /// `Some(team)` replaces just that team's. Owner-scoped.
+    pub async fn replace_near_duplicates(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+        findings: &[(i64, String, String)],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM near_duplicate_findings WHERE owner = ? AND team = COALESCE(?, team)",
+        )
+        .bind(owner)
+        .bind(team)
+        .execute(&mut *tx)
+        .await?;
+        for (work_item_id, item_team, detail) in findings {
+            sqlx::query(
+                "INSERT INTO near_duplicate_findings
+                   (owner, team, work_item_id, detail) VALUES (?, ?, ?, ?)",
+            )
+            .bind(owner)
+            .bind(item_team)
+            .bind(work_item_id)
+            .bind(detail)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Near-duplicate findings for `owner`, optionally scoped to one team, grouped by
+    /// work-item id -> detail. Read on the way to merging them into the flag stream.
+    pub async fn near_duplicates(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        let rows = sqlx::query_as::<_, (i64, String)>(
+            "SELECT work_item_id, detail FROM near_duplicate_findings
+             WHERE owner = ? AND team = COALESCE(?, team)",
+        )
+        .bind(owner)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Pipelines for `owner`, optionally scoped to one team.
     pub async fn list_pipelines(&self, owner: &str, team: Option<&str>) -> Result<Vec<Pipeline>> {
         let rows = sqlx::query_as::<_, PipelineRow>(
@@ -1652,6 +1704,38 @@ mod tests {
             .await
             .unwrap()
             .contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn near_duplicates_replace_by_team_scope() {
+        let store = Store::connect_in_memory().await.unwrap();
+        store
+            .replace_near_duplicates(
+                DEFAULT_OWNER,
+                Some("Platform"),
+                &[
+                    (1, "Platform".into(), "resembles #2 (85%)".into()),
+                    (2, "Platform".into(), "resembles #1 (85%)".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        let map = store.near_duplicates(DEFAULT_OWNER, None).await.unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&1).unwrap(), "resembles #2 (85%)");
+
+        // Re-scanning the Platform team replaces only Platform's rows.
+        store
+            .replace_near_duplicates(
+                DEFAULT_OWNER,
+                Some("Platform"),
+                &[(1, "Platform".into(), "resembles #9 (90%)".into())],
+            )
+            .await
+            .unwrap();
+        let map = store.near_duplicates(DEFAULT_OWNER, None).await.unwrap();
+        assert_eq!(map.len(), 1, "team re-scan replaced its rows");
+        assert_eq!(map.get(&1).unwrap(), "resembles #9 (90%)");
     }
 
     #[tokio::test]
