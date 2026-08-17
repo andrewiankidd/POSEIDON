@@ -215,7 +215,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: POSEIDON ${{ steps.meta.outputs.tag }}
@@ -241,7 +241,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release delete latest-main --yes --cleanup-tag --repo "${{ github.repository }}" || true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-main
           name: "Latest main build"
