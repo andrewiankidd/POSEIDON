@@ -66,6 +66,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (likely raised-twice items, excluding resolved/recurring work) and **placeholder
   titles** (`test`, `asdf`, `Untitled`, …, via `bad_title_terms`). Surface as flags,
   so they reuse the chips, dashboard counts, and filters.
+- **AI healthcheck (on-demand)** — a *Run healthcheck* action over the selected
+  work items that asks the model to judge each item's **data quality** (a vague
+  title, a description that contradicts the title, boilerplate left unfilled) and
+  stores the concerns as advisory `ai_audit` flags. Runs on the active AI backend —
+  a server-side online model as a background job, or the browser's WebGPU model via
+  the same value-or-prompt handshake as field drafting (the server hands out the
+  prompts, the browser runs them, replies are re-parsed + stored server-side).
 - **Markdown field editor** — a formatting toolbar + Edit/Preview toggle on rich
   fields; AI drafts land in a **review pane** (Use / Discard) rather than overwriting,
   operate on the live unsaved editor state, and have malformed links auto-repaired.

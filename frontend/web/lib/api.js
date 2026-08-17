@@ -308,6 +308,30 @@ export const api = {
       method: 'POST', query: { team }, body: { items },
       invokeCmd: 'store_tag_suggestions', invokeArgs: { team, items },
     }),
+  /** Start a background AI healthcheck audit over the scoped items (server-side
+   *  model); returns the initial status. Poll `healthcheckAuditStatus`. Findings
+   *  land as advisory `ai_audit` flags. */
+  runHealthcheckAudit: (team, ids) =>
+    request('/healthcheck/audit/run', {
+      method: 'POST', query: { team }, body: { ids },
+      invokeCmd: 'run_healthcheck_audit', invokeArgs: { team, ids },
+    }),
+  /** Current audit run state: { state: 'idle'|'running'|'done'|'failed', ... }. */
+  healthcheckAuditStatus: () =>
+    request('/healthcheck/audit/status', { invokeCmd: 'healthcheck_audit_status' }),
+  /** Per-item audit prompts for the browser (WebGPU) path: [{ id, system, user }]. */
+  healthcheckAuditPrompts: (team, ids) =>
+    request('/healthcheck/audit/prompts', {
+      method: 'POST', query: { team }, body: { ids },
+      invokeCmd: 'healthcheck_audit_prompts', invokeArgs: { team, ids },
+    }),
+  /** Store browser (WebGPU) computed audit replies - the server re-parses them.
+   *  `results` = [{ id, text }]. Returns a run summary. */
+  storeHealthcheckAudit: (team, results) =>
+    request('/healthcheck/audit/store', {
+      method: 'POST', query: { team }, body: { results },
+      invokeCmd: 'store_healthcheck_audit', invokeArgs: { team, results },
+    }),
   /** Tag-input settings: { use_description }. */
   tagSettings: () => request('/tag-settings', { invokeCmd: 'get_tag_settings' }),
   setTagSettings: (useDescription) =>

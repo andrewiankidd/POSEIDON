@@ -143,6 +143,16 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/tag-suggestions/run", post(run_tag_suggestions))
         .route("/api/tag-suggestions/status", get(tag_suggestions_status))
         .route("/api/tag-suggestions/store", post(store_tag_suggestions))
+        .route("/api/healthcheck/audit/run", post(run_healthcheck_audit))
+        .route(
+            "/api/healthcheck/audit/status",
+            get(healthcheck_audit_status),
+        )
+        .route(
+            "/api/healthcheck/audit/prompts",
+            post(healthcheck_audit_prompts),
+        )
+        .route("/api/healthcheck/audit/store", post(store_healthcheck_audit))
         .route("/env.js", get(env_js))
         .with_state(service);
 
@@ -860,6 +870,68 @@ async fn store_tag_suggestions(
 ) -> ApiResult {
     let summary = svc
         .store_tag_suggestions(scope(&q.team), body.items)
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(summary).unwrap()))
+}
+
+// ─────────────────────────── AI healthcheck audit ───────────────────────────
+
+/// Start an on-demand AI healthcheck audit in the BACKGROUND (server-side model),
+/// scoped to the posted `ids` when present. The browser polls
+/// `GET /api/healthcheck/audit/status`. Use this only when a server-side backend is
+/// active; the browser (WebGPU) path uses `/prompts` + `/store` instead.
+async fn run_healthcheck_audit(
+    svc: Scoped,
+    Query(q): Query<ScopeQuery>,
+    body: Option<Json<RunBody>>,
+) -> ApiResult {
+    let ids = body.and_then(|Json(b)| b.ids).filter(|v| !v.is_empty());
+    svc.start_healthcheck_audit(scope(&q.team).map(str::to_string), ids)
+        .await
+        .map_err(err500)?;
+    Ok(Json(
+        serde_json::to_value(svc.healthcheck_audit_status()).unwrap(),
+    ))
+}
+
+/// Current healthcheck audit run state for this owner, for the browser to poll.
+async fn healthcheck_audit_status(svc: Scoped) -> ApiResult {
+    Ok(Json(
+        serde_json::to_value(svc.healthcheck_audit_status()).unwrap(),
+    ))
+}
+
+/// Per-item audit prompts for the browser (WebGPU) path - the server builds the
+/// exact system + user messages so the browser runs the same prompt locally.
+async fn healthcheck_audit_prompts(
+    svc: Scoped,
+    Query(q): Query<ScopeQuery>,
+    body: Option<Json<RunBody>>,
+) -> ApiResult {
+    let ids = body.and_then(|Json(b)| b.ids).filter(|v| !v.is_empty());
+    let prompts = svc
+        .audit_prompts(scope(&q.team), ids.as_deref())
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(prompts).unwrap()))
+}
+
+/// Store browser-computed (WebGPU) audit replies. The server re-parses every reply
+/// before storing (trust boundary).
+#[derive(serde::Deserialize)]
+struct StoreAuditBody {
+    #[serde(default)]
+    results: Vec<crate::service::BrowserAuditResult>,
+}
+
+async fn store_healthcheck_audit(
+    svc: Scoped,
+    Query(q): Query<ScopeQuery>,
+    Json(body): Json<StoreAuditBody>,
+) -> ApiResult {
+    let summary = svc
+        .store_healthcheck_audit(scope(&q.team), body.results)
         .await
         .map_err(err500)?;
     Ok(Json(serde_json::to_value(summary).unwrap()))

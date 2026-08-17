@@ -308,6 +308,64 @@ impl Store {
         Ok(map)
     }
 
+    /// Replace the AI healthcheck findings for one work item. `findings` is
+    /// `(kind, detail)` pairs; an empty slice clears the item's findings (a clean
+    /// re-audit). Mirrors [`Self::set_ai_suggestions`]: delete-all then re-insert,
+    /// so a re-run never leaves stale concerns behind.
+    pub async fn set_ai_audit(
+        &self,
+        owner: &str,
+        team: &str,
+        work_item_id: i64,
+        findings: &[(String, String)],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM ai_audit_findings WHERE owner = ? AND work_item_id = ?")
+            .bind(owner)
+            .bind(work_item_id)
+            .execute(&mut *tx)
+            .await?;
+        for (kind, detail) in findings {
+            sqlx::query(
+                "INSERT INTO ai_audit_findings
+                   (owner, team, work_item_id, kind, detail) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(owner)
+            .bind(team)
+            .bind(work_item_id)
+            .bind(kind)
+            .bind(detail)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// AI healthcheck findings for `owner`, optionally scoped to one team, grouped
+    /// by work-item id -> `(kind, detail)` pairs. Read on the way to merging them
+    /// into the flag stream as `ai_audit` flags.
+    pub async fn ai_audit(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<std::collections::HashMap<i64, Vec<(String, String)>>> {
+        let rows = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT work_item_id, kind, detail FROM ai_audit_findings
+             WHERE owner = ? AND team = COALESCE(?, team)",
+        )
+        .bind(owner)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map: std::collections::HashMap<i64, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        for (id, kind, detail) in rows {
+            map.entry(id).or_default().push((kind, detail));
+        }
+        Ok(map)
+    }
+
     /// Pipelines for `owner`, optionally scoped to one team.
     pub async fn list_pipelines(&self, owner: &str, team: Option<&str>) -> Result<Vec<Pipeline>> {
         let rows = sqlx::query_as::<_, PipelineRow>(
@@ -1545,6 +1603,49 @@ mod tests {
             .unwrap();
         let map = store.ai_suggestions(DEFAULT_OWNER, None).await.unwrap();
         assert!(!map.contains_key(&1), "empty set clears the item");
+    }
+
+    #[tokio::test]
+    async fn ai_audit_round_trip_overwrite_and_clear() {
+        let store = Store::connect_in_memory().await.unwrap();
+        store
+            .set_ai_audit(
+                DEFAULT_OWNER,
+                "Platform",
+                1,
+                &[
+                    ("unclear".into(), "Title says nothing".into()),
+                    ("bad_data".into(), "Body contradicts title".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        let map = store.ai_audit(DEFAULT_OWNER, None).await.unwrap();
+        let got = map.get(&1).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().any(|(k, d)| k == "unclear" && d == "Title says nothing"));
+
+        // Re-audit overwrites the whole set (no stale concerns left behind).
+        store
+            .set_ai_audit(
+                DEFAULT_OWNER,
+                "Platform",
+                1,
+                &[("bad_title".into(), "Placeholder title".into())],
+            )
+            .await
+            .unwrap();
+        let got = store.ai_audit(DEFAULT_OWNER, None).await.unwrap();
+        let got = got.get(&1).unwrap();
+        assert_eq!(got.len(), 1, "re-audit replaced, did not append");
+        assert_eq!(got[0].0, "bad_title");
+
+        // A clean re-audit (empty slice) clears the item entirely.
+        store
+            .set_ai_audit(DEFAULT_OWNER, "Platform", 1, &[])
+            .await
+            .unwrap();
+        assert!(!store.ai_audit(DEFAULT_OWNER, None).await.unwrap().contains_key(&1));
     }
 
     #[tokio::test]
