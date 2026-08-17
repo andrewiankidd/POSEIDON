@@ -767,13 +767,16 @@ impl Provider for AzureDevOpsProvider {
         //     Steps). Best-effort: on any error we get an empty set and simply don't
         //     filter (better to show a stray field than hide a real one).
         let form_refs = self
-            .get_json::<serde_json::Value>(&self.project_url(
-                &format!("wit/workitemtypes/{}", enc(&wit)),
-                "",
-            ))
+            .get_json::<serde_json::Value>(
+                &self.project_url(&format!("wit/workitemtypes/{}", enc(&wit)), ""),
+            )
             .await
             .ok()
-            .and_then(|t| t.get("xmlForm").and_then(|x| x.as_str()).map(form_field_refs))
+            .and_then(|t| {
+                t.get("xmlForm")
+                    .and_then(|x| x.as_str())
+                    .map(form_field_refs)
+            })
             .unwrap_or_default();
         // 3. The org FIELD CATALOG (each field's data type + readOnly). One call; the
         //    type-fields endpoint doesn't carry the data type, so we cross-reference.
@@ -816,8 +819,8 @@ impl Provider for AzureDevOpsProvider {
             // something the user edits here (e.g. a Bug's System.Description, replaced by
             // Repro Steps). Drop it. We keep any off-form field that HAS a value, so we
             // never lose real data, and keep all fields when the form is unknown.
-            let on_form = form_refs.is_empty()
-                || form_refs.contains(&tf.reference_name.to_ascii_lowercase());
+            let on_form =
+                form_refs.is_empty() || form_refs.contains(&tf.reference_name.to_ascii_lowercase());
             if !on_form && value.trim().is_empty() {
                 continue;
             }
@@ -1488,7 +1491,7 @@ mod tests {
         assert!(refs.contains("custom.expectedbehaviour")); // lowercased attr name + value
         assert!(refs.contains("system.areapath")); // whitespace around '=' tolerated
         assert!(!refs.contains("system.description")); // absent from the form
-        // No form / junk -> empty set (callers then fall back to not filtering).
+                                                       // No form / junk -> empty set (callers then fall back to not filtering).
         assert!(form_field_refs("").is_empty());
         assert!(form_field_refs("<Form>no controls here</Form>").is_empty());
     }
