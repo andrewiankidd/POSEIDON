@@ -306,6 +306,15 @@ pub struct RuleSet {
     /// empty = no background. Only reaches the model, never applied as a tag.
     #[serde(default)]
     pub team_background: Option<String>,
+    /// House style for how the AI writes/refines an **Acceptance Criteria** field.
+    /// `None` (the default) and `"gwt"` mean Given-When-Then scenarios (Given <context>,
+    /// When <action>, Then <expected>); `"checklist"` (or `"plain"`) means a free-form
+    /// checklist of testable conditions. Per-team so a team can opt out of GWT. Only
+    /// affects the AI prompt for AC fields; every other field is unchanged. `Option` so
+    /// the GWT default holds under both `Default::default()` and a config with the key
+    /// absent (a `bool` would default to false in Rust).
+    #[serde(default)]
+    pub acceptance_criteria_style: Option<String>,
     /// When set, an item that was CREATED under a different area path and later MOVED
     /// into this team's area (detected from work-item revision history) gets this
     /// source tag suggested - the "raised elsewhere, handed to us" signal that can't
@@ -442,6 +451,15 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
 }
 
 impl RuleSet {
+    /// Whether Acceptance Criteria should be written as Given-When-Then (the house
+    /// default). True unless the team explicitly picked a checklist/plain style.
+    pub fn acceptance_criteria_gwt(&self) -> bool {
+        !matches!(
+            self.acceptance_criteria_style.as_deref().map(str::trim),
+            Some("checklist") | Some("plain") | Some("freeform") | Some("none")
+        )
+    }
+
     /// The staleness rules as typed pairs, for the engine to iterate.
     pub fn stale_rules(&self) -> Vec<StaleRule> {
         self.stale_days
@@ -637,6 +655,25 @@ mod tests {
         assert_eq!(rs2.disallowed_tags, rs.disallowed_tags);
         assert_eq!(rs2.resolved_states, rs.resolved_states);
         assert_eq!(rs2.required_tags, rs.required_tags);
+    }
+
+    #[test]
+    fn acceptance_criteria_gwt_defaults_on_and_is_opt_out() {
+        // The whole point of Option<String>: GWT holds under BOTH Rust Default and a
+        // config with the key absent - not just serde.
+        assert!(RuleSet::default().acceptance_criteria_gwt());
+        let absent: RuleSet = serde_json::from_str("{}").unwrap();
+        assert!(absent.acceptance_criteria_gwt());
+        let gwt: RuleSet =
+            serde_json::from_str(r#"{ "acceptance_criteria_style": "gwt" }"#).unwrap();
+        assert!(gwt.acceptance_criteria_gwt());
+        // Explicit opt-out styles turn it off.
+        for style in ["checklist", "plain", "freeform", "none"] {
+            let rs: RuleSet =
+                serde_json::from_str(&format!(r#"{{ "acceptance_criteria_style": "{style}" }}"#))
+                    .unwrap();
+            assert!(!rs.acceptance_criteria_gwt(), "{style} should disable GWT");
+        }
     }
 
     #[test]

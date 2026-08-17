@@ -2176,10 +2176,8 @@ impl Service {
             .user_config(&self.owner)
             .await
             .unwrap_or_default();
-        let background = rules_for_team(&cfg, team)
-            .team_background
-            .clone()
-            .unwrap_or_default();
+        let rules = rules_for_team(&cfg, team);
+        let background = rules.team_background.clone().unwrap_or_default();
         let ctx = poseiden_ai::FieldDraftContext {
             work_item_type,
             title,
@@ -2192,6 +2190,7 @@ impl Service {
             } else {
                 poseiden_ai::DraftMode::Draft
             },
+            acceptance_criteria_gwt: rules.acceptance_criteria_gwt(),
         };
         // Prefer a SERVER-side model (an online provider). If there's none, or it can't
         // draft (the browser-run WebGPU tagger has no server presence, and the small
@@ -2252,10 +2251,9 @@ impl Service {
             .user_config(&self.owner)
             .await
             .unwrap_or_default();
-        let background = rules_for_team(&cfg, team)
-            .team_background
-            .clone()
-            .unwrap_or_default();
+        let team_rules = rules_for_team(&cfg, team);
+        let background = team_rules.team_background.clone().unwrap_or_default();
+        let acceptance_criteria_gwt = team_rules.acceptance_criteria_gwt();
         // Only the rich narrative fields (Description, Repro Steps, Acceptance Criteria,
         // …) - a consistency pass over a treePath (Area Path), a pick-list, or the Title
         // is meaningless, and those `Text` kinds are draftable too, so filter by the rich
@@ -2280,6 +2278,7 @@ impl Service {
             title,
             background,
             fields: harmonised,
+            acceptance_criteria_gwt,
         })
     }
 
