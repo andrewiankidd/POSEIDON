@@ -39,6 +39,33 @@ function routeParams() {
   return new URLSearchParams((location.hash || '').split('?')[1] || '');
 }
 
+// Persist the list-view toggles (Rule Breaks, Hide empty body) across refreshes,
+// keyed per view - mirrors the table's own filter/sort persistence. Best-effort.
+function loadToggles(key) {
+  try { return JSON.parse(localStorage.getItem(`poseiden.toggles.${key}`) || 'null') || {}; }
+  catch { return {}; }
+}
+function saveToggles(state) {
+  if (!state || !state.persistKey) return;
+  try {
+    const k = `poseiden.toggles.${state.persistKey}`;
+    // Drop the entry at defaults so we don't leave empty state lying around.
+    if (!state.flaggedOnly && !state.hideEmpty) localStorage.removeItem(k);
+    else localStorage.setItem(k, JSON.stringify({ flaggedOnly: !!state.flaggedOnly, hideEmpty: !!state.hideEmpty }));
+  } catch { /* private mode / quota - persistence is best-effort */ }
+}
+// Build the shared filter state for a list view, restoring the persisted toggles -
+// unless a deep-link (?flagged=1 / ?flag=<code>) explicitly overrides them.
+function listState(persistKey, flagCode) {
+  const saved = loadToggles(persistKey);
+  return {
+    persistKey,
+    flagCode,
+    flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode || !!saved.flaggedOnly,
+    hideEmpty: !!saved.hideEmpty,
+  };
+}
+
 // A "Rule Breaks" toggle for a list screen: flips `state.flaggedOnly` and
 // refreshes the table (fetched lazily via `getTable`, since the table is often
 // built after this button). Reused across Work Items, PRs, and Pipelines. Also
@@ -53,6 +80,7 @@ function ruleBreaksToggle(state, getTable) {
       e.currentTarget.parentNode?.querySelector('.filter-chip')?.remove();
       e.currentTarget.classList.toggle('on', state.flaggedOnly);
       e.currentTarget.setAttribute('aria-pressed', String(state.flaggedOnly));
+      saveToggles(state);
       getTable().refresh();
     },
   }, [
@@ -100,6 +128,7 @@ function hideEmptyToggle(state, getTable) {
       state.hideEmpty = !state.hideEmpty;
       e.currentTarget.classList.toggle('on', state.hideEmpty);
       e.currentTarget.setAttribute('aria-pressed', String(state.hideEmpty));
+      saveToggles(state);
       getTable().refresh();
     },
   }, [
@@ -600,7 +629,7 @@ async function renderWorkItems() {
   // Pre-filter to rule-breaks (or one specific flag) when arrived from a
   // dashboard tile / Health-check row.
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('work-items', flagCode);
 
   // "Rule Breaks" toggle - a switch in the table toolbar that flips a predicate
   // the table re-reads (only items with hygiene-rule violations).
@@ -1688,7 +1717,7 @@ async function renderPipelines() {
 
   let pipeTable;
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('pipelines', flagCode);
 
   const columns = [
     { label: 'ID', sort: 'number', value: (p) => p.pipeline_id, render: (p) => linkOut('#' + p.pipeline_id, p.url) },
@@ -1756,7 +1785,7 @@ async function renderPulls() {
   const teamMeta = (name) => (cfg?.team || []).find((t) => t.name === name) || {};
   let prTable;
   const flagCode = routeParams().get('flag');
-  const state = { flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode, flagCode };
+  const state = listState('pull-requests', flagCode);
   // After a PR-side link edit, patch the row locally (the write returns the work
   // item, not the PR): update the linked ids and clear the "no work item" flag
   // once at least one link exists.
