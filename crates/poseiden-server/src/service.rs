@@ -1866,30 +1866,41 @@ impl Service {
         id: i64,
         field_reference: &str,
         improve: bool,
+        working: &[poseiden_core::FieldChange],
     ) -> anyhow::Result<DraftOutcome> {
-        let fields = self.provider_for(team).await?.editable_fields(id).await?;
+        let mut fields = self.provider_for(team).await?.editable_fields(id).await?;
+        // Overlay the editor's UNSAVED working values so the AI operates on what's ON
+        // SCREEN, not the last-saved provider state - so successive drafts compose (a
+        // just-generated body feeds a later title improve) and an improve refines the
+        // user's current edits. Field metadata (label/kind) stays from the provider.
+        if !working.is_empty() {
+            let overlay: std::collections::HashMap<&str, &str> = working
+                .iter()
+                .map(|c| (c.reference.as_str(), c.value.as_str()))
+                .collect();
+            for f in &mut fields {
+                if let Some(v) = overlay.get(f.reference.as_str()) {
+                    f.value = (*v).to_string();
+                }
+            }
+        }
         let target = fields
             .iter()
             .find(|f| f.reference == field_reference)
             .ok_or_else(|| anyhow::anyhow!("no editable field '{field_reference}'"))?;
-        // Item type/title from the store (fall back to the fetched Title field).
+        // Title: prefer the (possibly-edited) Title FIELD, else the stored item title.
         let items = self
             .store
             .list_work_items(&self.owner, Some(team))
             .await
             .unwrap_or_default();
         let item = items.iter().find(|w| w.id == id);
-        let title = item
-            .map(|w| w.title.clone())
+        let title = fields
+            .iter()
+            .find(|f| f.reference.eq_ignore_ascii_case("title") || f.reference == "System.Title")
+            .map(|f| f.value.clone())
             .filter(|t| !t.trim().is_empty())
-            .or_else(|| {
-                fields
-                    .iter()
-                    .find(|f| {
-                        f.reference.eq_ignore_ascii_case("title") || f.reference == "System.Title"
-                    })
-                    .map(|f| f.value.clone())
-            })
+            .or_else(|| item.map(|w| w.title.clone()))
             .unwrap_or_default();
         let work_item_type = item.map(|w| w.work_item_type.clone()).unwrap_or_default();
         // Sibling context: other non-empty narrative fields (skip the target itself).
@@ -2230,6 +2241,9 @@ fn code_str(code: FlagCode) -> &'static str {
         FlagCode::DisallowedTag => "disallowed_tag",
         FlagCode::Stale => "stale",
         FlagCode::StaleStateTag => "stale_state_tag",
+        FlagCode::Underspecified => "underspecified",
+        FlagCode::Duplicate => "duplicate",
+        FlagCode::BadTitle => "bad_title",
     }
 }
 

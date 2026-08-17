@@ -142,8 +142,11 @@ Acceptance Criteria = a checklist of testable conditions; Repro Steps = numbered
 expected vs actual; Description = the what and why). Ground everything in the provided \
 context - never invent specifics (names, ids, dates, APIs) that aren't implied by it; where \
 a detail is genuinely unknown, write a clear placeholder in [square brackets] for a human to \
-fill. Match the team's terminology from any TEAM BACKGROUND. Output ONLY the field content as \
-GitHub-flavoured markdown - no field name, no preamble, no code fences around the whole thing.";
+fill. Match the team's terminology from any TEAM BACKGROUND. PRESERVE every existing URL and \
+link EXACTLY, character for character - never shorten, split, or reword a URL. Write links only \
+as valid markdown [text](url); NEVER write a bare URL inside square brackets or as [label: url] \
+(that is not a link and renders broken). Output ONLY the field content as GitHub-flavoured \
+markdown - no field name, no preamble, no code fences around the whole thing.";
 
 /// Build the user prompt for a field draft. Pure + testable: the item context, the
 /// target field, its current value, sibling fields, and the team background, framed

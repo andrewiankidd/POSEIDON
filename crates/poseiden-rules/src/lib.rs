@@ -315,6 +315,11 @@ fn any_tag_matches(pattern: &str, item: &WorkItem) -> bool {
 /// order listed above.
 pub fn evaluate(items: &[WorkItem], rules: &RuleSet, now: DateTime<Utc>) -> Vec<Flag> {
     let mut flags = Vec::new();
+    // Healthcheck: duplicate titles - a CROSS-item check (needs the whole set), so it
+    // runs once up front rather than per item. Opt-in via `flag_duplicate_titles`.
+    if rules.flag_duplicate_titles {
+        detect_duplicate_titles(items, rules, &mut flags);
+    }
     for item in items {
         // Stale-state tags run even on ignore_states: a terminal state is exactly
         // what ignore_states exempts, yet a leftover "still needs work" tag there is
@@ -451,6 +456,105 @@ fn evaluate_item(item: &WorkItem, rules: &RuleSet, now: DateTime<Utc>, flags: &m
                     tag: None,
                 });
             }
+        }
+    }
+
+    // 5. Underspecified - an empty/very thin body (see `is_underspecified`). The most
+    //    upstream hygiene gap: you can't tag, estimate or review what you can't read.
+    //    Only for OPEN items (a resolved item with no body is done, not worth
+    //    refining); gated on `refine_tag` being configured (is_underspecified).
+    let resolved = rules
+        .resolved_states
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(&item.state));
+    if !resolved && is_underspecified(item, rules) {
+        flags.push(Flag {
+            work_item_id: item.id,
+            team: item.team.clone(),
+            code: FlagCode::Underspecified,
+            severity: Severity::Warn,
+            message: "empty or very thin description - too little to tag, estimate or review"
+                .to_string(),
+            tag: None,
+        });
+    }
+
+    // 6. Healthcheck: junk/placeholder title ("test", "asdf", "Untitled", too short).
+    //    Config-driven (`bad_title_terms`); empty list = off.
+    if !rules.bad_title_terms.is_empty() {
+        let norm = normalize_title(&item.title);
+        let too_short = norm.chars().count() < 3;
+        let listed = rules
+            .bad_title_terms
+            .iter()
+            .any(|t| normalize_title(t) == norm && !norm.is_empty());
+        if too_short || listed {
+            flags.push(Flag {
+                work_item_id: item.id,
+                team: item.team.clone(),
+                code: FlagCode::BadTitle,
+                severity: Severity::Warn,
+                message: format!(
+                    "title \"{}\" is a placeholder / says nothing",
+                    item.title.trim()
+                ),
+                tag: None,
+            });
+        }
+    }
+}
+
+/// Normalise a title for equality/junk comparison: lower-cased, whitespace collapsed,
+/// surrounding punctuation trimmed. So "Fix the bug." and "fix the  bug" compare equal.
+pub fn normalize_title(title: &str) -> String {
+    let collapsed = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+        .to_lowercase()
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_string()
+}
+
+/// Flag every OPEN item that shares a normalised title with another OPEN item in scope
+/// (a likely raised-twice / copy-paste duplicate). Resolved/ignored items are excluded
+/// so legitimately-recurring done work ("Bump deps") doesn't create noise.
+fn detect_duplicate_titles(items: &[WorkItem], rules: &RuleSet, flags: &mut Vec<Flag>) {
+    let terminal = |it: &WorkItem| {
+        is_ignored(it, rules)
+            || rules
+                .resolved_states
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&it.state))
+    };
+    let mut groups: std::collections::HashMap<String, Vec<&WorkItem>> =
+        std::collections::HashMap::new();
+    for it in items {
+        if terminal(it) {
+            continue;
+        }
+        let n = normalize_title(&it.title);
+        if !n.is_empty() {
+            groups.entry(n).or_default().push(it);
+        }
+    }
+    for group in groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        for it in group {
+            let others: Vec<String> = group
+                .iter()
+                .filter(|o| o.id != it.id)
+                .take(5)
+                .map(|o| format!("#{}", o.id))
+                .collect();
+            flags.push(Flag {
+                work_item_id: it.id,
+                team: it.team.clone(),
+                code: FlagCode::Duplicate,
+                severity: Severity::Warn,
+                message: format!("same title as {}", others.join(", ")),
+                tag: None,
+            });
         }
     }
 }
@@ -969,6 +1073,117 @@ mod tests {
         assert!(!is_underspecified(&rich, &refine_rules()));
         // Feature off (no refine_tag) -> never underspecified, whatever the body.
         assert!(!is_underspecified(&empty, &RuleSet::default()));
+    }
+
+    #[test]
+    fn underspecified_flag_raised_for_open_thin_items_only() {
+        let rules = RuleSet {
+            refine_tag: Some("to refine".into()),
+            refine_min_chars: Some(40),
+            resolved_states: vec!["Closed".into()],
+            ..Default::default()
+        };
+        let n = now();
+        // Open + empty body -> flagged.
+        let open = item(|w| {
+            w.state = "Active".into();
+            w.description = None;
+        });
+        assert!(evaluate(std::slice::from_ref(&open), &rules, n)
+            .iter()
+            .any(|f| f.code == FlagCode::Underspecified));
+        // Resolved + empty body -> done, NOT flagged empty-body.
+        let done = item(|w| {
+            w.state = "Closed".into();
+            w.description = None;
+        });
+        assert!(evaluate(std::slice::from_ref(&done), &rules, n)
+            .iter()
+            .all(|f| f.code != FlagCode::Underspecified));
+        // A rich body -> not flagged.
+        let rich = item(|w| w.description = Some("x".repeat(100)));
+        assert!(evaluate(std::slice::from_ref(&rich), &rules, n)
+            .iter()
+            .all(|f| f.code != FlagCode::Underspecified));
+        // Feature off (no refine_tag) -> never flagged.
+        assert!(
+            evaluate(std::slice::from_ref(&open), &RuleSet::default(), n)
+                .iter()
+                .all(|f| f.code != FlagCode::Underspecified)
+        );
+    }
+
+    #[test]
+    fn bad_title_flag_is_config_driven() {
+        let rules = RuleSet {
+            bad_title_terms: vec!["test".into(), "asdf".into(), "untitled".into()],
+            ..Default::default()
+        };
+        let n = now();
+        let listed = item(|w| w.title = "Test".into()); // case-insensitive match
+        assert!(evaluate(std::slice::from_ref(&listed), &rules, n)
+            .iter()
+            .any(|f| f.code == FlagCode::BadTitle));
+        let short = item(|w| w.title = "ab".into()); // too short
+        assert!(evaluate(std::slice::from_ref(&short), &rules, n)
+            .iter()
+            .any(|f| f.code == FlagCode::BadTitle));
+        let good = item(|w| w.title = "Add retry to the poller".into());
+        assert!(evaluate(std::slice::from_ref(&good), &rules, n)
+            .iter()
+            .all(|f| f.code != FlagCode::BadTitle));
+        // Off when no terms configured.
+        assert!(
+            evaluate(std::slice::from_ref(&listed), &RuleSet::default(), n)
+                .iter()
+                .all(|f| f.code != FlagCode::BadTitle)
+        );
+    }
+
+    #[test]
+    fn duplicate_titles_flagged_only_when_enabled_and_open() {
+        let mut rules = RuleSet {
+            flag_duplicate_titles: true,
+            resolved_states: vec!["Closed".into()],
+            ..Default::default()
+        };
+        let n = now();
+        let a = item(|w| {
+            w.id = 1;
+            w.title = "Fix the login bug".into();
+            w.state = "Active".into();
+        });
+        let b = item(|w| {
+            w.id = 2;
+            w.title = "fix the login  bug.".into(); // normalises equal to a
+            w.state = "New".into();
+        });
+        assert_eq!(
+            evaluate(&[a.clone(), b.clone()], &rules, n)
+                .iter()
+                .filter(|f| f.code == FlagCode::Duplicate)
+                .count(),
+            2
+        );
+        // A CLOSED item sharing the title is excluded (recurring done work); a lone open
+        // title is not a duplicate.
+        let closed = item(|w| {
+            w.id = 3;
+            w.title = "Fix the login bug".into();
+            w.state = "Closed".into();
+        });
+        let lone = item(|w| {
+            w.id = 4;
+            w.title = "Something unique".into();
+        });
+        assert!(evaluate(&[closed, lone], &rules, n)
+            .iter()
+            .all(|f| f.code != FlagCode::Duplicate));
+        // Off when the toggle is false.
+        rules.flag_duplicate_titles = false;
+        assert!(evaluate(&[a, b], &rules, n)
+            .iter()
+            .all(|f| f.code != FlagCode::Duplicate));
     }
 
     #[test]

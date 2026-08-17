@@ -59,6 +59,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (e.g. "to be clarified"), so a stub padded out by a long URL is still flagged.
 - **Persistent table filters** — each table remembers its per-column filters and
   sort across reloads (local storage).
+- **Empty-body flag** — open work items with an empty/very thin description are
+  flagged (the most upstream hygiene gap), with a dashboard count and a *Hide empty
+  body* toggle so you can work the items that have content first.
+- **Healthcheck flags (deterministic)** — opt-in detection of **duplicate titles**
+  (likely raised-twice items, excluding resolved/recurring work) and **placeholder
+  titles** (`test`, `asdf`, `Untitled`, …, via `bad_title_terms`). Surface as flags,
+  so they reuse the chips, dashboard counts, and filters.
+- **Markdown field editor** — a formatting toolbar + Edit/Preview toggle on rich
+  fields; AI drafts land in a **review pane** (Use / Discard) rather than overwriting,
+  operate on the live unsaved editor state, and have malformed links auto-repaired.
 
 ### Fixed
 - **Azure DevOps bug bodies** — bugs carry their body in *Repro Steps*, not

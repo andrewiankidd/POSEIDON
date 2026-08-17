@@ -386,10 +386,10 @@ export const api = {
     }),
   /** AI-draft (or improve) one field from the item's context. Returns { value }
    *  (markdown) for the editor to drop in - never auto-saved. */
-  draftWorkItemField: (id, { team, reference, improve }) =>
+  draftWorkItemField: (id, { team, reference, improve, fields }) =>
     request('/work-items/' + encodeURIComponent(id) + '/fields/draft', {
       method: 'POST',
-      body: { team, reference, improve: !!improve },
+      body: { team, reference, improve: !!improve, fields: fields || [] },
     }),
   /** Replace the instance-wide default ruleset. `rules` = a full RuleSet. */
   updateRules: (rules) =>

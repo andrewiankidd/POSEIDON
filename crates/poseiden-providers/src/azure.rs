@@ -1954,3 +1954,23 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod link_roundtrip {
+    use super::{html_to_md, md_to_html};
+
+    #[test]
+    fn a_valid_link_survives_html_md_html_round_trip() {
+        // A real ADO link with a gnarly URL (underscore, &, //, %40) must round-trip
+        // through the editor's markdown intact - the field editor's save path is
+        // html(from ADO) -> md(edit) -> html(back). Regression guard: proves a broken
+        // link after saving is the model's doing, not our conversion.
+        let html = "<div>See <a href=\"https://dev.azure.com/x/_search?text=a%40b.com&amp;lp=custom-Collection&amp;result=DevOps/App/GBmaster//azure-pipelines/cd.yml\">the pipeline</a>.</div>";
+        let back = md_to_html(&html_to_md(html));
+        assert!(
+            back.contains("<a href=\"https://dev.azure.com/x/_search?text=a%40b.com"),
+            "link lost in round-trip: {back}"
+        );
+        assert!(back.contains(">the pipeline</a>"), "link text lost: {back}");
+    }
+}

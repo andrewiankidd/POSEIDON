@@ -387,6 +387,16 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 .editor-md-preview > :last-child { margin-bottom: 0; }
 .editor-ai-row { display: flex; justify-content: flex-end; }
 .editor-ai { color: var(--accent); border-color: var(--accent); }
+/* AI review pane: the proposed text shown before it replaces the field (Use/Discard). */
+.editor-ai-result-slot:empty { display: none; }
+.editor-ai-result { margin-top: 6px; border: 1px solid var(--accent); border-radius: 7px; background: var(--panel-2); overflow: hidden; }
+.editor-ai-result-head { font-size: 11px; font-weight: 600; color: var(--accent); padding: 6px 10px 4px; }
+.editor-ai-result-body {
+  white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.5;
+  padding: 0 10px 8px; max-height: 260px; overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.editor-ai-result-actions { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
 .editor-ro { font-size: 13px; color: var(--ink); padding: 5px 0; }
 .editor-check { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
 .editor-footer { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
