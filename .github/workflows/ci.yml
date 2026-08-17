@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel an in-progress run when a newer commit lands on the same ref (branch or
+# PR). Stops superseded runs — especially Dependabot rebases — from piling up and
+# burning Actions minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
