@@ -7,6 +7,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Board (Kanban) view for Work Items** — a *View* dropdown (leading the toolbar)
+  switches the Work Items screen between the table and a Kanban board, grouping the
+  same items into columns **by State** or by any tag axis present in the data
+  (`area:` / `product:` / `source:` / …). Cards link out to the provider item and
+  carry the edit pencil; the Rule Breaks / Hide empty / flag filters apply to the
+  board too. The chosen view persists across refreshes (per view, with the toggles).
 - **Required-aware AI tagging** — the tagger is told which tag categories a team
   requires (e.g. `area:*`, `source:*`) and makes a best-effort pick for any the
   item doesn't yet satisfy, instead of staying silent; everything else keeps the
