@@ -1,0 +1,33 @@
+[package]
+publish = false
+name = "poseidon-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON CLI - poll / lint / report over the same Service the GUI uses. `poseidon lint` exits non-zero on error-severity flags so CI can gate pipelines on backlog hygiene."
+
+[[bin]]
+name = "poseidon"
+path = "src/main.rs"
+
+[dependencies]
+poseidon-core = { workspace = true }
+poseidon-paths = { workspace = true }
+poseidon-server = { workspace = true }
+poseidon-store = { workspace = true }
+poseidon-telemetry = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# GPU tagging from the CLI: forwards to poseidon-server -> poseidon-ai's candle
+# CUDA build. Off by default (CPU build runs anywhere); build a GPU tagging
+# binary with `cargo build -p poseidon-cli --features cuda` on a CUDA host, then
+# `poseidon tag` runs the embedded model on the NVIDIA GPU. This is the headless
+# GPU path (the WebGPU one is browser-only and can't reach the CLI).
+cuda = ["poseidon-server/cuda"]

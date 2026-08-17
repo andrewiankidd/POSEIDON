@@ -1,0 +1,184 @@
+{{- $server := printf "http://%s" .Values.ingress.host -}}
+{{- $clientHost := .Values.localhost.clientHost | default (printf "client-%s" .Values.ingress.host) -}}
+{{- $client := printf "http://%s" $clientHost -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POSEIDON - localhost</title>
+<!-- Links open in a new tab so this hub stays put. -->
+<base target="_blank">
+<meta name="referrer" content="no-referrer">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --fg: #1a1d21;
+    --muted: #666c76;
+    --card: #ffffff;
+    --border: #e4e7eb;
+    --accent: #0d9488;
+    --code-bg: #eef1f4;
+    --callout-bg: #fff8e1;
+    --callout-border: #f0d68a;
+    --purpose: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --fg: #e5e7eb;
+      --muted: #9aa1ab;
+      --card: #131a27;
+      --border: #222c3d;
+      --accent: #2dd4bf;
+      --code-bg: #1b2433;
+      --callout-bg: #2a2419;
+      --callout-border: #4a3f22;
+      --purpose: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+  header { margin-bottom: 8px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .brand-mark { color: var(--accent); }
+  header .lead { margin: 6px 0 0; color: var(--muted); font-size: 15px; flex-basis: 100%; }
+  h2 {
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted); margin: 34px 0 12px;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 6px;
+    transition: border-color 0.15s ease;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card-repo {
+    font-size: 15px; font-weight: 600; margin: 0;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .card-repo a { color: var(--fg); text-decoration: none; }
+  .card-repo a:hover { color: var(--accent); }
+  .card-subtitle { font-size: 12.5px; color: var(--muted); font-weight: 500; margin-top: -3px; }
+  .card-purpose { font-size: 12.5px; color: var(--purpose); margin-top: 2px; font-weight: 500; }
+  .card-url {
+    display: inline-block; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--muted); text-decoration: none; margin-top: 4px; word-break: break-all;
+  }
+  .card-url:hover { color: var(--accent); text-decoration: underline; }
+  .card-desc { font-size: 13px; color: var(--muted); margin: 4px 0 0; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 6px 0 0; font-size: 12.5px; }
+  .kv dt { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fg); word-break: break-all; }
+  .card-links {
+    margin-top: auto; padding-top: 12px; display: flex; flex-wrap: wrap; gap: 6px 10px;
+    font-size: 12px; border-top: 1px solid var(--border);
+  }
+  .card-links a { color: var(--accent); text-decoration: none; }
+  .card-links a:hover { text-decoration: underline; }
+  .card-links .sep { color: var(--muted); }
+  .tag {
+    display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    background: var(--code-bg); color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; vertical-align: middle; margin-left: 6px;
+  }
+  .tag.demo { background: rgba(13, 148, 136, 0.15); color: var(--accent); }
+  .tag.client { background: rgba(150, 100, 200, 0.15); color: #a175d1; }
+  .callout { background: var(--callout-bg); border: 1px solid var(--callout-border); border-radius: 8px; padding: 16px 20px; font-size: 14px; }
+  .callout strong { display: block; margin-bottom: 6px; font-size: 15px; }
+  .callout code, .card-desc code, .lead code { background: rgba(127,127,127,0.16); padding: 1px 6px; border-radius: 3px; font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  pre.cheatsheet {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; overflow-x: auto; margin: 0; line-height: 1.7; color: var(--fg);
+  }
+  pre.cheatsheet .comment { color: var(--muted); }
+  footer {
+    margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 13px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .local-only-note { color: var(--muted); font-size: 12px; margin-top: 20px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="brand-mark">POSEIDON</span> localhost</h1>
+    <p class="lead">The playground is up: a server, and a web client pointed at it. Single tenant (auth off), seeded with offline demo data, so no Azure DevOps org or PAT is needed.</p>
+  </header>
+
+  <h2>Playground</h2>
+  <div class="grid">
+
+    <div class="card">
+      <h3 class="card-repo"><a href="{{ $server }}">server</a><span class="tag demo">demo</span></h3>
+      <div class="card-subtitle">Web instance</div>
+      <div class="card-purpose">The hosted instance you would deploy for a team</div>
+      <a class="card-url" href="{{ $server }}">{{ $server }}</a>
+      <p class="card-desc">Seeded with the offline <code>stub</code> provider: 8 work items (3 flagged), 3 pipelines, 3 pull requests. Poll, lint, and report all work with no real backend.</p>
+      <dl class="kv">
+        <dt>tenant</dt><dd>default (auth off)</dd>
+        <dt>storage</dt><dd>SQLite, in-pod</dd>
+      </dl>
+      <div class="card-links">
+        <a href="{{ $server }}/app.html">Open app</a>
+        <span class="sep">/</span>
+        <a href="{{ $server }}/api/health">API health</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-repo"><a href="{{ $client }}">client</a><span class="tag client">repointed</span></h3>
+      <div class="card-subtitle">Web client</div>
+      <div class="card-purpose">The same bundle running as a remote client of the server</div>
+      <a class="card-url" href="{{ $client }}">{{ $client }}</a>
+      <p class="card-desc">Boots pre-pointed at the server via <code>env.js</code>, the same repoint a desktop or mobile client does, running headless in the browser.</p>
+      <dl class="kv">
+        <dt>instance</dt><dd>{{ $server }}</dd>
+        <dt>storage</dt><dd>none (thin client)</dd>
+      </dl>
+      <div class="card-links">
+        <a href="{{ $client }}/app.html">Open app</a>
+      </div>
+    </div>
+
+  </div>
+
+  <h2>Test tenant</h2>
+  <div class="callout">
+    <strong>Single tenant, everyone is the <code>default</code> owner</strong>
+    <p style="margin:0;">Auth is off in the playground, so every request maps to the shared <code>default</code> tenant, where the demo data lives. To exercise multi-tenant isolation, redeploy with <code>auth.enabled=true</code> and a provider, then sign in as different users.</p>
+  </div>
+
+  <h2>Cheatsheet</h2>
+  <pre class="cheatsheet"><span class="comment"># open the playground (build, deploy, seed, open)</span>
+POSEIDON_VALUES=deploy/helm/poseidon/ci/minikube-localhost-values.yaml ./poseidon.sh up
+
+<span class="comment"># headless stack test: chart + image + stub provider + tenant isolation</span>
+./poseidon.sh verify
+
+<span class="comment"># show what is running</span>
+./poseidon.sh status
+
+<span class="comment"># tear it down (also stops the ingress forward)</span>
+./poseidon.sh down</pre>
+
+  <p class="local-only-note">Served on your machine only, by the chart's <code>templates/localhost.yaml</code>. Reachable via poseidon.sh's ingress forward on port 80; *.localhost resolves to 127.0.0.1 in Chrome and Edge.</p>
+
+  <footer>
+    <span>POSEIDON playground</span>
+    <span>server + client + this hub &middot; see <code>docs/RUNNING.md</code></span>
+  </footer>
+</div>
+</body>
+</html>

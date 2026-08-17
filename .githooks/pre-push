@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# POSEIDEN pre-push hook.
+# POSEIDON pre-push hook.
 #
 # Fast static-analysis checks before code leaves the machine - faster failure
 # than waiting for CI to flag the same issues. Mirrors CI's static-analysis

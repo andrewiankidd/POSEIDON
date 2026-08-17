@@ -86,7 +86,7 @@ are skipped.
 
 ## CLI
 
-`poseiden lint` evaluates the same rules over the stored items and prints the
+`poseidon lint` evaluates the same rules over the stored items and prints the
 flags. It polls fresh first unless `--no-poll`, and **exits 1 if any
 error-severity flag is found** - so it drops straight into CI as a backlog gate.
 
@@ -148,7 +148,7 @@ tag when the ruleset marks it an error), else `0` - the CI-gating contract.
 - **Policy** - which tags/states/staleness get flagged is all in the
   [Rules](rules.md), per team.
 - **Edits** - State / Tags / PR-link edits go straight to the provider (Azure
-  DevOps; GitHub and GitLab are read-only); POSEIDEN then re-reads the canonical
+  DevOps; GitHub and GitLab are read-only); POSEIDON then re-reads the canonical
   result.
 
 ## See also

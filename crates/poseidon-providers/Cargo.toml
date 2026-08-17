@@ -1,0 +1,28 @@
+[package]
+publish = false
+name = "poseidon-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON provider integrations - the Provider trait plus the Azure DevOps client. Fetches work items + pipeline runs and normalises them into poseidon-core shapes."
+
+[dependencies]
+poseidon-core = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+async-trait = "0.1"
+base64 = "0.22"
+percent-encoding = "2"
+# Rich-text field round-trip: Azure DevOps stores html; the editor works in markdown.
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+html2md = "0.2"
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

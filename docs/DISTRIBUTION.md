@@ -1,21 +1,21 @@
 # Distribution & deployment
 
-Every way POSEIDEN ships, and how each is built + published. If a deploy target
+Every way POSEIDON ships, and how each is built + published. If a deploy target
 feels missing, it should be listed here - this page is the single index of
-"where does POSEIDEN run and how does it get there."
+"where does POSEIDON run and how does it get there."
 
 ## The shape of it
 
-POSEIDEN is **one frontend bundle** (`frontend/web/`) and **one server binary**
-(`poseiden-server`), delivered several ways:
+POSEIDON is **one frontend bundle** (`frontend/web/`) and **one server binary**
+(`poseidon-server`), delivered several ways:
 
 | Target | What it is | Built by | Published to |
 |--------|-----------|----------|--------------|
 | **Landing + web client** | Static `frontend/web/` (landing at `/`, app at `/app.html`) | `pages.yml` | GitHub Pages (or Cloudflare Pages) |
-| **Web instance** | Container running `poseiden-server` (API + serves the frontend) | `docker.yml` | GHCR (`ghcr.io/andrewiankidd/poseiden`) |
-| **Kubernetes** | The image + a Helm chart (PVC, single replica) | - (chart in `deploy/helm/poseiden`) | your cluster |
+| **Web instance** | Container running `poseidon-server` (API + serves the frontend) | `docker.yml` | GHCR (`ghcr.io/andrewiankidd/poseidon`) |
+| **Kubernetes** | The image + a Helm chart (PVC, single replica) | - (chart in `deploy/helm/poseidon`) | your cluster |
 | **Desktop** | Tauri installers (Windows/macOS/Linux) | `release.yml` | GitHub Releases |
-| **CLI** | `poseiden` archive per platform | `release.yml` | GitHub Releases |
+| **CLI** | `poseidon` archive per platform | `release.yml` | GitHub Releases |
 | **Mobile** | Android APK (best-effort) | `release.yml` | GitHub Releases |
 
 The key relationship: **the landing page and the web client are static and
@@ -31,7 +31,7 @@ download buttons, "Launch in browser"); `app.html` is the actual application.
 
 **One-time setup:** Settings → Pages → Build and deployment → **Source: GitHub
 Actions**. No `gh-pages` branch, no build step (the frontend is pure static -
-POSEIDEN has no WASM, unlike some sibling projects).
+POSEIDON has no WASM, unlike some sibling projects).
 
 The download links on the landing page point at GitHub Releases `latest` assets
 by stable filename, so they resolve the same URL release-to-release.
@@ -61,18 +61,18 @@ Run it:
 
 ```bash
 docker run -p 8737:8737 \
-  --env-file poseiden.env \
-  -v poseiden-data:/data \
-  ghcr.io/andrewiankidd/poseiden:latest-main
+  --env-file poseidon.env \
+  -v poseidon-data:/data \
+  ghcr.io/andrewiankidd/poseidon:latest-main
 ```
 
-No config file to mount: instance settings come from env (`poseiden.env`), and
+No config file to mount: instance settings come from env (`poseidon.env`), and
 teams/rules live in the DB on the volume - add them in the UI, or seed with
-`poseiden config import` (see [CLI.md](CLI.md)).
+`poseidon config import` (see [CLI.md](CLI.md)).
 
 Any provider token is passed via `--env-file` (or a Kubernetes/Compose secret),
 **never** inline on the command line where it lands in shell history and the
-process list. `poseiden.env` holds `POSEIDEN_AZURE_PAT=...` (and any GitHub /
+process list. `poseidon.env` holds `POSEIDON_AZURE_PAT=...` (and any GitHub /
 GitLab token env vars) and stays out of version control. For Azure DevOps,
 polling needs Work Items (Read) + Build (Read); because the web instance serves
 the full UI (which writes State/Tags and work-item↔PR links back to Azure DevOps),
@@ -85,7 +85,7 @@ statically, and stores data on the `/data` volume.
 
 ## 4. Kubernetes (Helm)
 
-Chart at [`deploy/helm/poseiden`](../deploy/helm/poseiden). Single replica
+Chart at [`deploy/helm/poseidon`](../deploy/helm/poseidon). Single replica
 (SQLite is a single writer) on a **ReadWriteOnce** PVC.
 
 Released versions are published to GHCR as an OCI artifact by
@@ -94,28 +94,28 @@ appVersion set to the tag, so the chart deploys the image built on the same tag)
 Install a release without a checkout:
 
 ```bash
-helm install poseiden oci://ghcr.io/andrewiankidd/charts/poseiden --version 0.2.0 \
-  --set azureDevOps.existingSecret=poseiden-pat \
+helm install poseidon oci://ghcr.io/andrewiankidd/charts/poseidon --version 0.2.0 \
+  --set azureDevOps.existingSecret=poseidon-pat \
   --set persistence.size=2Gi
 ```
 
 …or straight from a working copy (unreleased / local changes):
 
 ```bash
-helm install poseiden deploy/helm/poseiden \
-  --set azureDevOps.existingSecret=poseiden-pat \
+helm install poseidon deploy/helm/poseidon \
+  --set azureDevOps.existingSecret=poseidon-pat \
   --set persistence.size=2Gi
 ```
 
-- **Auth** is a mesh concern - POSEIDEN ships no login. Gate the service with an
+- **Auth** is a mesh concern - POSEIDON ships no login. Gate the service with an
   Istio `AuthorizationPolicy` / `RequestAuthentication`.
 - **PAT** - prefer `azureDevOps.existingSecret` (a Secret you manage) over the
   inline `azureDevOps.pat` convenience value.
 - **Config** (projects + rules) lives in the DB on the PV - set via the UI, or
-  `poseiden config import` for GitOps. Instance settings are env (chart values →
+  `poseidon config import` for GitOps. Instance settings are env (chart values →
   Deployment env); no ConfigMap.
 
-> **Build any of these locally.** `./poseiden.sh build {desktop | cli | apk | image}`
+> **Build any of these locally.** `./poseidon.sh build {desktop | cli | apk | image}`
 > runs the same commands documented below - for dogfooding a build without waiting
 > on CI. See [RUNNING.md](RUNNING.md#hosted).
 
@@ -132,8 +132,8 @@ pre-release; `v*` tags create a draft versioned release.
 
 ## 6. CLI
 
-Same `release.yml` matrix builds `poseiden-cli` into a per-platform archive
-(`poseiden-cli-{windows,linux,macos}.{zip,tar.gz}`) with the binary and licenses.
+Same `release.yml` matrix builds `poseidon-cli` into a per-platform archive
+(`poseidon-cli-{windows,linux,macos}.{zip,tar.gz}`) with the binary and licenses.
 See [CLI.md](CLI.md) for usage.
 
 ## 7. Mobile (Android)
@@ -141,7 +141,7 @@ See [CLI.md](CLI.md) for usage.
 `build-android` in `release.yml` runs `cargo tauri android build` (debug-signed
 APK, best-effort / `continue-on-error`). The primary mobile story is a
 **repointed** client: install the APK, open Settings, set your instance URL, and
-you're carrying your hosted POSEIDEN on the go. iOS is a backlog item.
+you're carrying your hosted POSEIDON on the go. iOS is a backlog item.
 
 ## Versioning & tags
 

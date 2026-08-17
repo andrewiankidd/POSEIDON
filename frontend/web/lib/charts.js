@@ -1,5 +1,5 @@
 // Dependency-free SVG charts. The brief suggested chart.js, but a small
-// self-contained SVG renderer honours POSEIDEN's portable-first principle
+// self-contained SVG renderer honours POSEIDON's portable-first principle
 // better (no ~200 KB vendored blob, works offline / air-gapped) and covers the
 // two shapes the Reports view needs: a horizontal bar chart and a success-rate
 // gauge. Swapping in chart.js later is a drop-in if richer interactivity is

@@ -1,0 +1,24 @@
+# Standalone cluster (nginx ingress) + GitHub org auth, TLS, credentials from an
+# existing Secret (keys client-id / client-secret). The GitHub OAuth app's
+# callback URL must be https://<host>/oauth2/callback.
+ingress:
+  type: nginx
+  className: nginx
+  host: poseidon.example.com
+  tls:
+    - secretName: poseidon-tls
+      hosts:
+        - poseidon.example.com
+
+azureDevOps:
+  existingSecret: poseidon-ado-pat
+
+auth:
+  enabled: true
+  provider: github
+  github:
+    orgs: ["my-github-org"]
+    existingSecret: poseidon-oauth
+    existingSecretKeys:
+      clientId: client-id
+      clientSecret: client-secret

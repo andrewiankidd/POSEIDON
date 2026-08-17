@@ -1,7 +1,7 @@
 # cargo-audit configuration.
 #
 # Kept in sync with the `ignore` list in `deny.toml`. Empty to start -
-# POSEIDEN's core dependency stack has no standing RustSec advisories.
+# POSEIDON's core dependency stack has no standing RustSec advisories.
 #
 # When a NEW advisory lands on a crate we actually use, prefer to upgrade
 # the dependency. Only add an entry here (with an explicit justification
@@ -12,7 +12,7 @@
 ignore = [
     # rsa (transitive, via an AI/HTTP dependency): Marvin Attack timing
     # sidechannel. There is NO upstream fix yet - the rsa crate is mid-migration
-    # to a constant-time implementation. POSEIDEN never performs remote-observable
+    # to a constant-time implementation. POSEIDON never performs remote-observable
     # RSA operations, so this is non-actionable for us. Revisit when a patched
     # rsa releases. https://rustsec.org/advisories/RUSTSEC-2023-0071
     "RUSTSEC-2023-0071",

@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "poseidon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "POSEIDON domain types - provider-agnostic normalised shapes (work items, pipelines, flags, reports) + config schema. IO-free, the shared wire schema across HTTP, Tauri IPC, and the CLI."
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+# Telemetry settings live in the config schema. Core only touches the IO-free
+# `TelemetrySettings` types; the OTEL machinery is pulled in by the binaries, so
+# core stays light in a core-only build.
+poseidon-telemetry = { workspace = true }
+
+[dev-dependencies]
+# Config is JSON in the DB (per-owner `UserConfig` blob) - tests parse that shape.
+serde_json = { workspace = true }

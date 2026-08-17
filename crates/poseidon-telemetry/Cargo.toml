@@ -1,0 +1,37 @@
+[package]
+publish = false
+name = "poseidon-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Centralised, portable observability (tracing + OTLP + file) for POSEIDON and reusable across Rust apps."
+
+[features]
+# OTLP export to an OpenTelemetry collector / Grafana LGTM stack. On by default;
+# compile out with --no-default-features if the OTEL stack is unavailable - the
+# console + file sinks keep working with zero OTEL dependencies.
+default = ["otlp"]
+otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tracing-opentelemetry",
+]
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "fmt", "registry", "ansi"] }
+tracing-appender = "0.2"
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+# OTLP / OpenTelemetry - optional, behind the `otlp` feature.
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-rustls"], optional = true }
+opentelemetry-appender-tracing = { version = "0.27", optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }

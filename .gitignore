@@ -2,11 +2,11 @@
 **/*.rs.bk
 
 # Tauri-generated artifacts (once `cargo tauri init/android init/ios init` runs)
-/crates/poseiden-app/gen/
-/crates/poseiden-app/target/
+/crates/poseidon-app/gen/
+/crates/poseidon-app/target/
 
 # Portable-mode data dir - SQLite DB, logs, config overrides, cache live
-# here when POSEIDEN_PORTABLE_MODE=true / a `.portable` sentinel exists.
+# here when POSEIDON_PORTABLE_MODE=true / a `.portable` sentinel exists.
 /.portable/
 **/.portable/
 

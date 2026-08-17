@@ -26,7 +26,7 @@ Open **Pipelines** from the sidebar (hash route `#pipelines`).
 
 ## CLI
 
-No dedicated command - pipeline **flow** is summarised by `poseiden report`
+No dedicated command - pipeline **flow** is summarised by `poseidon report`
 (runs, succeeded/failed, success rate; see [Reports](reports.md)). Per-pipeline
 status is a GUI view.
 

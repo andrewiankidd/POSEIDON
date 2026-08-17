@@ -1,0 +1,19 @@
+{{- if and .Values.ingress.enabled (eq .Values.ingress.type "istio") }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "poseidon.fullname" . }}
+  labels:
+    {{- include "poseidon.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ .Values.ingress.host | quote }}
+  gateways:
+    - {{ .Values.ingress.istio.gateway }}
+  http:
+    - route:
+        - destination:
+            host: {{ include "poseidon.fullname" . }}
+            port:
+              number: {{ .Values.service.port }}
+{{- end }}

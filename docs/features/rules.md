@@ -2,7 +2,7 @@
 
 The hygiene policy every flag is measured against - required/allowed/denied tags,
 staleness limits, PR + pipeline checks - defined per team. Rules are **data, not
-code**: POSEIDEN never hard-codes a team's convention, so tuning the policy is a
+code**: POSEIDON never hard-codes a team's convention, so tuning the policy is a
 config edit, no rebuild.
 
 ## GUI
@@ -56,8 +56,8 @@ The rules engine emits these work-item hygiene flags (each advisory; the CLI's
 ## CLI
 
 Rules aren't edited from the CLI; they live in the database (edit them on the
-Rules screen, or via `poseiden config import`) and are **enforced** by
-`poseiden lint` (see [Work Items](work-items.md)). The ruleset:
+Rules screen, or via `poseidon config import`) and are **enforced** by
+`poseidon lint` (see [Work Items](work-items.md)). The ruleset:
 
 ```toml
 [rules]
@@ -106,11 +106,11 @@ shape. Tag matching is case-insensitive; a trailing `*` is a prefix wildcard
 
 - **Config** - stored per owner in the DB: an instance-default ruleset plus an
   optional per-team override. Edited on the Rules screen or via `config import`.
-- **Engine** - the `poseiden-rules` crate interprets the rules; the same engine
-  runs on read (GUI flags) and in `poseiden lint` (CLI), so they never drift.
+- **Engine** - the `poseidon-rules` crate interprets the rules; the same engine
+  runs on read (GUI flags) and in `poseidon lint` (CLI), so they never drift.
 
 ## See also
 
-- [Work Items](work-items.md) - where work-item flags surface + `poseiden lint`.
+- [Work Items](work-items.md) - where work-item flags surface + `poseidon lint`.
 - [Pull Requests](pull-requests.md) · [Pipelines](pipelines.md) - the PR + pipeline checks.
 - [Setup](setup.md) - teams, sign-in, and configuration.

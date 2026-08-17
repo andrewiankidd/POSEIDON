@@ -53,6 +53,14 @@ export function dataTable(columns, rows, opts = {}) {
   let page = 0;
   const pageSize = opts.pageSize > 0 ? opts.pageSize : 0; // 0 = show all
 
+  // Optional cross-refresh persistence: when `opts.persistKey` is set, the view's
+  // filters + choice selections + sort are mirrored to localStorage so a reload (or
+  // navigating away and back) restores them. Selection + page are intentionally NOT
+  // persisted (they're tied to a specific data snapshot). Rehydrated here, BEFORE the
+  // header inputs are built, so their initial values reflect the restored state.
+  const persistKey = opts.persistKey ? `poseidon.tablefilters.${opts.persistKey}` : null;
+  loadState();
+
   // Multi-select. `selected` holds row keys; selection persists across filtering
   // + sorting (by key), so hidden-but-selected rows stay selected.
   const selectable = !!opts.selectable;
@@ -93,10 +101,10 @@ export function dataTable(columns, rows, opts = {}) {
       if (col.filterChoices) fth.appendChild(buildChoiceFilter(i, col));
       else {
         fth.appendChild(el('input', {
-          class: 'dt-filter-input', type: 'text',
+          class: 'dt-filter-input', type: 'text', value: filters[i],
           placeholder: col.filterPlaceholder || 'filter', 'aria-label': `Filter ${col.label}`,
           title: col.filterMatch ? undefined : 'comma = match any (active, resolved); ! = exclude (!closed)',
-          oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; render(); },
+          oninput: (e) => { filters[i] = e.target.value.trim().toLowerCase(); page = 0; saveState(); render(); },
         }));
       }
     }
@@ -123,7 +131,9 @@ export function dataTable(columns, rows, opts = {}) {
     class: 'dt-sel-clear', href: '#', onclick: (e) => { e.preventDefault(); selected.clear(); render(); },
   }, 'clear');
   const toolbar = el('div', { class: 'dt-toolbar' }, [
-    ...(opts.toolbar || []), selCount, selClear, el('span', { class: 'dt-spacer' }), count, clearLink,
+    // Selection count + clear lead the toolbar (before Rule Breaks etc.); both are
+    // hidden when nothing is selected so they add no leading gap.
+    selCount, selClear, ...(opts.toolbar || []), el('span', { class: 'dt-spacer' }), count, clearLink,
   ]);
 
   // Pager (only shown when there's more than one page).
@@ -132,7 +142,22 @@ export function dataTable(columns, rows, opts = {}) {
   const pageLabel = el('span', { class: 'dt-page-label' }, '');
   const pager = el('div', { class: 'dt-pager' }, [prevBtn, pageLabel, nextBtn]);
 
-  const wrap = el('div', {}, [toolbar, tableWrap, pager]);
+  // `noToolbar` omits the built-in toolbar row (the caller supplies a lifted toolbar,
+  // e.g. shared across a table+board view); the per-column filter row + selection API
+  // still work, so the external toolbar can drive them.
+  const wrap = el('div', {}, opts.noToolbar ? [tableWrap, pager] : [toolbar, tableWrap, pager]);
+  // Fill mode: the wrap becomes a flex column so only the table scrolls (header +
+  // toolbar stay fixed). Keep the sticky filter row's offset in sync with the real
+  // header-row height, which varies with zoom / font.
+  if (opts.fill) {
+    wrap.classList.add('dt-fill');
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => {
+        table.style.setProperty('--dt-head-h', `${headRow.offsetHeight}px`);
+      });
+      ro.observe(headRow);
+    }
+  }
 
   function valueOf(col, row) {
     return col.value ? col.value(row) : '';
@@ -223,7 +248,7 @@ export function dataTable(columns, rows, opts = {}) {
       allCb.checked = n === values.length;
       allCb.indeterminate = n > 0 && n < values.length;
     };
-    const commit = () => { page = 0; render(); };
+    const commit = () => { page = 0; saveState(); render(); };
 
     allCb.addEventListener('change', () => {
       choiceSel[i] = allCb.checked ? null : new Set(); // all vs none
@@ -390,16 +415,65 @@ export function dataTable(columns, rows, opts = {}) {
       if (sortDir === 1) sortDir = -1;      // asc -> desc
       else { sortIndex = null; sortDir = 1; } // desc -> unsorted
     } else { sortIndex = i; sortDir = 1; }   // new column -> asc
+    saveState();
     render();
   }
 
   function resetFilters() {
+    // Clears filters + choice selections; leaves the sort alone (that's what the
+    // column header toggles, and users expect "Clear" to mean "clear the filters").
     filters.fill('');
     choiceSel.fill(null);
     filterRow.querySelectorAll('.dt-filter-input').forEach((inp) => { inp.value = ''; });
     choiceSync.forEach((fn) => fn());
     page = 0;
+    saveState();
     render();
+  }
+
+  // Whether the view deviates from its pristine defaults (any filter, any choice
+  // selection, or a sort other than the configured initial one). Drives whether the
+  // persisted entry is worth keeping - a plain default view stores nothing.
+  function hasNonDefaultState() {
+    if (filters.some((f) => f)) return true;
+    if (choiceSel.some((s) => s != null)) return true;
+    const initIdx = opts.initialSort?.index ?? null;
+    const initDir = opts.initialSort?.dir ?? 1;
+    return sortIndex !== initIdx || (sortIndex != null && sortDir !== initDir);
+  }
+
+  // ── Cross-refresh persistence (no-op unless opts.persistKey is set) ──
+  function saveState() {
+    if (!persistKey) return;
+    try {
+      // Nothing to remember once the view is back to defaults - drop the entry so we
+      // don't leave empty state lying around (and so `loadState` stays cheap).
+      if (!hasNonDefaultState()) { localStorage.removeItem(persistKey); return; }
+      localStorage.setItem(persistKey, JSON.stringify({
+        v: 1,
+        cols: columns.length, // guard: ignore a stale entry if the columns changed
+        filters,
+        choice: choiceSel.map((s) => (s == null ? null : [...s])),
+        sort: sortIndex == null ? null : { index: sortIndex, dir: sortDir },
+      }));
+    } catch { /* localStorage unavailable / private mode / quota - persistence is best-effort */ }
+  }
+
+  function loadState() {
+    if (!persistKey) return;
+    let data;
+    try { data = JSON.parse(localStorage.getItem(persistKey) || 'null'); } catch { data = null; }
+    if (!data || data.cols !== columns.length) return;
+    if (Array.isArray(data.filters) && data.filters.length === columns.length) {
+      data.filters.forEach((f, i) => { filters[i] = String(f || ''); });
+    }
+    if (Array.isArray(data.choice) && data.choice.length === columns.length) {
+      data.choice.forEach((c, i) => { choiceSel[i] = Array.isArray(c) ? new Set(c) : null; });
+    }
+    if (data.sort && Number.isInteger(data.sort.index) && data.sort.index < columns.length) {
+      sortIndex = data.sort.index;
+      sortDir = data.sort.dir === -1 ? -1 : 1;
+    }
   }
 
   // Header checkbox: select or clear every currently-filtered row (all pages).
@@ -420,6 +494,8 @@ export function dataTable(columns, rows, opts = {}) {
   function updateSelectionUI() {
     if (!selectable) return;
     selCount.textContent = selected.size ? `${selected.size} selected` : '';
+    // Hide both when nothing is selected so they add no leading gap before the toggles.
+    selCount.style.display = selected.size ? '' : 'none';
     selClear.style.display = selected.size ? '' : 'none';
     const keys = lastShown.map(keyOf);
     const inSel = keys.filter((k) => selected.has(k)).length;
@@ -552,6 +628,8 @@ export function dataTable(columns, rows, opts = {}) {
     nextBtn.disabled = page >= pageCount - 1;
 
     updateSelectionUI();
+    // Let a caller mirror the shown/total count in its own (lifted) toolbar.
+    if (typeof opts.onRender === 'function') opts.onRender(lastShown.length, rows.length);
   }
 
   wrap.refresh = render;
@@ -570,6 +648,15 @@ export function dataTable(columns, rows, opts = {}) {
   // for exporting exactly what the user has narrowed to.
   wrap.getVisibleRows = () => lastShown.slice();
   wrap.clearSelection = () => { selected.clear(); render(); };
+  // Selection API for an external (lifted) view - e.g. a board that drives the SAME
+  // selection so the shared action buttons act on it, whichever view is showing.
+  wrap.isSelected = (key) => selected.has(key);
+  wrap.setSelected = (key, on) => { if (on) selected.add(key); else selected.delete(key); render(); };
+  wrap.selectKeys = (keys, on) => {
+    for (const k of keys) { if (on) selected.add(k); else selected.delete(k); }
+    render();
+  };
+  wrap.resetFilters = resetFilters;
   render();
   return wrap;
 }

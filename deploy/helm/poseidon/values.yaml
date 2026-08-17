@@ -1,0 +1,313 @@
+# Default values for POSEIDON.
+#
+# One chart, two environments, switched by values alone:
+#   - Standalone cluster (minikube / bare k8s + nginx ingress): ingress.type=nginx.
+#     The chart is self-contained; with auth.enabled it brings its own
+#     oauth2-proxy (and, for dex/keycloak, a bundled identity provider).
+#   - Enterprise cluster (Istio mesh + shared gateway): ingress.type=istio.
+#     The chart creates a VirtualService (+ AuthorizationPolicy when auth is on)
+#     and delegates the auth challenge to the mesh's ext-authz pattern.
+#
+# POSEIDON is a single-writer service (SQLite on a ReadWriteOnce volume), so it
+# runs as ONE replica. Scaling horizontally would need the Postgres store swap
+# (the Store trait is the seam). Don't raise replicaCount here.
+
+# ── Application image ────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/andrewiankidd/poseidon
+  tag: ""            # defaults to .Chart.appVersion when empty
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Fixed at 1 - see the note above. Strategy is Recreate so the old pod releases
+# the RWO volume before the new one starts.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80          # Service port
+  targetPort: 8737  # Container port POSEIDON binds
+
+# ── NetworkPolicy - lock the app to the proxy/ingress ────────────────────────
+# The app TRUSTS the X-Auth-Request-Email header (that IS its identity). The
+# ingress overwrites that header from oauth2-proxy on every request, so it can't
+# be spoofed THROUGH the ingress - but by default any pod in the cluster can hit
+# the app Service directly and set the header itself, impersonating any tenant.
+# This policy closes that hole by allowing ingress to the app pod ONLY from the
+# sources below (your ingress controller / gateway - the only legitimate origin
+# of the trusted header). REQUIRES a CNI that enforces NetworkPolicy (Calico,
+# Cilium, ...); on a non-enforcing CNI it silently does nothing. Off by default
+# (single-tenant / desktop / playground don't need it); turn ON for any shared,
+# multi-tenant, or hostile-cluster deployment.
+networkPolicy:
+  enabled: false
+  # Peers allowed to reach the app pod. Default matches a standard ingress-nginx
+  # install; override for a different controller namespace, or an Istio gateway.
+  # An empty list with enabled=true means default-deny (nothing reaches the app).
+  allowFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+
+# ── Persistence - SQLite on a PV/PVC ─────────────────────────────────────────
+# ReadWriteOnce is correct for a single replica: the DB file is owned by exactly
+# one pod. The chart templates a PVC by default.
+persistence:
+  enabled: true
+  existingClaim: ""      # use an existing claim instead of templating one
+  storageClass: ""       # "" = cluster default
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  mountPath: /data
+
+# ── Azure DevOps PAT ─────────────────────────────────────────────────────────
+# The PAT is never in config - it's injected as an env var from a Secret. Either
+# let the chart create the Secret from `pat` (a PoC convenience) or reference an
+# existing Secret you manage out-of-band (preferred for prod). Polling needs Work
+# Items (Read) + Build (Read); the UI's write-backs additionally need Work Items
+# (Write). A poll-only deployment can stay read-only.
+azureDevOps:
+  patEnv: POSEIDON_AZURE_PAT   # env var the app reads (must match pat_env in config)
+  pat: ""                      # inline PAT -> chart creates a Secret (PoC only)
+  existingSecret: ""           # reference an existing Secret instead
+  existingSecretKey: pat
+
+# ── AI tag suggester (optional) ──────────────────────────────────────────────
+# Suggest canonical tags for work items from each team's approved set. Off unless
+# an endpoint is set. Point at a LOCAL model (Ollama) so item titles never leave
+# the box, or at a hosted OpenAI-compatible endpoint. Advisory only - suggestions
+# are surfaced as chips and never auto-applied.
+ai:
+  enabled: false
+  # Model to use. When bundled (below) the chart auto-pulls it; a small 1-3B model
+  # keeps this runnable on a modest node / minikube.
+  model: "llama3.2:1b"
+  # External OpenAI-compatible chat/completions URL. Used ONLY when bundled is off.
+  #   e.g. https://api.openai.com/v1/chat/completions
+  endpoint: ""
+  apiKey: ""                   # inline bearer key (hosted only) -> chart Secret
+  existingSecret: ""           # or reference an existing Secret
+  existingSecretKey: api-key
+  # Size cap for the ephemeral in-process model cache (HF_HOME=/models emptyDir),
+  # used by the offline embedded model path - NOT the bundled Ollama cache above.
+  # Empty falls back to the chart's built-in "4Gi"; bump it if your embedded model
+  # is larger. Leave empty to keep the default (rendering is unchanged when unset).
+  modelCacheSize: ""
+  # Bundle a local Ollama in-cluster so AI works with ZERO external setup: the
+  # chart deploys Ollama, it auto-pulls `model` on first start, and the app is
+  # wired to it automatically. Item titles never leave the cluster. Costs CPU +
+  # RAM for the model (hence the small default) and disk for the model cache.
+  bundled:
+    enabled: false
+    image: ollama/ollama:latest
+    # Cache the pulled model on a PVC so a restart doesn't re-download it.
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+    resources: {}
+    # GPU passthrough: run the bundled Ollama's model on an NVIDIA GPU (~100x
+    # faster than CPU). Needs a GPU node + the NVIDIA device plugin
+    # (minikube: `minikube start --gpus all`). Off by default.
+    gpu:
+      enabled: false
+      count: 1
+      runtimeClassName: ""   # set e.g. "nvidia" if your container runtime requires it
+
+# Cap the CPU thread pool (candle/rayon) for in-process AI inference, injected as
+# RAYON_NUM_THREADS. The pod sees the node's logical CPUs, not its cgroup CPU
+# limit, so without this it oversubscribes the limit. Empty = unset (no cap, the
+# current default); set to a small number (e.g. "2") to match a CPU limit.
+aiCpuThreads: ""
+
+# Poll cadence (instance-level, injected as POSEIDON_POLL_INTERVAL).
+pollInterval: "15m"
+
+# ── Configuration ────────────────────────────────────────────────────────────
+# There is no config file. Instance settings come from env (above / below);
+# per-owner config (teams, rules, tags, saved reports) lives in the DB on the
+# persistent volume. Populate it via the UI, or declaratively for GitOps:
+#
+#   kubectl exec deploy/<release>-poseidon -- poseidon config import - < config.yaml
+#
+# (export the same way: `poseidon config export`). No ConfigMap to mount.
+
+# Optional OpenTelemetry export (traces/logs/metrics over OTLP/HTTP). Leave
+# endpoint empty for console-only logging (captured by the platform log driver).
+telemetry:
+  otlpEndpoint: ""       # e.g. http://otel-collector:4318 - setting it enables OTLP
+
+# ── Ingress ──────────────────────────────────────────────────────────────────
+# type selects the whole networking + auth strategy:
+#   nginx - templates a networking.k8s.io Ingress. With auth.enabled it wires the
+#           standard nginx auth-url/auth-signin annotations to the bundled
+#           oauth2-proxy, and adds an /oauth2 path routing to it.
+#   istio - templates a VirtualService bound to a shared gateway. With auth.enabled
+#           it templates an AuthorizationPolicy (CUSTOM action) pointing at an
+#           ext-authz provider (the bundled oauth2-proxy, or a pre-registered one).
+ingress:
+  enabled: true
+  type: nginx            # "nginx" | "istio"
+  host: poseidon.example.com
+  className: ""          # nginx IngressClass (e.g. "nginx"); "" = cluster default
+  annotations: {}        # extra annotations merged onto the nginx Ingress
+  tls: []                # e.g. [{ secretName: poseidon-tls, hosts: [poseidon.example.com] }]
+  istio:
+    gateway: istio-system/istio-ingressgateway
+    # If set, the chart assumes this ext-authz provider is ALREADY registered in
+    # istiod meshConfig.extensionProviders by a cluster admin, and only creates
+    # the AuthorizationPolicy (no oauth2-proxy deployed). If blank, the chart
+    # deploys its own oauth2-proxy and a cluster admin registers it once.
+    externalProviderName: ""
+    # Namespace the AuthorizationPolicy is created in - must be where the shared
+    # ingress gateway runs so the CUSTOM action intercepts there.
+    rootNamespace: istio-system
+    # Label selector for the ingress gateway workload the policy binds to.
+    gatewaySelector:
+      istio: ingressgateway
+
+# ── Auth (optional, enforced at the ingress via oauth2-proxy) ─────────────────
+# The app has zero auth code: oauth2-proxy performs the OAuth2/OIDC dance and
+# injects X-Auth-Request-* identity headers into upstream requests. Enable, pick
+# ONE provider, and fill in only that block. See the chart README.
+#
+# Multi-tenant: the app maps X-Auth-Request-Email -> the per-user `owner` key, so
+# each authenticated user sees only their own teams/rules/tags/reports. The ADO
+# PAT (azureDevOps below) is shared across all users - it must read every project
+# any user configures. Without auth, everything runs as a single `default` owner.
+auth:
+  # false => SINGLE TENANT: no identity headers, so every request is the one
+  # shared `default` owner (no isolation). Right for a dev/playground or a
+  # single-user self-host; set true with a provider to give users separate data.
+  enabled: false
+  provider: none         # none | google | github | azure | auth0 | keycloak | dex
+
+  # Defence-in-depth token verification. By default the app trusts the identity
+  # HEADER (safe only behind the proxy + networkPolicy). Turn this on to instead
+  # verify the oauth2-proxy-forwarded ACCESS TOKEN against the IdP JWKS and take
+  # the owner from its verified `email` claim - so a spoofed header alone, without
+  # a validly signed token, is rejected (fail-closed). The proxy already forwards
+  # the token (--pass-access-token); you supply the IdP's JWKS URL (and ideally
+  # the expected issuer/audience). Needs an IdP that issues JWT access tokens.
+  tokenVerification:
+    enabled: false
+    jwksUrl: ""            # e.g. https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys
+    issuer: ""             # expected `iss` (recommended)
+    audience: ""           # expected `aud` (recommended)
+    emailClaim: email      # claim to read as the owner
+
+  # Session-cookie signing secret for oauth2-proxy. If both are blank the chart
+  # generates one and reuses it across upgrades (via lookup) so sessions survive.
+  # Generate manually: openssl rand -base64 32 | tr -- '+/' '-_'
+  cookieSecret: ""
+  cookieExistingSecret: ""   # secret name; must have key "cookie-secret"
+  # oauth2-proxy sets Secure cookies by default (needs HTTPS). Set false ONLY for
+  # a plain-HTTP local cluster (e.g. minikube without TLS).
+  cookieSecure: true
+
+  oauth2Proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    replicas: 1
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits: { memory: 128Mi }
+    extraArgs: []          # appended verbatim to the oauth2-proxy args
+
+  # Each provider supports inline creds OR an existingSecret (keys configurable).
+  google:
+    clientId: ""
+    clientSecret: ""
+    allowedDomains: []     # ["mycompany.com"] to restrict; [] = any Google account
+    existingSecret: ""
+    existingSecretKeys: { clientId: client-id, clientSecret: client-secret }
+  github:
+    clientId: ""
+    clientSecret: ""
+    orgs: []               # ["my-org"] to restrict
+    teams: []              # ["my-org/my-team"] to restrict further
+    existingSecret: ""
+    existingSecretKeys: { clientId: client-id, clientSecret: client-secret }
+  azure:
+    clientId: ""
+    clientSecret: ""
+    tenant: ""             # Azure AD tenant GUID
+    emailDomains: ["*"]    # ["mycompany.com"] to restrict; ["*"] = any tenant user
+    existingSecret: ""
+    existingSecretKeys: { clientId: client-id, clientSecret: client-secret }
+  auth0:
+    clientId: ""
+    clientSecret: ""
+    domain: ""             # e.g. myapp.eu.auth0.com
+    existingSecret: ""
+    existingSecretKeys: { clientId: client-id, clientSecret: client-secret }
+  keycloak:
+    realm: master
+    clientId: poseidon
+    clientSecret: ""       # required when bundled: false
+    url: ""                # external Keycloak base URL; blank when bundled
+    existingSecret: ""
+    existingSecretKeys: { clientId: client-id, clientSecret: client-secret }
+    bundled:
+      enabled: false
+      adminUser: admin
+      adminPassword: admin # plaintext - POC only; use existingSecret in prod
+      image: quay.io/keycloak/keycloak:26.0
+      resources:
+        requests: { cpu: 500m, memory: 512Mi }
+        limits: { memory: 1Gi }
+  dex:
+    bundled:
+      enabled: false
+      image: ghcr.io/dexidp/dex:v2.41.1
+      staticPasswords: []
+        # - email: admin@example.com
+        #   password: password   # plaintext - Dex bcrypts on startup
+        #   username: admin
+      connectors: []             # production upstreams (github/ldap/oidc/...)
+      resources:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { memory: 128Mi }
+
+# ── Pod resources + hardening ────────────────────────────────────────────────
+# Requests only by default - they drive scheduling + QoS and are always safe. NO
+# limits by default: a CPU limit throttles via CFS (hurts latency for no real gain -
+# CPU is compressible, contention just shares fairly), and a too-low memory limit
+# OOM-kills. Limits are the operator's call - set them per your cluster or a namespace
+# LimitRange. A memory ceiling is the one worth adding (memory is incompressible).
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  # limits: { memory: 512Mi }   # opt-in example; avoid a cpu limit unless you must
+
+# Hardened by default. Root FS is read-only; all writes go to /data. Matches the
+# non-root user baked into the image (uid 10001).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ── localhost mode: a dev playground (OFF by default) ────────────────────────
+# When enabled, alongside the server the chart stands up a second pod running the
+# SAME image but configured (POSEIDON_REMOTE_URL) as a web CLIENT of the server,
+# plus a tiny landing page linking both - a server+client pair to play with and
+# to e2e the repoint without the native app. The client reaches the server
+# cross-origin, which only works with auth OFF (a browser won't send the server's
+# auth cookie cross-site), so this is a single-tenant (`default` owner) playground.
+# The chart REFUSES to render `localhost.enabled` with `auth.enabled=true`. Never
+# enable it in a real deployment.
+localhost:
+  enabled: false
+  clientHost: ""              # default: "client-<ingress.host>"
+  hubHost: ""                 # default: "hub-<ingress.host>" (the landing page)
+  caddyImage: caddy:2-alpine  # tiny static server for the landing page

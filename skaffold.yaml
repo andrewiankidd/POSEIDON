@@ -1,15 +1,15 @@
 apiVersion: skaffold/v4beta11
 kind: Config
 metadata:
-  name: poseiden
-# The minikube live-reload loop, run via `./poseiden.sh dev` (= `skaffold dev`):
+  name: poseidon
+# The minikube live-reload loop, run via `./poseidon.sh dev` (= `skaffold dev`):
 # watch the source, rebuild the image, redeploy the Helm chart, stream logs - on
 # every save. The rebuild is fast because the Dockerfile's cargo-chef split caches
 # the dependency compile, so only our crates recompile. Uses the current kubectl
 # context (point it at minikube). Ctrl-C tears the release down again.
 build:
   artifacts:
-    - image: poseiden
+    - image: poseidon
       docker:
         dockerfile: Dockerfile
         target: runtime
@@ -20,13 +20,13 @@ build:
 deploy:
   helm:
     releases:
-      - name: poseiden
-        chartPath: deploy/helm/poseiden
+      - name: poseidon
+        chartPath: deploy/helm/poseidon
         valuesFiles:
-          - deploy/helm/poseiden/ci/minikube-dex-values.yaml
+          - deploy/helm/poseidon/ci/minikube-dex-values.yaml
         setValues:
           image.pullPolicy: IfNotPresent
-        # Skaffold injects the freshly-built image reference for the `poseiden` artifact.
+        # Skaffold injects the freshly-built image reference for the `poseidon` artifact.
         setValueTemplates:
-          image.repository: "{{.IMAGE_REPO_poseiden}}"
-          image.tag: "{{.IMAGE_TAG_poseiden}}"
+          image.repository: "{{.IMAGE_REPO_poseidon}}"
+          image.tag: "{{.IMAGE_TAG_poseidon}}"

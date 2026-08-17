@@ -1,4 +1,4 @@
-// POSEIDEN API client - the three-way data-source dispatch.
+// POSEIDON API client - the three-way data-source dispatch.
 //
 // This is the frontend counterpart to the shared `Service` in Rust: one set of
 // calls (`api.dashboard()`, `api.tickets()`, …) that resolve to whichever
@@ -11,9 +11,9 @@
 // "Repointing" the Android app at your web instance is therefore just setting
 // this one localStorage value - no separate code path, no rebuild.
 
-const INSTANCE_KEY = 'poseiden-instance-url';
-const TEAM_KEY = 'poseiden-team-scope';
-const PAGE_SIZE_KEY = 'poseiden-page-size';
+const INSTANCE_KEY = 'poseidon-instance-url';
+const TEAM_KEY = 'poseidon-team-scope';
+const PAGE_SIZE_KEY = 'poseidon-page-size';
 const DEFAULT_PAGE_SIZE = 500;
 
 // --- Demo mode ------------------------------------------------------------
@@ -21,7 +21,7 @@ const DEFAULT_PAGE_SIZE = 500;
 // the app at `app.html?demo=1`. In demo mode every GET resolves from a shipped
 // JSON fixture under `assets/demo/`, and every write is a benign no-op - so the
 // whole app renders real sample data with no server, no Tauri, no network.
-const DEMO_KEY = 'poseiden-demo';
+const DEMO_KEY = 'poseidon-demo';
 let _demoCache = null;
 
 /** True when the app is running against static demo fixtures instead of a
@@ -82,10 +82,10 @@ export function setTeamScope(team) {
 /** The configured remote instance URL, trailing slash stripped, or '' if none. */
 export function getInstanceUrl() {
   // A user's own choice (localStorage) wins; otherwise fall back to the deployment
-  // default the server injects via env.js (window.__POSEIDEN_ENV__.instanceUrl).
+  // default the server injects via env.js (window.__POSEIDON_ENV__.instanceUrl).
   // That's how a "client" deployment boots pre-pointed at its server instance.
   const stored = localStorage.getItem(INSTANCE_KEY);
-  const url = stored != null ? stored : (window.__POSEIDEN_ENV__?.instanceUrl || '');
+  const url = stored != null ? stored : (window.__POSEIDON_ENV__?.instanceUrl || '');
   return url.replace(/\/+$/, '');
 }
 
@@ -111,7 +111,7 @@ export function setPageSize(n) {
   localStorage.setItem(PAGE_SIZE_KEY, String(v));
 }
 
-const DEV_OWNER_KEY = 'poseiden-dev-owner';
+const DEV_OWNER_KEY = 'poseidon-dev-owner';
 
 /** Dev-mode owner override. When set, same-origin API calls carry it as
  *  `X-Auth-Request-Email`, so you can view any tenant in an auth-off playground
@@ -153,7 +153,7 @@ function isMobileShell() {
  *    localService  - can host a durable local Service in-process (standalone).
  *                    Only the native shell can; a browser tab has no Rust/SQLite
  *                    runtime to persist into at all, so it is always a client.
- *    sameOriginApi - a poseiden server is already serving this bundle (we are ON
+ *    sameOriginApi - a poseidon server is already serving this bundle (we are ON
  *                    an instance). Distinguishes a served web instance (Docker/
  *                    Helm) from a static host (GitHub Pages) with no backend.
  *    portableMode  - the standalone data-location choice is meaningful here
@@ -168,7 +168,7 @@ export async function capabilities() {
   return { localService, sameOriginApi, portableMode: localService && !isMobileShell() };
 }
 
-/** Is a poseiden backend answering at our own origin? (Ignores any configured
+/** Is a poseidon backend answering at our own origin? (Ignores any configured
  *  remote - this asks "did a server serve us", not "can we reach a remote".) */
 async function pingSameOriginApi() {
   try {
@@ -204,7 +204,7 @@ function tauriInvoke(cmd, args) {
 
 // One request definition per logical call: the HTTP shape AND the invoke shape,
 // so `request` can satisfy either transport from the same spec.
-async function request(path, { method = 'GET', query, body, invokeCmd, invokeArgs } = {}) {
+async function request(path, { method = 'GET', query, body, rawBody, contentType, invokeCmd, invokeArgs } = {}) {
   // Demo mode short-circuits before any transport: GETs come from static
   // fixtures, writes resolve to a benign value (never a network call, never a
   // throw) so the UI stays interactive without a backend.
@@ -233,7 +233,11 @@ async function request(path, { method = 'GET', query, body, invokeCmd, invokeArg
 
   const opts = { method };
   const headers = { ...devHeaders() };
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    // A raw string body (e.g. a CSV upload) - sent verbatim, not JSON-encoded.
+    headers['Content-Type'] = contentType || 'text/plain';
+    opts.body = rawBody;
+  } else if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
@@ -308,6 +312,45 @@ export const api = {
       method: 'POST', query: { team }, body: { items },
       invokeCmd: 'store_tag_suggestions', invokeArgs: { team, items },
     }),
+  /** Start a background AI healthcheck audit over the scoped items (server-side
+   *  model); returns the initial status. Poll `healthcheckAuditStatus`. Findings
+   *  land as advisory `ai_audit` flags. */
+  runHealthcheckAudit: (team, ids) =>
+    request('/healthcheck/audit/run', {
+      method: 'POST', query: { team }, body: { ids },
+      invokeCmd: 'run_healthcheck_audit', invokeArgs: { team, ids },
+    }),
+  /** Current audit run state: { state: 'idle'|'running'|'done'|'failed', ... }. */
+  healthcheckAuditStatus: () =>
+    request('/healthcheck/audit/status', { invokeCmd: 'healthcheck_audit_status' }),
+  /** Per-item audit prompts for the browser (WebGPU) path: [{ id, system, user }]. */
+  healthcheckAuditPrompts: (team, ids) =>
+    request('/healthcheck/audit/prompts', {
+      method: 'POST', query: { team }, body: { ids },
+      invokeCmd: 'healthcheck_audit_prompts', invokeArgs: { team, ids },
+    }),
+  /** Store browser (WebGPU) computed audit replies - the server re-parses them.
+   *  `results` = [{ id, text }]. Returns a run summary. */
+  storeHealthcheckAudit: (team, results) =>
+    request('/healthcheck/audit/store', {
+      method: 'POST', query: { team }, body: { results },
+      invokeCmd: 'store_healthcheck_audit', invokeArgs: { team, results },
+    }),
+  /** Run the deterministic near-duplicate scan over the team's items (all teams when
+   *  no team); stores `near_duplicate` flags. Returns { scanned, flagged, pairs }. */
+  scanDuplicates: (team) =>
+    request('/healthcheck/duplicates/scan', {
+      method: 'POST', query: { team },
+      invokeCmd: 'scan_duplicates', invokeArgs: { team },
+    }),
+  /** The owner's synced service catalog: { count, rows: [{repo,product,team,...}] }. */
+  catalog: () => request('/catalog', { invokeCmd: 'catalog' }),
+  /** Import a service catalog from a Port "Service" CSV export. Returns { rows } stored. */
+  importCatalog: (csv) =>
+    request('/catalog/import', {
+      method: 'POST', rawBody: csv, contentType: 'text/csv',
+      invokeCmd: 'import_catalog', invokeArgs: { csv },
+    }),
   /** Tag-input settings: { use_description }. */
   tagSettings: () => request('/tag-settings', { invokeCmd: 'get_tag_settings' }),
   setTagSettings: (useDescription) =>
@@ -370,6 +413,50 @@ export const api = {
       body: { team, pr_id: prId, link },
       invokeCmd: 'link_work_item_pr',
       invokeArgs: { team, workItemId: id, prId, link },
+    }),
+  /** The provider-discovered editable fields for a work item (the editor modal).
+   *  Returns { fields: [{reference,label,kind,value,options,read_only,required,help}] }.
+   *  Type-specific on Azure DevOps; title + body on GitHub/GitLab. */
+  workItemFields: (id, team) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields', { query: { team } }),
+  /** Save edited fields - writes each changed field through to the provider and
+   *  returns { item, flags }. `changes` = [{ reference, value }] (markdown for rich
+   *  fields). */
+  updateWorkItemFields: (id, { team, changes }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields', {
+      method: 'PUT',
+      body: { team, changes },
+    }),
+  /** AI-draft (or improve) one field from the item's context. Returns { value }
+   *  (markdown) for the editor to drop in - never auto-saved. */
+  draftWorkItemField: (id, { team, reference, improve, fields }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/draft', {
+      method: 'POST',
+      body: { team, reference, improve: !!improve, fields: fields || [] },
+    }),
+  /** Mark a work item as a duplicate of another via the provider's native mechanism
+   *  (ADO: Duplicate Of link; GitLab: /duplicate; GitHub: label + close). Returns
+   *  { item, flags }. A real write-back - explicit + user-initiated. */
+  markDuplicate: (id, { team, duplicateOf }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/mark-duplicate', {
+      method: 'POST', body: { team, duplicate_of: duplicateOf },
+      invokeCmd: 'mark_work_item_duplicate', invokeArgs: { team, workItemId: id, duplicateOf },
+    }),
+  /** Whole-item consistency sweep: harmonise all rich fields in one pass. `fields` =
+   *  the proposed values [{reference,value}]. Returns { fields: [...] } (server ran it)
+   *  or { prompt: {system,user} } for the browser (WebGPU) to run, then post to
+   *  `parseFieldsConsistency`. */
+  refineFields: (id, { team, fields }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/consistency', {
+      method: 'POST',
+      body: { team, fields: fields || [] },
+    }),
+  /** Re-parse a browser (WebGPU) consistency reply into validated changes. Returns
+   *  { fields: [{reference,value}] }. */
+  parseFieldsConsistency: (id, { team, fields, text }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/fields/consistency/parse', {
+      method: 'POST',
+      body: { team, fields: fields || [], text: text || '' },
     }),
   /** Replace the instance-wide default ruleset. `rules` = a full RuleSet. */
   updateRules: (rules) =>

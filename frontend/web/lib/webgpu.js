@@ -4,7 +4,7 @@
 // the allowed tags (the trust boundary), so nothing here can inject arbitrary tags.
 //
 // NOT verified end-to-end: needs a WebGPU browser (Chrome/Edge) + a real GPU to run.
-// The prompt + validation logic below MIRRORS the Rust `poseiden-ai` versions by hand
+// The prompt + validation logic below MIRRORS the Rust `poseidon-ai` versions by hand
 // (the browser engine can't call the crate); keep them in sync.
 
 const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
@@ -17,9 +17,16 @@ const MODEL_MAP = {
   'qwen2.5-7b': 'Qwen2.5-7B-Instruct-q4f16_1-MLC',
 };
 
-const MAX_SUGGESTIONS = 3;
+// Mirror of poseidon-ai's SUGGESTION_SLACK + default_max_suggestions: the AI's
+// per-item tag ceiling scales with the required-tag axes (so product/area/source all
+// fit, plus room for a second area / a rewrite), floored so a no-required team still
+// gets a usable ceiling. A team can override via rules.max_suggestions.
+const SUGGESTION_SLACK = 7;
+function defaultMaxSuggestions(requiredLen) {
+  return Math.max(6, (requiredLen || 0) + SUGGESTION_SLACK);
+}
 
-// Mirror of poseiden-ai's SYSTEM_PROMPT.
+// Mirror of poseidon-ai's SYSTEM_PROMPT.
 const SYSTEM_PROMPT =
   'You tag software work items for a backlog-hygiene tool. You are given one work ' +
   'item, a list of ALLOWED tags, and possibly some REQUIRED categories. For each ' +
@@ -37,7 +44,7 @@ const SYSTEM_PROMPT =
   '"<one short sentence>"}. If there are no required categories and nothing else ' +
   'clearly applies, reply {"tags": [], "rationale": "none apply"}.';
 
-// Mirror of poseiden-ai's pattern_matches: trailing-`*` prefix wildcard, else
+// Mirror of poseidon-ai's pattern_matches: trailing-`*` prefix wildcard, else
 // exact, case-insensitive.
 function patternMatches(pattern, tag) {
   const p = (pattern || '').trim().toLowerCase();
@@ -45,7 +52,7 @@ function patternMatches(pattern, tag) {
   return p.endsWith('*') ? t.startsWith(p.slice(0, -1)) : p === t;
 }
 
-// Mirror of poseiden-ai's MAX_HINTS_PER_TAG + annotate: show a tag with its keyword
+// Mirror of poseidon-ai's MAX_HINTS_PER_TAG + annotate: show a tag with its keyword
 // gloss as `tag (e.g. kw1, kw2)` so the model knows what the tag denotes.
 const MAX_HINTS_PER_TAG = 6;
 function annotate(tag, hints) {
@@ -91,13 +98,13 @@ export async function detectBrowserCaps() {
   return caps;
 }
 
-// Mirror of poseiden-ai's MAX_DESC_CHARS - cap the body so the prompt stays bounded.
+// Mirror of poseidon-ai's MAX_DESC_CHARS - cap the body so the prompt stays bounded.
 const MAX_DESC_CHARS = 1000;
 
-// Mirror of poseiden-ai's build_prompt: unsatisfied required patterns become
+// Mirror of poseidon-ai's build_prompt: unsatisfied required patterns become
 // must-fill categories (each with its concrete options); everything else in
 // `allowed` is offered as optional.
-function buildUserPrompt(item, allowed, required = [], hints = {}) {
+function buildUserPrompt(item, allowed, required = [], hints = {}, background = '') {
   const current = (item.tags || []);
   const cur = current.length ? current.join(', ') : '(none)';
   const desc = (item.description || '').trim();
@@ -117,7 +124,12 @@ function buildUserPrompt(item, allowed, required = [], hints = {}) {
   }
   const optional = allowed.filter((a) => !claimed.has(a.toLowerCase()));
 
-  let out = `Work item:\n- Title: ${item.title || ''}\n- Type: ${item.work_item_type || ''}${descLine}` +
+  let out = '';
+  const bg = (background || '').trim();
+  if (bg) {
+    out += "TEAM BACKGROUND (this team's systems + internal names - use it to interpret the item):\n" + bg + '\n\n';
+  }
+  out += `Work item:\n- Title: ${item.title || ''}\n- Type: ${item.work_item_type || ''}${descLine}` +
     `\n- Current tags: ${cur}\n`;
   if (requiredBlocks.length) {
     out += '\nREQUIRED categories - pick exactly ONE value for EACH (best guess even if unsure):\n' +
@@ -138,9 +150,9 @@ function extractJson(s) {
   return a >= 0 && b > a ? t.slice(a, b + 1) : '{}';
 }
 
-// Mirror of poseiden-ai's parse_suggestions: keep only allowed tags (canonical
-// spelling), dedupe, cap at MAX_SUGGESTIONS. The server re-validates too.
-function parseSuggestions(text, allowed) {
+// Mirror of poseidon-ai's parse_suggestions: keep only allowed tags (canonical
+// spelling), dedupe, cap at `max`. The server re-validates too.
+function parseSuggestions(text, allowed, max) {
   let reply = {};
   try { reply = JSON.parse(extractJson(text)); } catch { reply = {}; }
   const canon = new Map(allowed.map((t) => [t.toLowerCase(), t]));
@@ -148,7 +160,7 @@ function parseSuggestions(text, allowed) {
   const seen = new Set();
   const out = [];
   for (const raw of reply.tags || []) {
-    if (out.length >= MAX_SUGGESTIONS) break;
+    if (out.length >= max) break;
     const key = String(raw).trim().toLowerCase();
     const c = canon.get(key);
     if (c && !seen.has(key)) { seen.add(key); out.push({ tag: c, reason: rationale }); }
@@ -237,9 +249,13 @@ async function loadWithFallback(offlineModel, onStatus) {
  * the model best-effort fills a must-fill slot the item doesn't yet satisfy.
  * `onStatus(text)` reports model-load progress; `onItem(done,total,count)` per item.
  */
-export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, onItem, required = [], hints = {}) {
+export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, onItem, required = [], hints = {}, background = '', maxSuggestions = null) {
   if (!webgpuAvailable()) throw new Error('WebGPU is not available in this browser.');
   if (!allowed || !allowed.length) return [];
+  // Configured ceiling, else the adaptive default that scales with required axes.
+  const cap = Number.isInteger(maxSuggestions) && maxSuggestions > 0
+    ? maxSuggestions
+    : defaultMaxSuggestions(required.length);
   const engine = await loadWithFallback(offlineModel, onStatus);
   const results = [];
   for (let i = 0; i < items.length; i++) {
@@ -247,7 +263,7 @@ export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, o
     const resp = await engine.chat.completions.create({
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserPrompt(items[i], allowed, required, hints) },
+        { role: 'user', content: buildUserPrompt(items[i], allowed, required, hints, background) },
       ],
       temperature: 0.2,
       max_tokens: 200,
@@ -255,9 +271,55 @@ export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, o
     const text =
       (resp && resp.choices && resp.choices[0] && resp.choices[0].message &&
         resp.choices[0].message.content) || '';
-    const tags = parseSuggestions(text, allowed);
+    const tags = parseSuggestions(text, allowed, cap);
+    // Diagnostic: WebGPU inference is client-only, so the server can't log why an item
+    // got zero tags. Surface the raw model output + what survived allow-list filtering
+    // here, so an empty Suggested cell is explainable from DevTools (not a black box).
+    if (!tags.length) {
+      console.warn(`[tagger] #${items[i].id} "${(items[i].title || '').slice(0, 60)}" -> 0 tags.`,
+        { rawModelOutput: text, allowedCount: allowed.length, required });
+    } else {
+      console.debug(`[tagger] #${items[i].id} -> ${tags.length} tags: ${tags.join(', ')}`, { rawModelOutput: text });
+    }
     results.push({ id: items[i].id, tags });
     if (onItem) onItem(i + 1, items.length, tags.length);
   }
   return results;
+}
+
+/** Run one free-form chat completion through the browser WebGPU model - the generic
+ *  in-browser inference primitive (used by the field editor's AI Draft/Improve, and any
+ *  other single-completion feature). The server builds the system+user prompt (so prompt
+ *  logic lives in one place) and hands it here. Returns the generated text (an outer
+ *  ```fence stripped). `onStatus` reports model-load progress. */
+export async function runWebGpuChat(offlineModel, system, user, onStatus) {
+  if (!webgpuAvailable()) throw new Error('WebGPU is not available in this browser.');
+  const engine = await loadWithFallback(offlineModel, onStatus);
+  const resp = await engine.chat.completions.create({
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    temperature: 0.3,
+    max_tokens: 700,
+  });
+  const text =
+    (resp && resp.choices && resp.choices[0] && resp.choices[0].message &&
+      resp.choices[0].message.content) || '';
+  return stripOuterFence(text.trim());
+}
+
+// Drop a single outer ```lang … ``` fence if the model wrapped its whole answer in one
+// (mirrors poseidon-ai's strip_code_fence).
+function stripOuterFence(s) {
+  const t = s.trim();
+  if (t.startsWith('```')) {
+    const nl = t.indexOf('\n');
+    if (nl > 0) {
+      const inner = t.slice(nl + 1);
+      const close = inner.lastIndexOf('```');
+      if (close >= 0) return inner.slice(0, close).trim();
+    }
+  }
+  return t;
 }

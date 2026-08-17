@@ -1,0 +1,76 @@
+{{- if and (eq .Values.auth.provider "keycloak") .Values.auth.keycloak.bundled.enabled }}
+# Bundled Keycloak for a POC: start-dev (embedded H2, NOT for production) with a
+# realm imported on boot. For production set keycloak.bundled.enabled=false and
+# point keycloak.url at an external instance with a real database.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "poseidon.keycloak.fullname" . }}
+  labels:
+    {{- include "poseidon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "poseidon.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: keycloak
+  template:
+    metadata:
+      labels:
+        {{- include "poseidon.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: keycloak
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: keycloak
+          image: {{ .Values.auth.keycloak.bundled.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["start-dev", "--import-realm"]
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ .Values.auth.keycloak.bundled.adminUser | quote }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: {{ .Values.auth.keycloak.bundled.adminPassword | quote }}
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            # Served under /auth on the app's host (ingress routes /auth here), so
+            # the issuer is {baseUrl}/auth/realms/{realm} - matching oauth2-proxy.
+            - name: KC_HOSTNAME
+              value: {{ include "poseidon.baseUrl" . | quote }}
+            - name: KC_HTTP_RELATIVE_PATH
+              value: /auth
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.auth.keycloak.bundled.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: realm
+          secret:
+            secretName: {{ include "poseidon.keycloak.fullname" . }}-realm
+{{- end }}
