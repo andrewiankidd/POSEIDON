@@ -37,17 +37,14 @@ pub fn run() {
             // chosen local-vs-remote and a storage location. See `state.rs`.
             use tauri::Manager;
             app.manage(AppState::boot());
-            // Portable build (name/sentinel/env): badge the title so it's obvious the
-            // app is writing beside itself under ./.portable/, not the OS data dir.
-            if poseidon_paths::Paths::resolve().is_portable() {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_title("POSEIDON [Portable]");
-                }
-            }
+            // The window title (incl. the [Portable] badge) is owned by the frontend's
+            // initMotto, which sets it after load via the `is_portable` command - a
+            // native set_title here would just be clobbered on first paint.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::is_initialized,
+            commands::is_portable,
             commands::initialize,
             commands::get_teams,
             commands::add_team,

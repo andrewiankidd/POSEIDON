@@ -650,6 +650,14 @@ pub fn is_initialized(state: State<'_, AppState>) -> bool {
     state.is_ready()
 }
 
+/// Whether this build runs in portable mode (all data confined beside the binary
+/// under `./.portable/`). Resolved from the environment/binary, so it's valid even
+/// before `initialize` - the frontend uses it to badge the window title.
+#[tauri::command]
+pub fn is_portable() -> bool {
+    poseidon_paths::Paths::resolve().is_portable()
+}
+
 /// Complete first-run setup for a LOCAL install: optionally enable portable mode
 /// (all data confined beside the app - written before anything else), then create
 /// the store + `Service` + scheduler. Driven by onboarding after the user picks

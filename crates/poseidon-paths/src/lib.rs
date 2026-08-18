@@ -25,7 +25,12 @@ pub const ENV_PORTABLE: &str = "POSEIDON_PORTABLE_MODE";
 /// container: point it at the mounted PV/PVC (`/data`) so the DB + logs land on
 /// persistent storage without depending on `$HOME` resolving inside the image.
 pub const ENV_DATA_DIR: &str = "POSEIDON_DATA_DIR";
-/// Sentinel filename that, when present beside the binary, forces portable mode.
+/// Marker that, when present beside the binary, forces portable mode. This is the
+/// same path as [`PORTABLE_DIR`] on purpose: the `.portable` data-root *directory*
+/// existing beside the binary is itself the sentinel (a `.exists()` check passes
+/// for the dir), so a portable install stays sticky across runs with no extra
+/// sidecar file. (An earlier scheme wrote a same-named *file* here, which collided
+/// with the data-root directory - see `write_portable_marker`.)
 pub const PORTABLE_SENTINEL: &str = ".portable";
 /// Subdirectory used as the portable root, relative to the binary.
 pub const PORTABLE_DIR: &str = ".portable";
@@ -218,12 +223,29 @@ pub fn enable_portable_sentinel() -> std::io::Result<PathBuf> {
             "cannot locate the binary directory to write the portable sentinel",
         )
     })?;
-    let sentinel = dir.join(PORTABLE_SENTINEL);
+    write_portable_marker(&dir)
+}
+
+/// Mark `dir` as portable by materialising the `.portable` data-root directory
+/// (its presence beside the binary is itself what [`Paths::resolve_with`] reads as
+/// the sentinel) and dropping a human note inside it. Split out from
+/// [`enable_portable_sentinel`] so it's unit-testable against a temp dir.
+///
+/// Crucially the marker is the *directory*, not a same-named file: an earlier
+/// scheme wrote a `.portable` file here, which then collided with the `.portable`
+/// data-root directory `ensure_dirs` needs (`create_dir_all` over an existing file
+/// fails with `EEXIST` / Windows os error 183). We heal that stale file if present.
+fn write_portable_marker(dir: &Path) -> std::io::Result<PathBuf> {
+    let root = dir.join(PORTABLE_DIR);
+    if root.is_file() {
+        std::fs::remove_file(&root)?;
+    }
+    std::fs::create_dir_all(&root)?;
     std::fs::write(
-        &sentinel,
-        b"POSEIDON portable mode.\nDelete this file to return to OS-standard storage.\n",
+        root.join("PORTABLE.txt"),
+        b"POSEIDON portable mode.\nThis .portable folder holds all data (DB, logs, cache) for the\nbinary beside it. Delete the whole folder to return to OS-standard storage.\n",
     )?;
-    Ok(sentinel)
+    Ok(root)
 }
 
 /// OS-standard data directory for POSEIDON. Falls back to `./poseidon-data`
@@ -308,6 +330,42 @@ mod tests {
         assert!(!paths.is_portable());
         // Whatever the OS dir resolves to, it must NOT be under the binary dir.
         assert!(!paths.data_root().starts_with(&bin));
+    }
+
+    #[test]
+    fn marker_creates_the_portable_dir_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        // Fresh: creates the .portable data-root directory (its presence is the
+        // sentinel) + the note inside, and ensure_dirs must then succeed over it.
+        let root = write_portable_marker(dir.path()).unwrap();
+        assert_eq!(root, dir.path().join(".portable"));
+        assert!(root.is_dir());
+        assert!(root.join("PORTABLE.txt").is_file());
+        let paths = Paths::resolve_with(&EnvSnapshot::default(), Some(dir.path()), None);
+        assert!(
+            paths.is_portable(),
+            "the .portable dir must re-trigger portable"
+        );
+        paths
+            .ensure_dirs()
+            .expect("ensure_dirs must not collide with the marker");
+        // Second call is a no-op, not an error.
+        write_portable_marker(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn marker_heals_a_stale_sentinel_file_from_the_old_scheme() {
+        // A binary that crashed under the old file-based scheme leaves a `.portable`
+        // FILE where the data-root DIRECTORY belongs; enabling portable again must
+        // replace it with the directory instead of failing with EEXIST (os 183).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".portable"), b"stale marker file").unwrap();
+        assert!(dir.path().join(".portable").is_file());
+        let root = write_portable_marker(dir.path()).unwrap();
+        assert!(root.is_dir(), "the stale file must be replaced by the dir");
+        Paths::resolve_with(&EnvSnapshot::default(), Some(dir.path()), None)
+            .ensure_dirs()
+            .expect("ensure_dirs must succeed after healing");
     }
 
     #[test]

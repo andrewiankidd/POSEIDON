@@ -4320,11 +4320,20 @@ const MOTDS = [
   'Stay afloat',
 ];
 
-function initMotto() {
+async function initMotto() {
   const motto = MOTDS[Math.floor(Math.random() * MOTDS.length)];
   const badge = document.getElementById('brand-motd');
   if (badge) badge.textContent = motto;
-  const title = `POSEIDON - ${motto}`;
+  // On the desktop shell, badge the title when running the portable build (data
+  // confined beside the binary). is_portable is a desktop-only invoke; it stays
+  // false on the web/remote client, which is never "portable".
+  let portable = false;
+  try {
+    const t = window.__TAURI__;
+    const invoke = t?.core?.invoke ?? t?.invoke;
+    if (invoke) portable = await invoke('is_portable');
+  } catch { /* not the desktop shell, or command unavailable */ }
+  const title = `POSEIDON${portable ? ' [Portable]' : ''} - ${motto}`;
   document.title = title;
   // On the desktop shell, also set the native window title (withGlobalTauri).
   try {
