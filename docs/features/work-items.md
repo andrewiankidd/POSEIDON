@@ -42,6 +42,23 @@ Open **Work Items** from the sidebar (hash route `#work-items`).
   filtered view (or, if any rows are ticked, just the selection) to a
   `work-items.csv` with columns: id, title, type, state, assignee, tags,
   suggestions, and flags. Handy for reviewing tag suggestions outside the app.
+- **Healthcheck actions** - the toolbar carries **🔎 Find duplicates** (a
+  whole-backlog near-duplicate title scan, deterministic, no AI) and
+  **🩺 Run healthcheck** (an on-demand AI data-quality audit over the selected
+  rows). Both write advisory flags; see [Rules](rules.md).
+
+## Board view
+
+A **View** dropdown at the front of the toolbar switches the same items between the
+table and a **Kanban board**, grouping them into columns by **State** or by any tag
+axis present in the data (`area:` / `product:` / `source:` / …). The chosen view
+persists across refreshes.
+
+![Work Items board (Kanban) view](screenshots/work-items-board.png)
+
+Cards carry the item's type, assignee, tags, and flag chips; the selection
+checkboxes and every toolbar action (filters, Suggest tags, healthcheck) work the
+same in both views. Clicking a card opens the field editor (below).
 
 ## Tag suggestions
 
@@ -84,6 +101,24 @@ still a bounded, user-initiated set of edits over rows you hand-picked, not an
 automatic backlog sweep - rewrites drop their legacy tag, and adds already present
 are skipped.
 
+## Editing fields
+
+Clicking a work item's **✎** pencil (Title cell) or a board card opens the **field
+editor** - an in-app modal that edits the provider's own fields (State, Area,
+Iteration, Description, Acceptance Criteria, …), with dynamic per-type field
+introspection and html↔markdown conversion. Nothing writes back until you save.
+
+Each rich field carries an **✨ Draft / Improve** button that asks the AI to write or
+tighten just that field; the result lands in a review pane you keep or discard. A
+top-level **✨ Improve all fields** runs the whole sweep: draft/improve every field,
+a consistency pass so they read as one coherent ticket, then a tag suggestion as the
+final step - all reviewed, never auto-applied. A deterministic backstop preserves any
+image/attachment/link the model might drop.
+
+Every AI action (here and in the toolbar) runs through a single **activity queue** -
+one heavy job at a time (an in-browser GPU can't run two at once), the rest queued -
+shown in a bar across the bottom of the screen with progress and a completed list.
+
 ## CLI
 
 `poseidon lint` evaluates the same rules over the stored items and prints the
@@ -114,7 +149,7 @@ error-severity flag is found** - so it drops straight into CI as a backlog gate.
 %%%%%%%%%%%%%%%%%#+==================+%%%%
 %%%%%%%%%%%%%%%%%%%%%*+==========+*#%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%####%%%%%%%%%%%%
-            P O S E I D E N
+            P O S E I D O N
           "Weather the storm"
 
 10 hygiene flag(s):

@@ -3,17 +3,24 @@
 # POSEIDON doc screenshots — WEB build (browser, not the native exe).
 #
 # The served web frontend IS the same bundle the Tauri window wraps, so we shoot
-# the docs against a real browser instead of launching the desktop app. Target is
-# the Helm `localhost` playground SERVER instance: a demo-tenant instance seeded
-# with the offline `stub` provider (14 work items / 3 flagged / 3 pipelines / 3
-# PRs), reachable at http://poseidon.localhost.
+# the docs against a real browser instead of launching the desktop app. We shoot
+# the DEMO tenant (poseidon+demo-data@example.com) on whatever instance is running
+# at http://poseidon.localhost - it's seeded with the offline `stub` provider (14
+# work items / 3 flagged / 3 pipelines / 3 PRs), and multitenancy keeps every
+# capture scoped to that owner, so a real backlog is never in frame.
 #
-# PRECONDITION — the playground must already be up:
-#     POSEIDON_VALUES=deploy/helm/poseidon/ci/minikube-localhost-values.yaml ./poseidon.sh up
-#   `up` deploys the chart (auth off => single `default` tenant), seeds the demo
-#   data under `default`, and starts the ingress port-forward on 127.0.0.1:80.
-#   Chromium resolves *.localhost -> 127.0.0.1, so http://poseidon.localhost then
-#   loads with no hosts edit. Verify it opens in a browser before running this.
+# PRECONDITION — ANY running instance reachable at http://poseidon.localhost
+# (your normal auth-on deploy is fine - no auth-off playground / redeploy needed):
+#     ./poseidon.sh up
+#   `up` always imports the demo bundle as its own tenant
+#   (poseidon+demo-data@example.com, seeded with the offline stub: 14 items / 3
+#   flagged / 3 pipelines / 3 PRs) and starts the ingress port-forward on
+#   127.0.0.1:80. Chromium resolves *.localhost -> 127.0.0.1, so
+#   http://poseidon.localhost loads with no hosts edit.
+#
+# We sign in through Dex as the DEMO tenant, so owner-scoping (multitenancy) shows
+# ONLY the demo data in every capture - your real backlog is never in frame. The
+# real tenant's data stays put; we just view a different owner.
 #
 # Run it (input globbing is relative to the cwd, so run from THIS directory):
 #     cd tools/screenshots
@@ -33,7 +40,14 @@
 #   Service (frontend capabilities probe -> desktop/mobile native), never a plain
 #   browser pointed at a server, so those stay a desktop-app capture.
 steps:
-  - name: Launch the playground server in a chrome-less browser window
+  - name: Clear the browser profile so we always land on a fresh Dex login
+    # Persisted cookies would skip the login (and then the demo-tenant sign-in
+    # below would never run). Wiping the profile forces the login every run.
+    action: exec
+    args: cmd /c rmdir /s /q "%TEMP%\poseidon-shots" 2>nul & exit /b 0
+    wait: true
+
+  - name: Launch the app in a chrome-less browser window
     action: exec
     args: >
       cmd /c start "" msedge
@@ -42,7 +56,31 @@ steps:
       --no-first-run --no-default-browser-check
     wait: false
 
-  - name: Wait for the app window
+  # Auth on => the request redirects to the Dex login form first (window title
+  # "dex"). Sign in as the DEMO tenant; Dex auto-focuses the email field on load.
+  - name: Wait for the Dex login form
+    action: wait-window
+    window: "dex"
+    text: "Login"
+    timeout: 30
+  - name: Type the demo tenant email (email field is focused on load)
+    action: type
+    window: "dex"
+    text: "poseidon+demo-data@example.com"
+  - name: Tab to the password field
+    action: keyboard
+    window: "dex"
+    text: "TAB"
+  - name: Type the demo tenant password
+    action: type
+    window: "dex"
+    text: "password"
+  - name: Submit the login
+    action: keyboard
+    window: "dex"
+    text: "ENTER"
+
+  - name: Wait for the app window (after the login redirect completes)
     action: wait-window
     window: "POSEIDON*"
     timeout: 30
@@ -127,6 +165,48 @@ steps:
     action: screenshot
     window: "POSEIDON*"
     output: ../../docs/features/screenshots/recap.png
+
+  # --- New-feature captures: the Kanban board + the Service-catalog settings ---
+  - name: Back to Work Items
+    action: click-text
+    window: "POSEIDON*"
+    text: "Work Items"
+  - action: sleep
+    args: "2"
+  - name: Open the View dropdown (shows "Table")
+    action: click-text
+    window: "POSEIDON*"
+    text: "Table"
+  - name: Switch to the Kanban board
+    action: click-text
+    window: "POSEIDON*"
+    text: "Board"
+  - action: sleep
+    args: "3"
+  - name: Screenshot the board (Kanban) view
+    action: screenshot
+    window: "POSEIDON*"
+    output: ../../docs/features/screenshots/work-items-board.png
+
+  - name: Open Settings
+    action: click-text
+    window: "POSEIDON*"
+    text: "Settings"
+  - action: sleep
+    args: "2"
+  - name: Open the Import / Export tab (the Service-catalog panel lives here)
+    action: click-text
+    window: "POSEIDON*"
+    text: "Import"
+  - action: sleep
+    args: "2"
+  - name: Screenshot the Service-catalog settings panel
+    action: screenshot
+    window: "POSEIDON*"
+    output: ../../docs/features/screenshots/settings-catalog.png
+  # NOTE: the work-item field editor (a modal opened by a board card / the Title
+  # pencil) isn't scripted here - it needs a click on a specific demo item; add a
+  # click-text on a known demo title if you want that capture too.
 
   - name: Close the browser window
     action: exec

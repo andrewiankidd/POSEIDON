@@ -20,8 +20,11 @@ everything else considered, [BACKLOG.md](BACKLOG.md).
   recompute on the post-write view. Write-back is Azure DevOps only today; the
   GitHub and GitLab providers are read-focused. (`poseidon-server`)
 - **Config-driven hygiene rules** - required tags, allowed/denied tag lists (with
-  `type:*` wildcard patterns), untagged detection, per-state staleness limits, and
-  pipeline + pull-request checks. Pure engine, fully unit-tested. (`poseidon-rules`)
+  `type:*` wildcard patterns), untagged detection, per-state staleness limits,
+  pipeline + pull-request checks, plus healthchecks: placeholder/bad-title and
+  duplicate-title flags, a near-duplicate (TF-IDF) title scan, and orphaned-children
+  detection (an open child under a Closed/Resolved parent). Pure engine, fully
+  unit-tested. (`poseidon-rules`)
 - **SQLite persistence** - `sqlx` with migrations embedded in the binary
   (auto-provisions on first run), upserts, list queries, and date-range work-item +
   pipeline report aggregates. (`poseidon-store`)
@@ -38,12 +41,33 @@ everything else considered, [BACKLOG.md](BACKLOG.md).
   suggestions.
 - **Frontend** - Dashboard (with a Health-check flag breakdown), Work Items
   (per-column sort/filter, inline State/Tags/PR-link editing, flags joined per
-  item), Pull Requests (active + recently-closed, work-item link chips),
+  item, **and a Kanban board view** grouping the same items by State or any tag
+  axis), Pull Requests (active + recently-closed, work-item link chips),
   Pipelines (status + last failure + log links), Reports (date range, closed-by-
   tag bar chart, success-rate gauge), and Rules (per-team hygiene policy, with
-  override/inherited badge). Global config (repoint URL + an instance-config view
-  reflecting the env-sourced instance settings) lives in a File > Settings modal. Plain HTML/JS,
-  dependency-free SVG charts, no build step.
+  override/inherited badge). Global config (repoint URL, the env-sourced instance
+  settings, and a **Service-catalog CSV import**) lives in a Settings modal. Plain
+  HTML/JS, dependency-free SVG charts, no build step.
+
+### AI-assisted hygiene
+- **Tag suggestions** - a deterministic keyword/alias engine (no model needed) plus
+  an optional AI tagger; suggestions are advisory chips a person applies (POSEIDON
+  never auto-applies). AI runs on an in-browser WebGPU model, an on-device embedded
+  model, or a hosted provider, chosen per client.
+- **Work-item field editor** - an in-app modal edits provider fields (dynamic
+  type introspection, html↔markdown) with per-field **AI draft/improve** and an
+  **"Improve all fields"** sweep: draft each field, harmonise them for consistency,
+  then suggest tags - each result reviewed before it's applied.
+- **AI activity queue** - one client-side queue runs a single heavy AI job at a
+  time (a WebGPU GPU can't run two at once); the rest queue rather than block. A
+  bottom activity bar shows progress, the queue, and a persistent completed list.
+- **On-demand AI audit** - a healthcheck pass over selected items surfaces
+  data-quality problems (vague titles, contradictory/boilerplate bodies) as
+  advisory `ai_audit` flags.
+- **Service-catalog integration** - a provider-agnostic `CatalogSource` (CSV export
+  today; Port / Backstage stubbed) syncs a repo→product→team map, so `product:*`
+  tags resolve from an item's linked repos instead of a hand-maintained list. See
+  [design/catalog-integration.md](design/catalog-integration.md).
 
 ### Cross-cutting
 - **Standalone-or-repointed clients** - a desktop/mobile client runs its own

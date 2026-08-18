@@ -372,7 +372,7 @@ pub struct CatalogConfig {
     /// Source kind: `"csv"` | `"port"` | `"backstage"` | `""`/`"none"` (disabled).
     #[serde(default)]
     pub source: String,
-    /// Raw catalog product id -> taxonomy slug (`product-amcs-pay` -> `pay`). The
+    /// Raw catalog product id -> taxonomy slug (`product-acme-pay` -> `pay`). The
     /// ONE hand-maintained bridge; unlisted ids are auto-slugged.
     #[serde(default)]
     pub product_aliases: BTreeMap<String, String>,

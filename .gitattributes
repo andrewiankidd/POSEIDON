@@ -1,0 +1,3 @@
+
+# sqlx checksums migration bytes — keep LF so a CRLF checkout never breaks the checksum.
+crates/poseidon-store/migrations/*.sql text eol=lf
