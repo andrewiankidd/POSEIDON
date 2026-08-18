@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/andrewiankidd/IdleOps/main/schema/idleops.schema.json
+# Desktop repoint e2e — onboarding path (fresh first-run).
+# POSEIDEN_DATA_DIR points at an empty dir → app boots to first-run onboarding.
+# Drives: Welcome → "Connect to a shared instance" → type hosted URL → Connect,
+# then verifies the reloaded remote client shows hosted stub data.
+steps:
+  - name: Launch the POSEIDEN desktop app
+    action: exec
+    args: cmd /c start "" "C:\git\POSEIDON\target\debug\poseiden-app.exe"
+    wait: false
+
+  - name: Wait for the app window
+    action: wait-window
+    window: "POSEIDEN*"
+    timeout: 30
+
+  - name: Let the webview finish first paint
+    action: sleep
+    args: "4"
+
+  - name: Screenshot the onboarding overlay
+    action: screenshot
+    window: "POSEIDEN*"
+    output: 01-onboard.png
+
+  - name: Choose "Connect to a shared instance"
+    action: click-text
+    window: "POSEIDEN*"
+    text: "Connect to a shared instance"
+
+  - name: Let the remote step render
+    action: sleep
+    args: "1"
+
+  - name: Screenshot the remote-URL step
+    action: screenshot
+    window: "POSEIDEN*"
+    output: 02-remote-step.png
+
+  - name: Focus the instance-URL field (click its placeholder)
+    action: click-text
+    window: "POSEIDEN*"
+    text: "poseiden.example.com"
+
+  - name: Type the hosted instance URL
+    action: type
+    window: "POSEIDEN*"
+    text: "http://127.0.0.1:8737"
+
+  - name: Screenshot the filled URL field
+    action: screenshot
+    window: "POSEIDEN*"
+    output: 03-url-filled.png
+
+  - name: Connect (reloads as a remote client)
+    action: click-text
+    window: "POSEIDEN*"
+    text: "Connect"
+
+  - name: Wait for the reload against the hosted instance
+    action: sleep
+    args: "6"
+
+  - name: Verify the app is now in Remote mode
+    action: assert-text
+    window: "POSEIDEN*"
+    text: "Remote instance"
+
+  - name: Screenshot the repointed dashboard
+    action: screenshot
+    window: "POSEIDEN*"
+    output: 04-remote-dashboard.png
+
+  - name: Go to Work Items
+    action: click-text
+    window: "POSEIDEN*"
+    text: "Work Items"
+
+  - name: Let the list render
+    action: sleep
+    args: "2"
+
+  - name: Verify a known stub work item is present (hosted data flowed through)
+    action: assert-text
+    window: "POSEIDEN*"
+    text: "Ship the reports engine"
+
+  - name: Screenshot the repointed client showing hosted data
+    action: screenshot
+    window: "POSEIDEN*"
+    output: 05-repointed-workitems.png

@@ -86,7 +86,7 @@ Build **B with A as the fallback** — it mirrors POSEIDON's existing dual natur
   and `source:` (how it arrived) are POSEIDON-native and never come from the catalog.
 
 The only hand-maintained bridge is a **canonicalisation map**: raw catalog product
-id → taxonomy slug (`widget-assistant--wa-` → `product:ava`,
+id → taxonomy slug (`widget-assistant--wa-` → `product:wa`,
 `product-acme-pay` → `product:pay`). ~10 curated lines; everything else auto-slugs.
 This is the `OVERRIDE` table in the one-off import script — it graduates into config.
 
@@ -100,7 +100,7 @@ catalog:
   sync_interval: 24h
   field_map: { product: "Product", team: "Owning Teams", repo: "Source" }
   product_aliases:        # raw catalog id -> taxonomy slug (the only hand bit)
-    widget-assistant--wa-: ava
+    widget-assistant--wa-: wa
     product-acme-pay: pay
   derive_allowed_products: true    # allow-list = catalog products ∪ manual
 ```
