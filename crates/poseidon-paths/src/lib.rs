@@ -41,8 +41,21 @@ impl Paths {
     /// Resolve paths for the current process, reading the environment and the
     /// filesystem next to the binary. This is the normal entry point.
     pub fn resolve() -> Self {
-        let binary_dir = current_binary_dir();
-        Self::resolve_with(&env_snapshot(), binary_dir.as_deref())
+        let exe = env::current_exe().ok();
+        let binary_dir = exe
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
+        let binary_name = exe
+            .as_deref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(str::to_string);
+        Self::resolve_with(
+            &env_snapshot(),
+            binary_dir.as_deref(),
+            binary_name.as_deref(),
+        )
     }
 
     /// Resolution core, parameterised on its inputs so it's unit-testable
@@ -52,11 +65,24 @@ impl Paths {
     /// sentinel + portable root); `None` in contexts where it can't be
     /// determined, in which case the sentinel check is skipped and portable
     /// mode can still be forced via the env var (rooted at the current dir).
-    pub fn resolve_with(env: &EnvSnapshot, binary_dir: Option<&Path>) -> Self {
+    /// `binary_name` is the executable's file stem: a name containing
+    /// `portable` (case-insensitive) ships as the single-file portable download
+    /// and flips portable mode on with no sidecar `.portable` sentinel needed.
+    pub fn resolve_with(
+        env: &EnvSnapshot,
+        binary_dir: Option<&Path>,
+        binary_name: Option<&str>,
+    ) -> Self {
         let sentinel_present = binary_dir
             .map(|d| d.join(PORTABLE_SENTINEL).exists())
             .unwrap_or(false);
-        let portable = env.portable_flag || sentinel_present;
+        // A binary whose own name contains "portable" is the single-file portable
+        // build - run it and it roots under `./.portable/` beside itself, no zip or
+        // sentinel file required.
+        let name_portable = binary_name
+            .map(|n| n.to_ascii_lowercase().contains("portable"))
+            .unwrap_or(false);
+        let portable = env.portable_flag || sentinel_present || name_portable;
 
         if portable {
             let base = binary_dir
@@ -217,7 +243,7 @@ mod tests {
     fn portable_env_flag_roots_under_binary_dir() {
         let bin = PathBuf::from("/opt/poseidon");
         let env = EnvSnapshot::new(true);
-        let paths = Paths::resolve_with(&env, Some(&bin));
+        let paths = Paths::resolve_with(&env, Some(&bin), None);
         assert!(paths.is_portable());
         assert_eq!(paths.data_root(), bin.join(".portable"));
         assert_eq!(paths.database_path(), bin.join(".portable/poseidon.db"));
@@ -230,15 +256,35 @@ mod tests {
         std::fs::write(dir.path().join(PORTABLE_SENTINEL), b"").unwrap();
         // No env flag - the sentinel alone must flip portable mode on.
         let env = EnvSnapshot::default();
-        let paths = Paths::resolve_with(&env, Some(dir.path()));
+        let paths = Paths::resolve_with(&env, Some(dir.path()), None);
         assert!(paths.is_portable());
         assert_eq!(paths.data_root(), dir.path().join(".portable"));
     }
 
     #[test]
+    fn binary_named_portable_triggers_portable_mode_without_a_sentinel() {
+        // The single-file portable download: the exe's own name carries the signal,
+        // no sidecar `.portable` file. Case-insensitive substring.
+        let bin = PathBuf::from("/downloads");
+        let env = EnvSnapshot::default();
+        for name in [
+            "poseidon-portable",
+            "POSEIDON-Portable",
+            "poseidon_portable_win",
+        ] {
+            let paths = Paths::resolve_with(&env, Some(&bin), Some(name));
+            assert!(paths.is_portable(), "{name} should be portable");
+            assert_eq!(paths.data_root(), bin.join(".portable"));
+        }
+        // The normal installed name is NOT portable.
+        let installed = Paths::resolve_with(&env, Some(&bin), Some("poseidon-app"));
+        assert!(!installed.is_portable());
+    }
+
+    #[test]
     fn data_dir_override_wins_over_os_dir_but_is_not_portable() {
         let env = EnvSnapshot::default().with_data_dir(Some("/data".to_string()));
-        let paths = Paths::resolve_with(&env, Some(Path::new("/usr/local/bin")));
+        let paths = Paths::resolve_with(&env, Some(Path::new("/usr/local/bin")), None);
         assert!(!paths.is_portable());
         assert_eq!(paths.data_root(), Path::new("/data"));
         assert_eq!(paths.database_path(), Path::new("/data/poseidon.db"));
@@ -249,7 +295,7 @@ mod tests {
         // Portable is the strongest signal - even with a data-dir override set,
         // a portable environment stays confined beneath the binary.
         let env = EnvSnapshot::new(true).with_data_dir(Some("/data".to_string()));
-        let paths = Paths::resolve_with(&env, Some(Path::new("/opt/poseidon")));
+        let paths = Paths::resolve_with(&env, Some(Path::new("/opt/poseidon")), None);
         assert!(paths.is_portable());
         assert_eq!(paths.data_root(), Path::new("/opt/poseidon/.portable"));
     }
@@ -258,7 +304,7 @@ mod tests {
     fn non_portable_uses_os_data_dir_not_binary_dir() {
         let bin = PathBuf::from("/usr/local/bin");
         let env = EnvSnapshot::default();
-        let paths = Paths::resolve_with(&env, Some(&bin));
+        let paths = Paths::resolve_with(&env, Some(&bin), None);
         assert!(!paths.is_portable());
         // Whatever the OS dir resolves to, it must NOT be under the binary dir.
         assert!(!paths.data_root().starts_with(&bin));

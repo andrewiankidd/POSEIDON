@@ -47,6 +47,8 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive: zip
             cli_bin: poseidon.exe
+            app_bin: poseidon-app.exe
+            portable_bin: poseidon-portable-windows.exe
             bundles: "msi,nsis"
             friendly: windows
           - name: "Linux 🐧"
@@ -54,6 +56,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             cli_bin: poseidon
+            app_bin: poseidon-app
+            portable_bin: poseidon-portable-linux
             bundles: "deb,appimage"
             friendly: linux
           - name: "macOS 🍎"
@@ -61,6 +65,8 @@ jobs:
             target: aarch64-apple-darwin
             archive: tar.gz
             cli_bin: poseidon
+            app_bin: poseidon-app
+            portable_bin: poseidon-portable-macos
             bundles: "app,dmg"
             friendly: macos
     steps:
@@ -140,6 +146,19 @@ jobs:
           root="target/${{ matrix.target }}/release/bundle"
           find "$root" -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
             -o -name '*.deb' -o -name '*.AppImage' \) -exec cp {} dist-desktop/ \; || true
+          ls -lh dist-desktop/ || true
+
+      # The Tauri build already produced a self-contained app binary (the frontend
+      # is embedded). Ship it renamed to `poseidon-portable-<os>` - the "portable"
+      # in the name is itself the trigger (poseidon-paths detects it), so the exe
+      # confines every write under ./.portable/ with zero flags. Uploaded raw (a
+      # single executable is never zipped), so the release links the binary directly.
+      - name: 📁 Stage portable single binary (name triggers portable mode)
+        shell: bash
+        run: |
+          mkdir -p dist-desktop
+          cp "target/${{ matrix.target }}/release/${{ matrix.app_bin }}" \
+            "dist-desktop/${{ matrix.portable_bin }}"
           ls -lh dist-desktop/ || true
 
       - name: ⬆️ Upload desktop artifact
