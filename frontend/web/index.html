@@ -17,8 +17,10 @@
     talks to that instance's own API; on a static host it prompts you to
     connect to your instance URL (repoint).
 
-    Download links point at the GitHub Releases "latest" assets by stable
-    filename, so they resolve the same URL release-to-release.
+    Download links point at the rolling `latest-main` release by stable,
+    version-less filename, so they resolve the same URL every build. (The
+    release workflow renames Tauri's version-stamped bundles to these names.)
+    Swap to `releases/latest/download/...` once tagged `v*` releases ship.
   -->
   <header class="hero">
     <div class="hero-inner">
@@ -92,34 +94,34 @@
       </p>
       <div class="dl-grid">
         <div class="dl-card has-alt">
-          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-windows-setup.exe">
+          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-desktop-windows-setup.exe">
             <span class="dl-os">Windows</span><span class="dl-kind">Desktop installer (.exe)</span>
           </a>
           <button type="button" class="dl-alt-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Other Windows downloads">▾</button>
           <div class="dl-alt-menu" role="menu" hidden>
-            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-portable-windows.exe">
+            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-portable-windows.exe">
               Portable<span class="dl-alt-sub">Single .exe, no install</span>
             </a>
           </div>
         </div>
         <div class="dl-card has-alt">
-          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-macos-setup.dmg">
+          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-desktop-macos-setup.dmg">
             <span class="dl-os">macOS</span><span class="dl-kind">Desktop app (.dmg)</span>
           </a>
           <button type="button" class="dl-alt-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Other macOS downloads">▾</button>
           <div class="dl-alt-menu" role="menu" hidden>
-            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-portable-macos">
+            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-portable-macos">
               Portable<span class="dl-alt-sub">Single binary, no install</span>
             </a>
           </div>
         </div>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-linux-portable.AppImage">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-desktop-linux-portable.AppImage">
           <span class="dl-os">Linux</span><span class="dl-kind">Desktop (AppImage) - portable, no install</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-mobile-android.apk">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/download/latest-main/poseidon-mobile-android.apk">
           <span class="dl-os">Android</span><span class="dl-kind">Mobile app (.apk)</span>
         </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest">
+        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/tag/latest-main">
           <span class="dl-os">CLI</span><span class="dl-kind">poseidon - poll / lint / report</span>
         </a>
         <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/pkgs/container/poseidon">
