@@ -46,6 +46,10 @@ jobs:
   build-platform:
     name: 🏗️ Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # A Tauri build is ~10-15 min; cap it so a hung step (the AppImage tooling has
+    # stalled a Linux leg for the full 6-hour default before) fails fast and frees
+    # the release instead of pinning a runner for hours.
+    timeout-minutes: 45
     # Stamp version + commit into every binary so the Doctor's update check
     # knows what it is. A v* tag build is that tag; a main build is the rolling
     # `latest-main`; the commit lets a moved rolling tag be detected.
