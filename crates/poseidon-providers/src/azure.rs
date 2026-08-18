@@ -71,7 +71,9 @@ fn enc(segment: &str) -> String {
 /// Azure DevOps rich-text fields are HTML; the editor works in markdown. Convert
 /// on the way out so the modal only ever sees markdown.
 fn html_to_md(html: &str) -> String {
-    html2md::parse_html(html)
+    // Fall back to the raw html if conversion ever errors, so a field is never
+    // silently blanked in the editor.
+    htmd::convert(html).unwrap_or_else(|_| html.to_string())
 }
 
 /// …and back on save. Markdown -> HTML for the write-back.
