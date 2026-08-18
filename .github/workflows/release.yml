@@ -153,13 +153,24 @@ jobs:
         working-directory: crates/poseidon-app
         run: cargo tauri build --bundles ${{ matrix.bundles }} --target ${{ matrix.target }}
 
-      - name: 📁 Stage installers
+      - name: 📁 Stage installers (renamed to stable, version-less names)
         shell: bash
+        # Tauri bakes the version into the bundle filename (e.g.
+        # POSEIDON_0.1.0_x64-setup.exe), which drifts every rolling build. Copy
+        # each to a fixed name so the landing page can link one URL release-to-
+        # release. Map by extension — each platform only emits its own bundles.
         run: |
           mkdir -p dist-desktop
           root="target/${{ matrix.target }}/release/bundle"
-          find "$root" -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
-            -o -name '*.deb' -o -name '*.AppImage' \) -exec cp {} dist-desktop/ \; || true
+          find "$root" -type f | while read -r f; do
+            case "$f" in
+              *-setup.exe) cp "$f" dist-desktop/poseidon-desktop-windows-setup.exe ;;
+              *.msi)       cp "$f" dist-desktop/poseidon-desktop-windows.msi ;;
+              *.dmg)       cp "$f" dist-desktop/poseidon-desktop-macos-setup.dmg ;;
+              *.AppImage)  cp "$f" dist-desktop/poseidon-desktop-linux-portable.AppImage ;;
+              *.deb)       cp "$f" dist-desktop/poseidon-desktop-linux.deb ;;
+            esac
+          done
           ls -lh dist-desktop/ || true
 
       # The Tauri build already produced a self-contained app binary (the frontend
