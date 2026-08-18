@@ -9,6 +9,17 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Source docs / root meta don't change the image (the served in-app docs are
+    # the mirror under frontend/web/assets/docs, which isn't ignored) — skip the
+    # rebuild for a changelog-only push.
+    paths-ignore:
+      - "CHANGELOG.md"
+      - "README.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/**/*.md"
   pull_request:
   workflow_dispatch:
 

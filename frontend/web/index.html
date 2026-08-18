@@ -91,14 +91,30 @@
         the <a href="https://github.com/andrewiankidd/POSEIDON/releases" target="_blank" rel="noopener">Releases page</a>.
       </p>
       <div class="dl-grid">
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-windows-setup.exe">
-          <span class="dl-os">Windows</span><span class="dl-kind">Desktop installer (.exe)</span>
-        </a>
-        <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-macos-setup.dmg">
-          <span class="dl-os">macOS</span><span class="dl-kind">Desktop app (.dmg)</span>
-        </a>
+        <div class="dl-card has-alt">
+          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-windows-setup.exe">
+            <span class="dl-os">Windows</span><span class="dl-kind">Desktop installer (.exe)</span>
+          </a>
+          <button type="button" class="dl-alt-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Other Windows downloads">▾</button>
+          <div class="dl-alt-menu" role="menu" hidden>
+            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-portable-windows.exe">
+              Portable<span class="dl-alt-sub">Single .exe, no install</span>
+            </a>
+          </div>
+        </div>
+        <div class="dl-card has-alt">
+          <a class="dl-main" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-macos-setup.dmg">
+            <span class="dl-os">macOS</span><span class="dl-kind">Desktop app (.dmg)</span>
+          </a>
+          <button type="button" class="dl-alt-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Other macOS downloads">▾</button>
+          <div class="dl-alt-menu" role="menu" hidden>
+            <a role="menuitem" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-portable-macos">
+              Portable<span class="dl-alt-sub">Single binary, no install</span>
+            </a>
+          </div>
+        </div>
         <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-desktop-linux-portable.AppImage">
-          <span class="dl-os">Linux</span><span class="dl-kind">Desktop (AppImage)</span>
+          <span class="dl-os">Linux</span><span class="dl-kind">Desktop (AppImage) - portable, no install</span>
         </a>
         <a class="dl-card" href="https://github.com/andrewiankidd/POSEIDON/releases/latest/download/poseidon-mobile-android.apk">
           <span class="dl-os">Android</span><span class="dl-kind">Mobile app (.apk)</span>
@@ -159,6 +175,37 @@
         fine.innerHTML = 'This is the public demo, running on built-in sample data - no backend needed. '
           + 'To use POSEIDON for real, download a build or run the container and point it at your own instance.';
       }
+    })();
+
+    // Download cards with a portable variant carry a ▾ toggle that opens a small
+    // menu (the main card stays the installer). Plain click-to-toggle, closes on
+    // outside click or Escape; the menu links are ordinary download anchors.
+    (function () {
+      var toggles = Array.prototype.slice.call(document.querySelectorAll('.dl-alt-toggle'));
+      function closeAll(except) {
+        toggles.forEach(function (t) {
+          if (t === except) return;
+          t.setAttribute('aria-expanded', 'false');
+          if (t.nextElementSibling) t.nextElementSibling.hidden = true;
+        });
+      }
+      toggles.forEach(function (t) {
+        t.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var menu = t.nextElementSibling;
+          var open = t.getAttribute('aria-expanded') === 'true';
+          closeAll(t);
+          t.setAttribute('aria-expanded', String(!open));
+          if (menu) menu.hidden = open;
+        });
+      });
+      document.addEventListener('click', function (e) {
+        if (!e.target.closest('.dl-card.has-alt')) closeAll(null);
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeAll(null);
+      });
     })();
   </script>
 </body>

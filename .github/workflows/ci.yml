@@ -3,6 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-only pushes to main don't affect fmt/clippy/test — skip them. PRs are
+    # left unfiltered below so a required status check always reports on a PR.
+    paths-ignore:
+      - "CHANGELOG.md"
+      - "README.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/**/*.md"
   pull_request:
 
 # Cancel an in-progress run when a newer commit lands on the same ref (branch or

@@ -12,6 +12,14 @@ name: Deploy landing + web client → GitHub Pages
 on:
   push:
     branches: [main]
+    # The site serves docs/** and frontend/web/**, so those still deploy. Skip a
+    # redeploy for root meta the site doesn't serve (e.g. a changelog-only push).
+    paths-ignore:
+      - "CHANGELOG.md"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/**/*.md"
   workflow_dispatch:
 
 permissions:
