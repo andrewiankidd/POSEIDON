@@ -93,6 +93,40 @@ main { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
 .dl-os { font-weight: 700; color: var(--ink); }
 .dl-kind { font-size: 13px; color: var(--ink-soft); }
 
+/* Cards with a portable variant: the card is a wrapper, the installer link fills
+   it, and a ▾ toggle in the corner opens the portable option in a small menu. */
+.dl-card.has-alt { position: relative; padding: 0; }
+.dl-card.has-alt .dl-main {
+  display: flex; flex-direction: column; gap: 4px;
+  text-decoration: none; color: inherit;
+  padding: 16px 44px 16px 18px; border-radius: inherit;
+}
+.dl-alt-toggle {
+  position: absolute; top: 10px; right: 10px;
+  width: 28px; height: 28px; padding: 0; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--ink-soft); font-size: 14px; line-height: 1; cursor: pointer;
+  transition: background .1s ease, color .1s ease, border-color .1s ease;
+}
+.dl-alt-toggle:hover,
+.dl-alt-toggle[aria-expanded="true"] {
+  background: var(--bg); border-color: var(--accent); color: var(--ink);
+}
+.dl-alt-menu {
+  position: absolute; top: 44px; right: 10px; z-index: 20;
+  min-width: 208px; padding: 6px; text-align: left;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 9px; box-shadow: var(--shadow);
+}
+.dl-alt-menu[hidden] { display: none; }
+.dl-alt-menu a {
+  display: block; padding: 8px 10px; border-radius: 6px;
+  text-decoration: none; color: var(--ink); font-weight: 600; font-size: 14px;
+}
+.dl-alt-menu a:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.dl-alt-sub { display: block; margin-top: 1px; font-weight: 400; font-size: 12px; color: var(--ink-soft); }
+
 footer {
   border-top: 1px solid var(--border); padding: 24px; font-size: 13px;
   color: var(--ink-soft); display: flex; gap: 16px; align-items: center;

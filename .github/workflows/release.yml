@@ -15,6 +15,20 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Docs-only pushes never change a binary — skip the whole build so a
+    # changelog tweak doesn't burn a release run (and, with cancel-in-progress
+    # below, doesn't cancel an in-flight one that's actually producing artifacts).
+    # Only source docs / root meta are ignored — the in-app docs the build bundles
+    # are the mirror under frontend/web/assets/docs, which is NOT ignored, so a
+    # push that touches served content still builds.
+    paths-ignore:
+      - "CHANGELOG.md"
+      - "README.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".github/**/*.md"
   workflow_dispatch:
     inputs:
       tag:
