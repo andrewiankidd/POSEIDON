@@ -1384,12 +1384,11 @@ mod tests {
             .clear_ai_field_drafts(DEFAULT_OWNER, 42)
             .await
             .unwrap();
-        assert!(store
+        assert!(!store
             .ai_field_drafts(DEFAULT_OWNER, None)
             .await
             .unwrap()
-            .get(&42)
-            .is_none());
+            .contains_key(&42));
 
         // Activity: same id upserts in place (not appends); items JSON round-trips.
         let mut rec = AiActivityRecord {
