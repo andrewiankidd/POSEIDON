@@ -79,10 +79,13 @@ function jobRow(job, kind) {
 // One row in any job's per-item list: `#id → …`. A tagging job passes `tags` (rendered
 // as +chips); every other job passes a `note` string (e.g. 'audited', 'ready (3 fields)',
 // 'too sparse'). `tone: 'warn'` dims/marks a skip or failure.
+// A tag may be a plain string or a `{ tag, reason }` suggestion object (the WebGPU tagger
+// returns the latter) - normalise to the name so we never render "[object Object]".
+const tagName = (t) => (t && typeof t === 'object' ? t.tag : t);
 function itemLine(it) {
   let detail;
   if (it.tags && it.tags.length) {
-    detail = el('span', { class: 'ai-item-tags' }, it.tags.map((t) => el('span', { class: 'ai-item-tag' }, '+' + t)));
+    detail = el('span', { class: 'ai-item-tags' }, it.tags.map((t) => el('span', { class: 'ai-item-tag' }, '+' + tagName(t))));
   } else {
     detail = el('span', { class: it.tone === 'warn' ? 'ai-item-skip' : 'ai-item-none' }, it.note || 'none');
   }

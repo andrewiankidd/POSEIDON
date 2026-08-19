@@ -1523,7 +1523,10 @@ async function suggestTagsForItem(item, onStatus) {
       () => {}, rules.required_tags || [], hints, rules.team_background || '', rules.max_suggestions);
     await api.storeTagSuggestions(teamScope, results);
     const r = (results || []).find((x) => String(x.id) === String(item.id));
-    return r ? r.tags : [];
+    // runWebGpuTagging returns `{ tag, reason }` objects; the server store needs those,
+    // but callers here (the editor's clickable "+tag" chips) want plain tag names - map
+    // to strings so a chip both renders and adds the tag, not "[object Object]".
+    return r ? (r.tags || []).map((x) => (x && typeof x === 'object' ? x.tag : x)) : [];
   }
   // Server path: background run + poll; results land server-side (Suggested column).
   await api.runTagSuggestions(teamScope, [item.id]);
