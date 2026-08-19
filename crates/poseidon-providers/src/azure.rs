@@ -205,12 +205,14 @@ fn is_noise_field(reference: &str) -> bool {
 /// be offered as an editable field. Refs are lowercased (ADO treats them case-
 /// insensitively). An empty result (no form / unparseable) means "unknown" - callers
 /// fall back to not filtering rather than hiding everything.
-fn form_field_refs(xml_form: &str) -> std::collections::HashSet<String> {
+fn form_field_refs(xml_form: &str) -> Vec<String> {
     // The form XML is `<Control FieldName="System.Description" .../>` (attribute order
     // and quoting vary). Scan for each `FieldName=` attribute rather than parsing XML,
     // so a formatting quirk can never make us drop the whole form. Case-insensitive on
-    // the attribute name; the value is taken verbatim up to the closing quote.
-    let mut refs = std::collections::HashSet::new();
+    // the attribute name; the value is taken verbatim up to the closing quote. Refs are
+    // returned in DOCUMENT ORDER (deduped, first occurrence wins) so callers can lay the
+    // editor out exactly as the process does - Description before Acceptance Criteria, etc.
+    let mut refs: Vec<String> = Vec::new();
     let bytes = xml_form.as_bytes();
     let lower = xml_form.to_ascii_lowercase();
     let needle = "fieldname";
@@ -234,7 +236,10 @@ fn form_field_refs(xml_form: &str) -> std::collections::HashSet<String> {
                 if let Some(endrel) = xml_form[start..].find(quote as char) {
                     let val = xml_form[start..start + endrel].trim();
                     if !val.is_empty() {
-                        refs.insert(val.to_ascii_lowercase());
+                        let v = val.to_ascii_lowercase();
+                        if !refs.contains(&v) {
+                            refs.push(v);
+                        }
                     }
                     from = start + endrel + 1;
                     continue;
@@ -847,8 +852,10 @@ impl Provider for AzureDevOpsProvider {
             // something the user edits here (e.g. a Bug's System.Description, replaced by
             // Repro Steps). Drop it. We keep any off-form field that HAS a value, so we
             // never lose real data, and keep all fields when the form is unknown.
-            let on_form =
-                form_refs.is_empty() || form_refs.contains(&tf.reference_name.to_ascii_lowercase());
+            let on_form = form_refs.is_empty()
+                || form_refs
+                    .iter()
+                    .any(|r| r == &tf.reference_name.to_ascii_lowercase());
             if !on_form && value.trim().is_empty() {
                 continue;
             }
@@ -869,9 +876,23 @@ impl Provider for AzureDevOpsProvider {
                 help: tf.help_text.filter(|s| !s.trim().is_empty()),
             });
         }
-        // Rich narrative fields first (what people edit + what AI drafts), then the rest
-        // alphabetically - so Description / Repro Steps / Acceptance Criteria lead.
-        out.sort_by_key(|f| (!f.kind.is_draftable(), f.label.to_lowercase()));
+        // Order fields the way the process lays them out on the form (so Description
+        // precedes Acceptance Criteria, matching Azure DevOps), not alphabetically. A field
+        // kept despite being off-form (it carries a value) has no form position and sorts
+        // last; ties - and the unknown-form fallback - order draftable-first then by label
+        // so the editor still reads sensibly.
+        let form_pos = |f: &EditableField| {
+            form_refs
+                .iter()
+                .position(|r| r == &f.reference.to_ascii_lowercase())
+                .unwrap_or(usize::MAX)
+        };
+        out.sort_by(|a, b| {
+            form_pos(a)
+                .cmp(&form_pos(b))
+                .then_with(|| (!a.kind.is_draftable()).cmp(&(!b.kind.is_draftable())))
+                .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+        });
         Ok(out)
     }
 
@@ -1544,11 +1565,18 @@ mod tests {
               <Control  FieldName = "System.AreaPath" Type="WorkItemClassificationControl"/>
             </Layout></FORM>"#;
         let refs = form_field_refs(xml);
-        assert!(refs.contains("microsoft.vsts.tcm.reprosteps"));
-        assert!(refs.contains("custom.expectedbehaviour")); // lowercased attr name + value
-        assert!(refs.contains("system.areapath")); // whitespace around '=' tolerated
-        assert!(!refs.contains("system.description")); // absent from the form
-                                                       // No form / junk -> empty set (callers then fall back to not filtering).
+        // Returned in DOCUMENT ORDER (the editor lays fields out this way), lowercased,
+        // tolerating mixed quoting / attribute order / whitespace around '='.
+        assert_eq!(
+            refs,
+            vec![
+                "microsoft.vsts.tcm.reprosteps".to_string(),
+                "custom.expectedbehaviour".to_string(),
+                "system.areapath".to_string(),
+            ]
+        );
+        assert!(!refs.iter().any(|r| r == "system.description")); // absent from the form
+                                                                  // No form / junk -> empty (callers then fall back to not filtering).
         assert!(form_field_refs("").is_empty());
         assert!(form_field_refs("<Form>no controls here</Form>").is_empty());
     }

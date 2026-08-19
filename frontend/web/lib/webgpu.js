@@ -9,13 +9,24 @@
 
 const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
 
-// Our offline preset ids -> web-llm prebuilt model ids.
-const MODEL_MAP = {
-  'qwen2.5-0.5b': 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-  'qwen2.5-1.5b': 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
-  'qwen2.5-3b': 'Qwen2.5-3B-Instruct-q4f16_1-MLC',
-  'qwen2.5-7b': 'Qwen2.5-7B-Instruct-q4f16_1-MLC',
-};
+// Preset id -> web-llm model id, and the largest->smallest fallback ladder. BOTH are
+// derived at runtime from the server's model catalog (poseidon-ai's OFFLINE_MODELS, which
+// carries each model's `webgpu_id` + `min_vram_mb`) via registerModels() - so swapping the
+// model family is a one-place edit in presets.rs, with NO ids hardcoded here.
+let MODEL_MAP = {};
+let MODEL_LADDER = [];
+
+/** Register the model catalog (the server's `presets.offline`) so this module can resolve
+ *  web-llm ids and the load-fallback ladder without hardcoding them. Call once the
+ *  /llm-config presets are fetched. Ignores presets without a `webgpu_id`. */
+export function registerModels(presets) {
+  const list = (presets || []).filter((p) => p && p.id && p.webgpu_id);
+  MODEL_MAP = Object.fromEntries(list.map((p) => [p.id, p.webgpu_id]));
+  MODEL_LADDER = list
+    .slice()
+    .sort((a, b) => (b.min_vram_mb || 0) - (a.min_vram_mb || 0))
+    .map((p) => p.id);
+}
 
 // Mirror of poseidon-ai's SUGGESTION_SLACK + default_max_suggestions: the AI's
 // per-item tag ceiling scales with the required-tag axes (so product/area/source all
@@ -66,8 +77,6 @@ export function webgpuAvailable() {
   return typeof navigator !== 'undefined' && !!navigator.gpu;
 }
 
-// Model ladder, largest -> smallest, for capability sizing + load fallback.
-const MODEL_LADDER = ['qwen2.5-7b', 'qwen2.5-3b', 'qwen2.5-1.5b', 'qwen2.5-0.5b'];
 
 /**
  * Browser-only platform capabilities the server can't see, POSTed to the autotune
@@ -78,17 +87,55 @@ const MODEL_LADDER = ['qwen2.5-7b', 'qwen2.5-3b', 'qwen2.5-1.5b', 'qwen2.5-0.5b'
  * coarse RAM/core count and defaults WebGPU to a strong-but-safe model; the
  * benchmark 'tune' + the load fallback ladder are the reliable path higher.
  */
+// WebGPU exposes no VRAM figure, so MEASURE how much GPU memory we can actually
+// allocate: grab STORAGE buffers (capped at the adapter's max buffer size) until an
+// allocation trips the out-of-memory error scope, then free them all. The total we
+// reached is a conservative floor on usable VRAM - enough to t-shirt-size the model
+// WITHOUT downloading it first (so a 750 Ti never pulls a 7B). Bounded (32 GB ceiling),
+// no writes, no model load; best-effort - any failure leaves vram unmeasured and the
+// caller falls back to the conservative default (then the load ladder still protects us).
+async function probeVramMb(adapter) {
+  let device;
+  try { device = await adapter.requestDevice(); } catch { return null; }
+  const CHUNK = Math.min(adapter.limits?.maxBufferSize || (256 * 1024 * 1024), 256 * 1024 * 1024);
+  const CEILING = 32 * 1024 * 1024 * 1024; // don't probe past 32 GB
+  const buffers = [];
+  let bytes = 0;
+  try {
+    while (bytes + CHUNK <= CEILING) {
+      device.pushErrorScope('out-of-memory');
+      const buf = device.createBuffer({ size: CHUNK, usage: GPUBufferUsage.STORAGE });
+      const err = await device.popErrorScope();
+      if (err) { try { buf.destroy(); } catch { /* ignore */ } break; }
+      buffers.push(buf);
+      bytes += CHUNK;
+    }
+  } catch { /* stop on any unexpected error - keep what we measured */ }
+  for (const b of buffers) { try { b.destroy(); } catch { /* ignore */ } }
+  try { device.destroy(); } catch { /* ignore */ }
+  return bytes > 0 ? Math.round(bytes / (1024 * 1024)) : null;
+}
+
 export async function detectBrowserCaps() {
   const nav = typeof navigator !== 'undefined' ? navigator : {};
   let webgpu = false;
+  let adapter = null;
   if (nav.gpu) {
     try {
-      const adapter = await nav.gpu.requestAdapter();
+      adapter = await nav.gpu.requestAdapter();
       // A software/fallback adapter isn't worth running a real model on.
       webgpu = !!adapter && !adapter.isFallbackAdapter;
-    } catch { webgpu = false; }
+    } catch { webgpu = false; adapter = null; }
   }
   const caps = { embedded: false, gpu: false, webgpu };
+  if (webgpu && adapter) {
+    // Measure usable VRAM so the model auto-sizes to this GPU (no manual picking, no
+    // speculative big download). Leaves vram_mb unset if the probe can't run.
+    try {
+      const vram = await probeVramMb(adapter);
+      if (vram) caps.vram_mb = vram;
+    } catch { /* best-effort */ }
+  }
   if (typeof nav.deviceMemory === 'number' && nav.deviceMemory > 0) {
     caps.ram_mb = Math.round(nav.deviceMemory * 1024); // coarse (capped at 8 by the browser)
   }
@@ -150,6 +197,19 @@ function extractJson(s) {
   return a >= 0 && b > a ? t.slice(a, b + 1) : '{}';
 }
 
+// Mirror of poseidon-ai's parse_audit_response (same JSON shape: {"issues":[{kind,
+// detail}]}) so the browser can show live per-item audit detail. Best-effort: returns
+// null when the text isn't parseable (so the caller can say "audited" rather than
+// falsely "clean"); the server re-parses authoritatively for the stored flags.
+export function parseAudit(text) {
+  let reply;
+  try { reply = JSON.parse(extractJson(text)); } catch { return null; }
+  const issues = Array.isArray(reply && reply.issues) ? reply.issues : [];
+  return issues
+    .filter((i) => i && i.kind && String(i.detail || '').trim())
+    .map((i) => ({ kind: String(i.kind), detail: String(i.detail).trim() }));
+}
+
 // Mirror of poseidon-ai's parse_suggestions: keep only allowed tags (canonical
 // spelling), dedupe, cap at `max`. The server re-validates too.
 function parseSuggestions(text, allowed, max) {
@@ -183,10 +243,18 @@ async function getEngine(modelId, onReport) {
   return enginePromise;
 }
 
-/** Resolve our preset id to a web-llm model id (exported for the download UI). */
+/** Resolve our preset id to a web-llm model id (exported for the download UI). Falls back
+ *  to the smallest registered model, then the raw id, if the map isn't populated yet. */
 export function webGpuModelId(offlineModel) {
-  return MODEL_MAP[offlineModel] || MODEL_MAP['qwen2.5-0.5b'];
+  return MODEL_MAP[offlineModel]
+    || MODEL_MAP[MODEL_LADDER[MODEL_LADDER.length - 1]]
+    || offlineModel;
 }
+
+// Qwen3 has a "thinking" mode that emits a chain-of-thought before answering - pure wasted
+// tokens (and latency) for our structured tag/draft output. The `/no_think` soft-switch in
+// the system message disables it; models that don't recognise it (Qwen2.5, Llama) ignore it.
+const NO_THINK = '\n\n/no_think';
 
 /**
  * Whether this model is already fully cached in the browser (Cache Storage /
@@ -222,7 +290,14 @@ export async function prepareModel(offlineModel, onReport) {
  * engine; throws only if even the smallest model won't load.
  */
 async function loadWithFallback(offlineModel, onStatus) {
-  const start = Math.max(0, MODEL_LADDER.indexOf(offlineModel)); // requested (or top) down
+  // Ladder not populated yet (registerModels hasn't run, or a run fired before boot
+  // finished) - load the one requested model directly rather than throwing.
+  if (!MODEL_LADDER.length) {
+    return getEngine(webGpuModelId(offlineModel), (p) => onStatus && onStatus(p && p.text ? p.text : 'Loading model…'));
+  }
+  // indexOf === -1 (requested model not in the ladder) → start at the top and step down.
+  const idx = MODEL_LADDER.indexOf(offlineModel);
+  const start = idx < 0 ? 0 : idx;
   let lastErr;
   for (let i = start; i < MODEL_LADDER.length; i++) {
     const id = MODEL_LADDER[i];
@@ -259,10 +334,10 @@ export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, o
   const engine = await loadWithFallback(offlineModel, onStatus);
   const results = [];
   for (let i = 0; i < items.length; i++) {
-    if (onItem) onItem(i, items.length, 0);
+    if (onItem) onItem(i, items.length, null);
     const resp = await engine.chat.completions.create({
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: SYSTEM_PROMPT + NO_THINK },
         { role: 'user', content: buildUserPrompt(items[i], allowed, required, hints, background) },
       ],
       temperature: 0.2,
@@ -282,7 +357,10 @@ export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, o
       console.debug(`[tagger] #${items[i].id} -> ${tags.length} tags: ${tags.join(', ')}`, { rawModelOutput: text });
     }
     results.push({ id: items[i].id, tags });
-    if (onItem) onItem(i + 1, items.length, tags.length);
+    // Third arg carries the finished item's result (id + the tags that survived
+    // allow-list filtering) so the caller can show a live per-item row; the first
+    // two args stay the done/total progress count.
+    if (onItem) onItem(i + 1, items.length, { id: items[i].id, tags });
   }
   return results;
 }
@@ -297,7 +375,7 @@ export async function runWebGpuChat(offlineModel, system, user, onStatus) {
   const engine = await loadWithFallback(offlineModel, onStatus);
   const resp = await engine.chat.completions.create({
     messages: [
-      { role: 'system', content: system },
+      { role: 'system', content: (system || '') + NO_THINK },
       { role: 'user', content: user },
     ],
     temperature: 0.3,

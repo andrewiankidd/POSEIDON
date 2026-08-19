@@ -418,7 +418,9 @@ export const api = {
    *  Returns { fields: [{reference,label,kind,value,options,read_only,required,help}] }.
    *  Type-specific on Azure DevOps; title + body on GitHub/GitLab. */
   workItemFields: (id, team) =>
-    request('/work-items/' + encodeURIComponent(id) + '/fields', { query: { team } }),
+    request('/work-items/' + encodeURIComponent(id) + '/fields', {
+      query: { team }, invokeCmd: 'work_item_fields', invokeArgs: { id, team },
+    }),
   /** Save edited fields - writes each changed field through to the provider and
    *  returns { item, flags }. `changes` = [{ reference, value }] (markdown for rich
    *  fields). */
@@ -426,13 +428,38 @@ export const api = {
     request('/work-items/' + encodeURIComponent(id) + '/fields', {
       method: 'PUT',
       body: { team, changes },
+      invokeCmd: 'update_work_item_fields', invokeArgs: { id, team, changes },
     }),
+  /** Persist the pending "Improve all" drafts for one item so they survive a refresh.
+   *  `drafts` = [{ reference, value }]; an empty array clears them. */
+  setFieldDrafts: (id, { team, drafts }) =>
+    request('/work-items/' + encodeURIComponent(id) + '/drafts', {
+      method: 'PUT', body: { team, drafts: drafts || [] },
+      invokeCmd: 'set_field_drafts', invokeArgs: { id, team, drafts: drafts || [] },
+    }),
+  /** Clear one item's pending drafts (on review/apply). */
+  clearFieldDrafts: (id) =>
+    request('/work-items/' + encodeURIComponent(id) + '/drafts', {
+      method: 'DELETE', invokeCmd: 'clear_field_drafts', invokeArgs: { id },
+    }),
+  /** All pending improve-all drafts for the scope, keyed by work-item id →
+   *  [{ reference, value }]. Drives the ✨ badges + editor pre-fill after a refresh. */
+  fieldDrafts: (team) =>
+    request('/ai/drafts', { query: { team }, invokeCmd: 'list_field_drafts', invokeArgs: { team } }),
+  /** Recent AI activity (queue-across-refresh + audit trail) → { activity: [...] }. */
+  aiActivity: (limit) =>
+    request('/ai/activity', { query: { limit }, invokeCmd: 'ai_activity_list', invokeArgs: { limit } }),
+  /** Upsert one activity record as a job starts / progresses / finishes. */
+  recordAiActivity: (record) =>
+    request('/ai/activity', { method: 'POST', body: record, invokeCmd: 'record_ai_activity', invokeArgs: { record } }),
   /** AI-draft (or improve) one field from the item's context. Returns { value }
    *  (markdown) for the editor to drop in - never auto-saved. */
   draftWorkItemField: (id, { team, reference, improve, fields }) =>
     request('/work-items/' + encodeURIComponent(id) + '/fields/draft', {
       method: 'POST',
       body: { team, reference, improve: !!improve, fields: fields || [] },
+      invokeCmd: 'draft_work_item_field',
+      invokeArgs: { id, team, reference, improve: !!improve, fields: fields || [] },
     }),
   /** Mark a work item as a duplicate of another via the provider's native mechanism
    *  (ADO: Duplicate Of link; GitLab: /duplicate; GitHub: label + close). Returns
@@ -450,6 +477,7 @@ export const api = {
     request('/work-items/' + encodeURIComponent(id) + '/fields/consistency', {
       method: 'POST',
       body: { team, fields: fields || [] },
+      invokeCmd: 'refine_work_item_fields', invokeArgs: { id, team, fields: fields || [] },
     }),
   /** Re-parse a browser (WebGPU) consistency reply into validated changes. Returns
    *  { fields: [{reference,value}] }. */
@@ -457,6 +485,7 @@ export const api = {
     request('/work-items/' + encodeURIComponent(id) + '/fields/consistency/parse', {
       method: 'POST',
       body: { team, fields: fields || [], text: text || '' },
+      invokeCmd: 'parse_refine_reply', invokeArgs: { id, team, fields: fields || [], text: text || '' },
     }),
   /** Replace the instance-wide default ruleset. `rules` = a full RuleSet. */
   updateRules: (rules) =>

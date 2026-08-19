@@ -24,8 +24,8 @@ pub use http::router;
 pub use poseidon_ai::{AiConfig, LlmConfig, OFFLINE_MODELS, ONLINE_PROVIDERS};
 pub use scheduler::Scheduler;
 pub use service::{
-    AuthStatus, BrowserAuditResult, BrowserSuggestion, PollOutcome, Service, SharedService,
-    SigninState,
+    AuthStatus, BrowserAuditResult, BrowserSuggestion, DraftOutcome, PollOutcome, RefineOutcome,
+    Service, SharedService, SigninState,
 };
 
 /// Env var pointing at the static frontend bundle. Set in the Docker image;

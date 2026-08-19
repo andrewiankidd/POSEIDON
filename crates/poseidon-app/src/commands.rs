@@ -668,3 +668,150 @@ pub async fn initialize(state: State<'_, AppState>, portable: bool) -> CmdResult
     state.initialize(portable).await?;
     Ok(serde_json::json!({ "ready": true }))
 }
+
+// ── Field editor (desktop parity with the HTTP field routes) ─────────────────
+
+#[tauri::command]
+pub async fn work_item_fields(state: State<'_, AppState>, id: i64, team: String) -> CmdResult {
+    let service = state.service()?;
+    let fields = service
+        .work_item_fields(&team, id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "fields": fields }))
+}
+
+#[tauri::command]
+pub async fn update_work_item_fields(
+    state: State<'_, AppState>,
+    id: i64,
+    team: String,
+    changes: Vec<poseidon_core::FieldChange>,
+) -> CmdResult {
+    let service = state.service()?;
+    let (item, flags) = service
+        .update_work_item_fields(&team, id, changes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "item": item, "flags": flags }))
+}
+
+#[tauri::command]
+pub async fn draft_work_item_field(
+    state: State<'_, AppState>,
+    id: i64,
+    team: String,
+    reference: String,
+    improve: bool,
+    fields: Vec<poseidon_core::FieldChange>,
+) -> CmdResult {
+    let service = state.service()?;
+    match service
+        .draft_work_item_field(&team, id, &reference, improve, &fields)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        poseidon_server::DraftOutcome::Value(value) => Ok(serde_json::json!({ "value": value })),
+        poseidon_server::DraftOutcome::Prompt { system, user } => {
+            Ok(serde_json::json!({ "prompt": { "system": system, "user": user } }))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn refine_work_item_fields(
+    state: State<'_, AppState>,
+    id: i64,
+    team: String,
+    fields: Vec<poseidon_core::FieldChange>,
+) -> CmdResult {
+    let service = state.service()?;
+    match service
+        .refine_work_item_fields(&team, id, &fields)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        poseidon_server::RefineOutcome::Value(fields) => {
+            Ok(serde_json::json!({ "fields": fields }))
+        }
+        poseidon_server::RefineOutcome::Prompt { system, user } => {
+            Ok(serde_json::json!({ "prompt": { "system": system, "user": user } }))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn parse_refine_reply(
+    state: State<'_, AppState>,
+    id: i64,
+    team: String,
+    fields: Vec<poseidon_core::FieldChange>,
+    text: String,
+) -> CmdResult {
+    let service = state.service()?;
+    let out = service
+        .parse_refine_reply(&team, id, &fields, &text)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "fields": out }))
+}
+
+// ── Durable AI state: improve-all drafts + activity log ──────────────────────
+
+#[tauri::command]
+pub async fn set_field_drafts(
+    state: State<'_, AppState>,
+    id: i64,
+    team: String,
+    drafts: Vec<poseidon_core::AiFieldDraft>,
+) -> CmdResult {
+    let service = state.service()?;
+    service
+        .set_ai_field_drafts(&team, id, &drafts)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn clear_field_drafts(state: State<'_, AppState>, id: i64) -> CmdResult {
+    let service = state.service()?;
+    service
+        .clear_ai_field_drafts(id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn list_field_drafts(state: State<'_, AppState>, team: Option<String>) -> CmdResult {
+    let service = state.service()?;
+    let map = service
+        .ai_field_drafts(team.as_deref().filter(|s| !s.is_empty()))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "drafts": map }))
+}
+
+#[tauri::command]
+pub async fn ai_activity_list(state: State<'_, AppState>, limit: Option<i64>) -> CmdResult {
+    let service = state.service()?;
+    let list = service
+        .ai_activity(limit)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "activity": list }))
+}
+
+#[tauri::command]
+pub async fn record_ai_activity(
+    state: State<'_, AppState>,
+    record: poseidon_core::AiActivityRecord,
+) -> CmdResult {
+    let service = state.service()?;
+    service
+        .record_ai_activity(&record)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}

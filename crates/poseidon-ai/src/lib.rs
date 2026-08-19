@@ -173,9 +173,15 @@ pub fn is_acceptance_criteria(label: &str) -> bool {
 /// field when the team keeps the GWT house style. Kept as one string so the per-field
 /// draft and the whole-item consistency sweep phrase it identically.
 pub const GWT_ACCEPTANCE_CRITERIA_INSTRUCTION: &str = "Write the Acceptance Criteria as \
-Given-When-Then scenarios - each criterion as \"Given <context>, When <action>, Then \
-<expected outcome>\" (use extra \"And\" lines where needed). One scenario per acceptance \
-condition; do NOT collapse them into a prose paragraph or a bare bullet list.";
+Given-When-Then scenarios, with EACH clause on its OWN line. Start every line with Given, \
+When, Then, And, or But, and put a blank line between clauses so they render as separate \
+lines. NEVER comma-join clauses onto one line, collapse them into a prose paragraph, or use \
+a bare bullet list. Format each scenario exactly like this:\n\n\
+Given <context>\n\n\
+When <action>\n\n\
+Then <expected outcome>\n\n\
+And <extra outcome>\n\n\
+Use one scenario per acceptance condition, separated by a blank line.";
 
 /// Whether a field label denotes the work item's Title (so the short-title style
 /// applies). Matches the ADO/GitHub/GitLab "Title" label case-insensitively.
@@ -765,28 +771,44 @@ impl PlatformCaps {
 /// model (3B, ~2GB) that any discrete GPU handles - the benchmark "tune" is the
 /// reliable path higher. See [`OFFLINE_MODELS`] for the ids.
 pub fn recommend_model(kind: &str, device: &str, caps: &PlatformCaps) -> &'static str {
-    let by_vram = |v: u32| {
-        if v >= 12000 {
-            "qwen2.5-7b"
-        } else if v >= 7000 {
-            "qwen2.5-3b"
-        } else if v >= 4000 {
-            "qwen2.5-1.5b"
-        } else {
-            "qwen2.5-0.5b"
-        }
+    // Catalog-driven: pick the LARGEST auto-eligible model whose footprint fits the
+    // available VRAM. `caps.vram_mb` is measured-allocatable on WebGPU (the browser probe)
+    // and total on CUDA; either way we compare to each model's `min_vram_mb`. To change
+    // what gets selected - or swap the whole model family - edit OFFLINE_MODELS, not this.
+    let largest_fit = |vram: u32, webgpu_only: bool| -> Option<&'static str> {
+        OFFLINE_MODELS
+            .iter()
+            .filter(|m| m.auto && (!webgpu_only || !m.webgpu_id.is_empty()))
+            .filter(|m| m.min_vram_mb <= vram)
+            .max_by_key(|m| m.min_vram_mb)
+            .map(|m| m.id)
     };
+    let smallest = |webgpu_only: bool| -> &'static str {
+        OFFLINE_MODELS
+            .iter()
+            .filter(|m| !webgpu_only || !m.webgpu_id.is_empty())
+            .min_by_key(|m| m.min_vram_mb)
+            .map(|m| m.id)
+            .unwrap_or_else(|| presets::smallest_auto_model().id)
+    };
+    // VRAM unmeasured: the catalog's balanced default (the load-fallback ladder tunes it
+    // down if it won't fit). Every id below comes from the catalog - none is a literal.
+    let balanced_default = presets::default_auto_model().id;
+    let smallest_any = presets::smallest_auto_model().id;
     match kind {
         "webgpu" => match caps.vram_mb {
-            Some(v) => by_vram(v),
-            None => "qwen2.5-3b", // safe strong default; benchmark tunes higher
+            Some(v) => largest_fit(v, true).unwrap_or_else(|| smallest(true)),
+            None => balanced_default,
         },
-        "offline" if device == "gpu" => caps.vram_mb.map(by_vram).unwrap_or("qwen2.5-3b"),
+        "offline" if device == "gpu" => match caps.vram_mb {
+            Some(v) => largest_fit(v, false).unwrap_or_else(|| smallest(false)),
+            None => balanced_default,
+        },
         "offline" => match caps.cpu_cores {
-            Some(c) if c >= 8 => "qwen2.5-1.5b",
-            _ => "qwen2.5-0.5b",
+            Some(c) if c >= 8 => balanced_default,
+            _ => smallest_any,
         },
-        _ => "qwen2.5-0.5b",
+        _ => smallest_any,
     }
 }
 
@@ -937,22 +959,34 @@ impl LlmConfig {
                 // Local-first, but ordered by real throughput: native CUDA on top, then
                 // the browser's own GPU (WebGPU) - which beats a server CPU handily, the
                 // case a hosted web user actually hits - then CPU as the slow fallback.
-                offline("local-gpu", "On-device GPU (CUDA)", "qwen2.5-1.5b", "gpu"),
+                offline(
+                    "local-gpu",
+                    "On-device GPU (CUDA)",
+                    presets::default_auto_model().id,
+                    "gpu",
+                ),
                 LlmIntegration {
                     id: "webgpu".to_string(),
                     name: "In-browser (WebGPU)".to_string(),
                     kind: "webgpu".to_string(),
-                    offline_model: Some("qwen2.5-1.5b".to_string()),
+                    offline_model: Some(presets::default_auto_model().id.to_string()),
                     ..Default::default()
                 },
-                offline("local-cpu", "On-device CPU", "qwen2.5-0.5b", "cpu"),
+                offline(
+                    "local-cpu",
+                    "On-device CPU",
+                    presets::smallest_auto_model().id,
+                    "cpu",
+                ),
                 LlmIntegration {
                     id: "ollama".to_string(),
                     name: "Local Ollama".to_string(),
                     kind: "online".to_string(),
                     provider: Some("custom".to_string()),
                     endpoint: Some("http://localhost:11434/v1/chat/completions".to_string()),
-                    model: Some("qwen2.5:1.5b".to_string()),
+                    // Illustrative Ollama tag (Ollama's own naming, not our catalog id) - the
+                    // user edits it to whatever they've pulled; left literal on purpose.
+                    model: Some("qwen3:1.7b".to_string()),
                     ..Default::default()
                 },
                 cloud("claude", "Claude (Anthropic)", "anthropic"),
@@ -980,6 +1014,30 @@ impl LlmConfig {
         }
         cfg.auto = true;
         cfg
+    }
+
+    /// Heal integrations whose stored `offline_model` is no longer in the catalog
+    /// (e.g. after a model-family swap like Qwen2.5 → Qwen3): coerce the dead id to the
+    /// current [`recommend_model`] pick for that backend + platform. This is NOT an
+    /// alias table - "unknown" simply means "invalid", and invalid resolves to the best
+    /// current model, so it stays correct across any future catalog change with no
+    /// per-id mappings to maintain. Leaves valid ids (the user's real choice) untouched.
+    /// Returns true if anything changed, so the caller can re-persist the healed config.
+    pub fn normalize_models(&mut self, caps: &PlatformCaps) -> bool {
+        let mut changed = false;
+        for integ in &mut self.integrations {
+            if !matches!(integ.kind.as_str(), "offline" | "webgpu") {
+                continue;
+            }
+            if let Some(id) = integ.offline_model.as_deref() {
+                if presets::offline_model(id).is_none() {
+                    integ.offline_model =
+                        Some(recommend_model(&integ.kind, &integ.device, caps).to_string());
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     /// The effective tagger for this platform: the first compatible + configured
@@ -1701,7 +1759,7 @@ mod tests {
     fn resolve_picks_first_platform_compatible_in_priority_order() {
         let mut gpu = integ("gpu", "offline");
         gpu.device = "gpu".into();
-        gpu.offline_model = Some("qwen2.5-0.5b".into());
+        gpu.offline_model = Some("qwen3-0.6b".into());
         let mut cloud = integ("cloud", "online");
         cloud.provider = Some("anthropic".into());
         cloud.api_key = Some("k".into()); // a cloud preset needs a key to be configured
@@ -1767,14 +1825,31 @@ mod tests {
     #[test]
     fn recommend_model_scales_with_capability() {
         let none = PlatformCaps::default();
-        // WebGPU with no VRAM number -> safe strong default (benchmark tunes higher).
-        assert_eq!(recommend_model("webgpu", "", &none), "qwen2.5-3b");
-        // WebGPU with a real big VRAM number -> the top tier.
+        // WebGPU with no VRAM number -> balanced default (the load ladder tunes from there).
+        assert_eq!(recommend_model("webgpu", "", &none), "qwen3-1.7b");
+        // WebGPU sizes by ALLOCATABLE footprint from the catalog: the AUTO ceiling is 4B
+        // (8B is hand-pick only, auto:false), so a big GPU lands on 4B - the quality/speed
+        // sweet spot - and a weak GPU never pulls a model it can't fit.
         let big = PlatformCaps {
             vram_mb: Some(16000),
             ..Default::default()
         };
-        assert_eq!(recommend_model("webgpu", "", &big), "qwen2.5-7b");
+        assert_eq!(recommend_model("webgpu", "", &big), "qwen3-4b");
+        let mid = PlatformCaps {
+            vram_mb: Some(8000),
+            ..Default::default()
+        };
+        assert_eq!(recommend_model("webgpu", "", &mid), "qwen3-4b");
+        let small = PlatformCaps {
+            vram_mb: Some(2000),
+            ..Default::default()
+        };
+        assert_eq!(recommend_model("webgpu", "", &small), "qwen3-1.7b");
+        let tiny = PlatformCaps {
+            vram_mb: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(recommend_model("webgpu", "", &tiny), "qwen3-0.6b");
         // CPU-only scales by cores.
         let many = PlatformCaps {
             cpu_cores: Some(16),
@@ -1784,13 +1859,14 @@ mod tests {
             cpu_cores: Some(2),
             ..Default::default()
         };
-        assert_eq!(recommend_model("offline", "cpu", &many), "qwen2.5-1.5b");
-        assert_eq!(recommend_model("offline", "cpu", &few), "qwen2.5-0.5b");
+        assert_eq!(recommend_model("offline", "cpu", &many), "qwen3-1.7b");
+        assert_eq!(recommend_model("offline", "cpu", &few), "qwen3-0.6b");
     }
 
     #[test]
     fn seeded_for_sizes_local_models_and_marks_auto() {
-        // A beefy WebGPU box: the webgpu entry gets bumped to 7B; ordering unchanged.
+        // A beefy WebGPU box: the webgpu entry gets bumped to the 4B auto ceiling; ordering
+        // unchanged.
         let caps = PlatformCaps {
             webgpu: true,
             vram_mb: Some(16000),
@@ -1800,11 +1876,8 @@ mod tests {
         let cfg = LlmConfig::seeded_for(&caps);
         assert!(cfg.auto, "auto-configured registries are flagged");
         let by = |id: &str| cfg.integrations.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(by("webgpu").offline_model.as_deref(), Some("qwen2.5-7b"));
-        assert_eq!(
-            by("local-cpu").offline_model.as_deref(),
-            Some("qwen2.5-1.5b")
-        );
+        assert_eq!(by("webgpu").offline_model.as_deref(), Some("qwen3-4b"));
+        assert_eq!(by("local-cpu").offline_model.as_deref(), Some("qwen3-1.7b"));
         // Same integrations, same order as the plain catalog.
         let plain = LlmConfig::seeded();
         assert_eq!(
@@ -1814,9 +1887,62 @@ mod tests {
     }
 
     #[test]
+    fn normalize_models_heals_dead_ids_and_leaves_valid_ones() {
+        let mut dead = integ("webgpu", "webgpu");
+        dead.offline_model = Some("qwen2.5-7b".into()); // a pre-swap id, gone from the catalog
+        let mut keep = integ("gpu", "offline");
+        keep.device = "gpu".into();
+        keep.offline_model = Some("qwen3-4b".into()); // still valid - the user's real pick
+        let cloud = integ("claude", "online");
+        let mut cfg = LlmConfig {
+            integrations: vec![dead, keep, cloud],
+            auto: false,
+        };
+        let caps = PlatformCaps::server();
+        assert!(cfg.normalize_models(&caps), "a dead id is a change");
+        let by = |id: &str| cfg.integrations.iter().find(|i| i.id == id).unwrap();
+        // The dead id became a real catalog id...
+        assert!(presets::offline_model(by("webgpu").offline_model.as_deref().unwrap()).is_some());
+        // ...the valid id was left exactly as the user chose it...
+        assert_eq!(by("gpu").offline_model.as_deref(), Some("qwen3-4b"));
+        // ...and a second pass is a no-op (healed once, stays healed).
+        assert!(!cfg.normalize_models(&caps));
+    }
+
+    #[test]
+    fn demo_llm_config_offline_ids_match_the_catalog() {
+        // The static landing-page demo fixture hand-mirrors the catalog. Pin its offline
+        // model ids to OFFLINE_MODELS so a model-family swap can't silently strand it -
+        // exactly what bit us on the Qwen2.5 → Qwen3 change. If this fails, regenerate
+        // frontend/web/assets/demo/llm-config.json from the catalog.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../frontend/web/assets/demo/llm-config.json"
+        );
+        let Ok(txt) = std::fs::read_to_string(path) else {
+            return; // fixture not present (crate built in isolation) - skip
+        };
+        let v: serde_json::Value = serde_json::from_str(&txt).expect("demo fixture is valid JSON");
+        let mut demo_ids: Vec<String> = v["presets"]["offline"]
+            .as_array()
+            .expect("offline presets is an array")
+            .iter()
+            .map(|m| m["id"].as_str().expect("preset id").to_string())
+            .collect();
+        demo_ids.sort();
+        let mut catalog_ids: Vec<String> =
+            OFFLINE_MODELS.iter().map(|m| m.id.to_string()).collect();
+        catalog_ids.sort();
+        assert_eq!(
+            demo_ids, catalog_ids,
+            "demo/llm-config.json offline ids drifted from OFFLINE_MODELS - regenerate the fixture"
+        );
+    }
+
+    #[test]
     fn webgpu_is_only_compatible_on_a_webgpu_platform() {
         let mut wg = integ("wg", "webgpu");
-        wg.model = Some("qwen2.5-0.5b-q4f16".into());
+        wg.model = Some("qwen3-0.6b-q4f16".into());
         assert!(!wg.compatible(&PlatformCaps {
             embedded: true,
             gpu: true,

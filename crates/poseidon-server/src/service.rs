@@ -266,7 +266,16 @@ impl Service {
     /// prepended as the highest-priority entry, so it stays active out of the box.
     async fn stored_llm_config(&self) -> poseidon_ai::LlmConfig {
         if let Ok(Some(json)) = self.store.get_meta(&self.owner, "llm_config").await {
-            if let Ok(cfg) = serde_json::from_str::<poseidon_ai::LlmConfig>(&json) {
+            if let Ok(mut cfg) = serde_json::from_str::<poseidon_ai::LlmConfig>(&json) {
+                // Self-heal a registry stranded by a catalog swap: any offline_model id no
+                // longer in the catalog (e.g. an old Qwen2.5 id after the Qwen3 switch) is
+                // coerced to the current recommended model. Re-persist so it's fixed once
+                // here, not re-healed on every read, and so the UI never shows a dead id.
+                if cfg.normalize_models(&poseidon_ai::PlatformCaps::server()) {
+                    if let Ok(fixed) = serde_json::to_string(&cfg) {
+                        let _ = self.store.set_meta(&self.owner, "llm_config", &fixed).await;
+                    }
+                }
                 return cfg;
             }
         }
@@ -1995,6 +2004,56 @@ impl Service {
             "browser (WebGPU) healthcheck audit stored"
         );
         Ok(summary)
+    }
+
+    // ── Durable AI state: improve-all drafts + the activity log (owner-scoped) ───
+
+    /// Persist the pending "Improve all" drafts for one work item (replaces any existing).
+    pub async fn set_ai_field_drafts(
+        &self,
+        team: &str,
+        work_item_id: i64,
+        drafts: &[poseidon_core::AiFieldDraft],
+    ) -> anyhow::Result<()> {
+        Ok(self
+            .store
+            .set_ai_field_drafts(&self.owner, team, work_item_id, drafts)
+            .await?)
+    }
+
+    /// All pending improve-all drafts for this owner (optionally one team), grouped by id.
+    pub async fn ai_field_drafts(
+        &self,
+        team: Option<&str>,
+    ) -> anyhow::Result<std::collections::HashMap<i64, Vec<poseidon_core::AiFieldDraft>>> {
+        Ok(self.store.ai_field_drafts(&self.owner, team).await?)
+    }
+
+    /// Clear the pending drafts for one work item (on review/apply/save).
+    pub async fn clear_ai_field_drafts(&self, work_item_id: i64) -> anyhow::Result<()> {
+        Ok(self
+            .store
+            .clear_ai_field_drafts(&self.owner, work_item_id)
+            .await?)
+    }
+
+    /// Upsert one AI activity record (queue-across-refresh + audit trail).
+    pub async fn record_ai_activity(
+        &self,
+        rec: &poseidon_core::AiActivityRecord,
+    ) -> anyhow::Result<()> {
+        Ok(self.store.upsert_ai_activity(&self.owner, rec).await?)
+    }
+
+    /// The owner's recent AI activity, newest first (capped at `limit`, default 50).
+    pub async fn ai_activity(
+        &self,
+        limit: Option<i64>,
+    ) -> anyhow::Result<Vec<poseidon_core::AiActivityRecord>> {
+        Ok(self
+            .store
+            .list_ai_activity(&self.owner, limit.unwrap_or(50).clamp(1, 500))
+            .await?)
     }
 
     /// Run the on-demand near-duplicate scan over a team's active items (all teams when

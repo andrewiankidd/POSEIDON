@@ -353,8 +353,8 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 
 /* ── Work-item field editor modal ── */
 .editor-modal {
-  text-align: left; width: min(760px, 94vw); max-width: 760px;
-  display: flex; flex-direction: column; max-height: 88vh; padding: 20px 22px;
+  text-align: left; width: min(1100px, 94vw); max-width: 1100px;
+  display: flex; flex-direction: column; max-height: 90vh; padding: 20px 22px;
 }
 .editor-modal > h3 { flex: 0 0 auto; }
 .editor-body { flex: 1 1 auto; overflow-y: auto; margin: 4px -6px 0; padding: 0 6px; }
@@ -417,6 +417,9 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
   font-size: 12px; padding: 0 2px; line-height: 1; opacity: 0.6;
 }
 .wi-edit:hover { color: var(--accent); opacity: 1; }
+/* Improve-all suggestions cached for this row (the ✨ glyph): full-opacity accent so
+   it reads as "AI drafts ready to review", not a dim edit affordance. */
+.wi-edit-ai { color: var(--accent); opacity: 1; }
 .dc-modal .dc-big {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 30px; font-weight: 700; letter-spacing: 0.14em; margin: 14px 0;
@@ -545,6 +548,18 @@ a.link:hover { text-decoration: underline; }
 .bulk-tag-input { flex: 0 0 160px; width: 160px; }
 .bulk-tag-input:focus, .bulk-state-select:focus { outline: none; border-color: var(--accent); }
 .bulk-btn { padding: 5px 11px; font-size: 13px; }
+/* Split button: primary action + a caret that opens the "force re-do" menu. The two
+   buttons butt together (shared seam) and the menu floats below the caret. */
+.bulk-split { position: relative; display: inline-flex; }
+.bulk-split .bulk-btn:not(.bulk-caret) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.bulk-caret { padding: 5px 7px; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.bulk-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 240px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+.bulk-menu[hidden] { display: none; }
+.bulk-menu-item { display: block; width: 100%; text-align: left; padding: 7px 10px; font-size: 13px;
+  background: none; border: 0; border-radius: 6px; color: var(--ink); cursor: pointer; white-space: nowrap; }
+.bulk-menu-item:hover { background: var(--panel-2); }
 /* Native selects render a hair shorter than buttons and ignore the button padding,
    so strip the native chrome and match the .bulk-btn box exactly (with a custom
    chevron drawn in the right padding). Keeps the bulk bar's controls the same height. */
@@ -1318,11 +1333,33 @@ body.ai-bar-visible .content { padding-bottom: 108px; }
 .ai-where { font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
 .ai-where-gpu { color: var(--accent); }
 .ai-row-sub { font-size: 11px; color: var(--ink-soft); }
+.ai-row-time { font-size: 11px; color: var(--ink-soft); margin-left: auto; white-space: nowrap; padding-left: 8px; }
 .ai-row-mark { font-weight: 600; }
 .ai-row-mark.ok { color: var(--ok); }
 .ai-row-mark.bad { color: var(--err); }
 .ai-row-mark.running { color: var(--accent); }
 .ai-row-cancel { padding: 1px 8px; }
+
+/* Per-item detail list under a job (e.g. tag-suggest over a selection): one row
+   per work item showing what it got. Running job shows it live + scrollable. */
+.ai-job-block { border-bottom: 1px solid var(--border); }
+.ai-job-block:last-child { border-bottom: 0; }
+.ai-job-block > .ai-row { border-bottom: 0; }
+.ai-items {
+  margin: 0 2px 6px 26px; max-height: 190px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  border-left: 2px solid var(--border); padding: 2px 0 2px 8px;
+}
+.ai-item { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 11.5px; line-height: 1.5; }
+.ai-item-id { color: var(--ink-soft); font-variant-numeric: tabular-nums; min-width: 60px; }
+.ai-item-arrow { color: var(--ink-soft); }
+.ai-item-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.ai-item-tag {
+  font-size: 11px; padding: 0 5px; border-radius: 5px; white-space: nowrap;
+  color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+}
+.ai-item-none, .ai-item-skip { color: var(--ink-soft); font-style: italic; }
+.ai-items-toggle { margin: 2px 0 6px 26px; padding: 1px 8px; }
 
 /* ── Work-items toolbar: grouped + consistent controls ────────────────────── */
 .dt-toolbar { gap: 10px; }
