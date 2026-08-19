@@ -94,6 +94,18 @@ pub fn run() {
             commands::import_config,
             commands::import_catalog,
             commands::catalog,
+            // Field editor (desktop parity)
+            commands::work_item_fields,
+            commands::update_work_item_fields,
+            commands::draft_work_item_field,
+            commands::refine_work_item_fields,
+            commands::parse_refine_reply,
+            // Durable AI state (drafts + activity log)
+            commands::set_field_drafts,
+            commands::clear_field_drafts,
+            commands::list_field_drafts,
+            commands::ai_activity_list,
+            commands::record_ai_activity,
             commands::set_active_team,
             commands::set_poll_all_teams,
             commands::log_client_error,

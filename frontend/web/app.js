@@ -10,7 +10,7 @@ import { el, clear, esc, ago, shortDate, toast } from './lib/dom.js';
 import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
-import { webgpuAvailable, runWebGpuTagging, runWebGpuChat, prepareModel, isModelCached, detectBrowserCaps } from './lib/webgpu.js';
+import { webgpuAvailable, runWebGpuTagging, runWebGpuChat, prepareModel, isModelCached, detectBrowserCaps, parseAudit, registerModels } from './lib/webgpu.js';
 import { effectiveActiveId, activeBackend, resolveAiText, preserveMarkdownAssets, stripFieldLabelPrefix } from './lib/ai.js';
 import { renderDeck } from './lib/recap-slides.js';
 import { aiQueue } from './lib/aiQueue.js';
@@ -573,6 +573,18 @@ function flagBreakdownCard(d, pending) {
 // ── Work Items ──────────────────────────────────────────────────────
 async function renderWorkItems() {
   const { items, flags } = await api.tickets();
+  // Hydrate any pending "Improve all" drafts from the DB (durable across refresh /
+  // machine) into the in-memory cache, so the ✨ badges + editor pre-fill come back
+  // after a reload. Merges over the localStorage copy; best-effort.
+  api.fieldDrafts(getTeamScope()).then((r) => {
+    const drafts = (r && r.drafts) || {};
+    let any = false;
+    for (const [id, list] of Object.entries(drafts)) {
+      improveAllCache.set(String(id), Object.fromEntries((list || []).map((d) => [d.reference, d.value])));
+      any = true;
+    }
+    if (any) { saveImproveCache(); if (typeof redraw === 'function') redraw(); }
+  }).catch(() => {});
   const flagsById = new Map();
   for (const f of flags) {
     if (!flagsById.has(f.work_item_id)) flagsById.set(f.work_item_id, []);
@@ -684,13 +696,21 @@ async function renderWorkItems() {
     showTeam ? { label: 'Team', filterChoices: true, value: (it) => it.team || '' } : null,
     {
       label: 'Title', class: 'wrap', value: (it) => it.title || '',
-      render: (it) => el('span', { class: 'wi-title' }, [
-        el('button', {
-          class: 'wi-edit', type: 'button', title: 'Edit work-item fields',
-          onclick: (e) => { e.stopPropagation(); openWorkItemEditor(it, refreshRows); },
-        }, '✎'),
-        el('span', {}, it.title || '(untitled)'),
-      ]),
+      render: (it) => {
+        // After a bulk "Improve all fields" run, an item with cached suggestions waiting
+        // to be reviewed gets a ✨ (instead of the plain ✎) so it's visible at a glance
+        // which rows have AI drafts ready. Opening the editor consumes the cache.
+        const hasSugg = improveAllCache.has(String(it.id));
+        return el('span', { class: 'wi-title' }, [
+          el('button', {
+            class: 'wi-edit' + (hasSugg ? ' wi-edit-ai' : ''),
+            type: 'button',
+            title: hasSugg ? 'AI “Improve all” suggestions ready — open to review' : 'Edit work-item fields',
+            onclick: (e) => { e.stopPropagation(); openWorkItemEditor(it, refreshRows, redraw); },
+          }, hasSugg ? '✨' : '✎'),
+          el('span', {}, it.title || '(untitled)'),
+        ]);
+      },
     },
     { label: 'Type', filterChoices: true, value: (it) => it.work_item_type || '' },
     {
@@ -833,10 +853,13 @@ async function renderWorkItems() {
                 const refineTag = (rules.refine_tag || '').trim();
                 if (refineTag) {
                   const min = rules.refine_min_chars ?? 40;
-                  const before = rowsForTagging.length;
+                  const sparse = rowsForTagging.filter((r) => (r.description || '').trim().length < min);
                   rowsForTagging = rowsForTagging.filter((r) => (r.description || '').trim().length >= min);
-                  const skipped = before - rowsForTagging.length;
-                  if (skipped) toast(`Skipped ${skipped} item${skipped === 1 ? '' : 's'} too sparse to AI-tag - needs refinement.`);
+                  if (sparse.length) {
+                    // Surface each skipped item in the per-item list, not just a toast.
+                    sparse.forEach((r) => report.item({ id: r.id, note: 'too sparse', tone: 'warn' }));
+                    toast(`Skipped ${sparse.length} item${sparse.length === 1 ? '' : 's'} too sparse to AI-tag - needs refinement.`);
+                  }
                 }
                 if (!rowsForTagging.length) { await refreshRows(); return 'nothing to tag'; }
                 // In-browser inference on the user's GPU, then POST results to the
@@ -844,7 +867,12 @@ async function renderWorkItems() {
                 const results = await runWebGpuTagging(
                   webgpuInteg.offline_model, rowsForTagging, aiCandidates,
                   (s) => report(s || 'loading model'),
-                  (done, total) => report({ done, total }),
+                  (done, total, item) => {
+                    report({ done, total });
+                    // Emit a per-item row as each finishes (id + the tags it got, or
+                    // 'none' when the model proposed nothing).
+                    if (item) report.item({ id: item.id, tags: item.tags });
+                  },
                   rules.required_tags || [], aiHints, rules.team_background || '',
                   rules.max_suggestions);
                 report('storing');
@@ -906,8 +934,21 @@ async function renderWorkItems() {
                     const text = await runWebGpuChat(webgpuInteg.offline_model, p.system, p.user,
                       (s) => { if (s) report(s); });
                     results.push({ id: p.id, text });
+                    // Show the model's actual verdict per item (parsed the same way the
+                    // server will store it): the concern kinds, or "clean" / "audited".
+                    const issues = parseAudit(text);
+                    if (issues === null) {
+                      report.item({ id: p.id, note: 'audited' }); // couldn't parse - don't claim clean
+                    } else if (!issues.length) {
+                      report.item({ id: p.id, note: 'clean' });
+                    } else {
+                      const kinds = [...new Set(issues.map((i) => i.kind.replace(/_/g, ' ')))];
+                      const shown = kinds.slice(0, 2).join(', ') + (kinds.length > 2 ? ', …' : '');
+                      report.item({ id: p.id, note: `${issues.length} concern${issues.length === 1 ? '' : 's'}: ${shown}`, tone: 'warn' });
+                    }
                   } catch (err) {
                     console.warn('WebGPU audit failed for item', p.id, err);
+                    report.item({ id: p.id, note: 'failed', tone: 'warn' });
                   }
                 }
                 report('storing');
@@ -1068,38 +1109,104 @@ async function renderWorkItems() {
   // every selected item (AI, no ADO write), caching each item's suggestions. The user
   // then opens items one by one and the review panes are already filled - keep/discard
   // each. Uses the shared AI lock (one heavy run at a time), not the ADO-write bulk lock.
-  const improveAllBtn = mkBulkBtn('✨ Improve all fields', 'Pre-compute an "Improve all fields" pass for each selected item — then open each to review and keep/discard (nothing is saved automatically)', () => {
+  // Kick off a bulk "Improve all fields" pass over the current selection. `force=false`
+  // (default) is RESUMABLE - items that already have drafts are skipped, so a re-run
+  // continues an interrupted pass. `force=true` regenerates EVERY selected item, discarding
+  // existing drafts (the split-button "Force re-do all"). Both use the shared AI queue.
+  const enqueueImproveAll = (force) => {
     const rows = table.getSelection();
     if (!rows.length) { toast('Select some work items first.'); return; }
     if (aiQueue.has('Improve all fields')) { toast('Improve all is already running or queued.'); return; }
-    if (!confirm(`Pre-compute "Improve all fields" for ${rows.length} item${rows.length === 1 ? '' : 's'}? This runs the AI per field — nothing is saved; open each item afterwards to review.`)) return;
+    const n = rows.length;
+    const msg = force
+      ? `Force re-do "Improve all fields" for ${n} item${n === 1 ? '' : 's'}? This DISCARDS existing drafts and regenerates every field via the AI — nothing is saved; open each item afterwards to review.`
+      : `Pre-compute "Improve all fields" for ${n} item${n === 1 ? '' : 's'}? This runs the AI per field — nothing is saved; open each item afterwards to review.`;
+    if (!confirm(msg)) return;
     aiQueue.enqueue({
       name: 'Improve all fields', icon: '✨', where: 'gpu',
       run: async (report) => {
-        let done = 0; const failed = [];
+        let done = 0; let skipped = 0; const failed = [];
         for (let i = 0; i < rows.length; i++) {
           const it = rows[i];
           report({ done: i, total: rows.length, text: `#${it.id}` });
+          // RESUMABLE (skip mode only): an item that already has pending drafts is skipped
+          // so re-running picks up where an interrupted run left off. Force mode ignores
+          // this and regenerates every item.
+          if (!force && improveAllCache.has(String(it.id))) {
+            report.item({ id: it.id, note: 'already ready' });
+            skipped++;
+            redraw();
+            continue;
+          }
           try {
             const sugg = await computeImproveAll(it, (s) => report({ done: i, total: rows.length, text: `#${it.id} · ${s}` }));
-            if (Object.keys(sugg).length) { improveAllCache.set(String(it.id), sugg); done++; }
+            const cnt = Object.keys(sugg).length;
+            if (cnt) {
+              improveAllCache.set(String(it.id), sugg);
+              saveImproveCache();
+              // Persist to the DB too, so the drafts (and the ✨ badge) survive a refresh
+              // or reach another machine - best-effort, never blocks the run.
+              api.setFieldDrafts(it.id, {
+                team: it.team,
+                drafts: Object.entries(sugg).map(([reference, value]) => ({ reference, value })),
+              }).catch(() => {});
+              done++;
+            } else if (force && improveAllCache.has(String(it.id))) {
+              // Force re-run yielded nothing new: drop the now-stale drafts so the item
+              // isn't left showing an outdated ✨ badge.
+              improveAllCache.delete(String(it.id));
+              saveImproveCache();
+              api.clearFieldDrafts(it.id).catch(() => {});
+            }
+            report.item({ id: it.id, note: cnt ? `ready (${cnt} field${cnt === 1 ? '' : 's'})` : 'nothing' });
           } catch (err) {
             console.error('Bulk improve failed for #' + it.id, err);
             failed.push(`#${it.id}`);
+            report.item({ id: it.id, note: 'failed', tone: 'warn' });
           }
+          // Re-render (client-only, no refetch) so this item's ✨ badge shows the moment
+          // its drafts are cached - you can open + review it without waiting for the whole
+          // batch. A full refreshRows() here would refetch the entire backlog per item.
+          redraw();
         }
-        // Refresh so the tag suggestions (final step) show in the Suggested column.
+        // One refetch at the end so the tag suggestions (the sweep's final step, stored
+        // server-side) appear in the Suggested column too.
         await refreshRows();
-        if (failed.length) toast(`Improve all: ${done} ready, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
-        else toast(done ? `Improve all: ${done} item${done === 1 ? '' : 's'} ready — open each to review the suggestions` : 'Improve all: nothing to suggest');
-        return `${done} ready` + (failed.length ? `, ${failed.length} failed` : '');
+        const verb = force ? 're-done' : 'ready';
+        const skipNote = skipped ? ` (${skipped} already ready, skipped)` : '';
+        if (failed.length) toast(`Improve all: ${done} ${verb}${skipNote}, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
+        else if (done) toast(`Improve all: ${done} item${done === 1 ? '' : 's'} ${verb}${skipNote} — open each to review`);
+        else if (skipped) toast(`Improve all: all ${skipped} already had drafts — nothing new to do`);
+        else toast('Improve all: nothing to suggest');
+        return `${done} ${force ? 'redone' : 'new'}` + (skipped ? `, ${skipped} skipped` : '') + (failed.length ? `, ${failed.length} failed` : '');
       },
     });
+  };
+
+  const improveAllBtn = mkBulkBtn('✨ Improve all fields', 'Pre-compute an "Improve all fields" pass for each selected item — items that already have drafts are skipped (resumable). Use the ▾ to force-redo everything. Nothing is saved automatically.', () => enqueueImproveAll(false));
+  // Split-button caret: a small menu for the "force re-do all" variant, so the plain
+  // click stays safe/resumable and the destructive redo is one deliberate step away.
+  const improveAllForce = el('button', { class: 'bulk-menu-item', type: 'button',
+    onclick: () => { improveAllMenu.hidden = true; enqueueImproveAll(true); } }, '↻ Force re-do all (discard existing drafts)');
+  const improveAllMenu = el('div', { class: 'bulk-menu', hidden: true }, [improveAllForce]);
+  const improveAllCaret = mkBulkBtn('▾', 'More Improve-all options', (e) => {
+    e.stopPropagation();
+    const opening = improveAllMenu.hidden;
+    improveAllMenu.hidden = !opening;
+    if (opening) {
+      // Close on the next outside click, then unbind - no lingering per-render listener.
+      const off = (ev) => {
+        if (!improveAllGroup.contains(ev.target)) { improveAllMenu.hidden = true; document.removeEventListener('click', off); }
+      };
+      setTimeout(() => document.addEventListener('click', off), 0);
+    }
   });
+  improveAllCaret.classList.add('bulk-caret');
+  const improveAllGroup = el('div', { class: 'bulk-split' }, [improveAllBtn, improveAllCaret, improveAllMenu]);
 
   const bulkBar = el('div', { class: 'bulk-bar', hidden: true }, [
     bulkCount, bulkClear, el('span', { class: 'dt-sep', 'aria-hidden': 'true' }),
-    bulkTag, addTagBtn, removeTagBtn, applySuggBtn, improveAllBtn, bulkState, bulkStatus, bulkTagList,
+    bulkTag, addTagBtn, removeTagBtn, applySuggBtn, improveAllGroup, bulkState, bulkStatus, bulkTagList,
   ]);
 
   // "Find duplicates": a whole-backlog scan (not a selection) for reworded near-dupes,
@@ -1277,7 +1384,7 @@ async function renderWorkItems() {
   // the editor; the id link goes out to the provider item.
   function boardCard(it) {
     const fl = flagsOf(it) || [];
-    const openEditor = () => openWorkItemEditor(it, () => route());
+    const openEditor = () => openWorkItemEditor(it, () => route(), redraw);
     const cb = el('input', {
       type: 'checkbox', class: 'dt-check board-card-check', title: 'Select',
       onclick: (e) => e.stopPropagation(),
@@ -1610,7 +1717,25 @@ function suggestionChips(it, afterEdit, flags, onChanged) {
 // Pre-computed "Improve all" suggestions, keyed by work-item id -> { reference: value }.
 // A bulk run fills this headlessly; opening an item's editor drains its entry into the
 // per-field review panes (one-shot), so the user reviews/keeps each without re-running.
+//
+// PERSISTED to localStorage: a bulk "Improve all" can run for hours, and these drafts are
+// NOT written to the provider until the user reviews each item - so keeping them only in
+// memory meant a refresh/crash silently discarded the whole run. Backing the Map with
+// localStorage makes it survive reloads (and the ✨ row badges reappear). Written per item
+// during the run so a mid-run crash keeps everything up to the last item.
+const IMPROVE_CACHE_KEY = 'poseidon.improveAllCache.v1';
 const improveAllCache = new Map();
+(function loadImproveCache() {
+  try {
+    const raw = localStorage.getItem(IMPROVE_CACHE_KEY);
+    if (raw) for (const [k, v] of Object.entries(JSON.parse(raw))) improveAllCache.set(k, v);
+  } catch { /* absent / corrupt / storage disabled - start empty */ }
+})();
+function saveImproveCache() {
+  try {
+    localStorage.setItem(IMPROVE_CACHE_KEY, JSON.stringify(Object.fromEntries(improveAllCache)));
+  } catch { /* quota exceeded / private mode - best effort, never throw mid-run */ }
+}
 
 // Headless "Improve all fields" for ONE item: the same two-phase flow the editor runs
 // (draft/improve each AI-eligible field, then one consistency sweep), but with no modal
@@ -1678,13 +1803,28 @@ async function computeImproveAll(it, onStatus) {
   return out;
 }
 
-async function openWorkItemEditor(it, onSaved) {
+async function openWorkItemEditor(it, onSaved, onClose) {
+  // Declared up here (not with the field controls further down) so close()'s
+  // unsaved-changes guard can read it safely even if the dialog is dismissed while
+  // fields are still loading (empty => not dirty => closes without a prompt).
+  let controls = [];
   const overlay = el('div', {
     class: 'dc-overlay',
     onclick: (e) => { if (e.target === overlay) close(); },
   });
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
-  function close() { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+  // onClose fires on EVERY dismissal (Cancel / ✕ / Esc / backdrop / after save) so the
+  // table re-renders - opening an item drains its cached "Improve all" suggestions, and
+  // without this the ✨ badge lingered after a Cancel until some other refresh.
+  // `force` skips the unsaved-changes guard (used after a successful save, where the
+  // controls legitimately differ from the now-stale on-record values).
+  function close(force) {
+    const dirty = controls.some((c) => !c.field.read_only && c.get() !== (c.field.value || ''));
+    if (!force && dirty && !confirm('Discard unsaved changes to this work item?')) return;
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    if (onClose) onClose();
+  }
   document.addEventListener('keydown', onKey, true);
 
   const body = el('div', { class: 'editor-body' }, el('span', { class: 'muted' }, 'Loading fields…'));
@@ -1717,8 +1857,7 @@ async function openWorkItemEditor(it, onSaved) {
   // The editor's current (unsaved) values for every writable field - handed to the AI
   // so a draft operates on what's ON SCREEN (a just-generated body feeds a later title
   // improve), not the last-saved provider state. Forward-referenced: the closure reads
-  // `controls` at call time, after it's populated below.
-  let controls = [];
+  // `controls` at call time, after it's populated below (declared at the top).
   const workingFields = () => controls
     .filter((c) => !c.field.read_only)
     .map((c) => ({ reference: c.field.reference, value: c.get() }));
@@ -1866,6 +2005,8 @@ async function openWorkItemEditor(it, onSaved) {
   const pre = improveAllCache.get(String(it.id));
   if (pre) {
     improveAllCache.delete(String(it.id));
+    saveImproveCache();
+    api.clearFieldDrafts(it.id).catch(() => {}); // drop the durable copy too
     let n = 0;
     for (const c of controls) {
       const v = pre[c.field.reference];
@@ -1911,7 +2052,7 @@ async function openWorkItemEditor(it, onSaved) {
 
   card.appendChild(el('div', { class: 'editor-footer' }, [
     dupControl, status, el('span', { class: 'dt-spacer' }),
-    el('button', { class: 'btn', onclick: close }, 'Cancel'),
+    el('button', { class: 'btn', onclick: () => close() }, 'Cancel'),
     saveBtn,
   ]));
 
@@ -1925,7 +2066,7 @@ async function openWorkItemEditor(it, onSaved) {
     try {
       const res = await api.updateWorkItemFields(it.id, { team: it.team, changes });
       toast(`#${it.id}: ${changes.length} field${changes.length === 1 ? '' : 's'} saved`);
-      close();
+      close(true); // force: changes are saved, so don't prompt about "unsaved" edits
       if (onSaved) await onSaved(res.item);
     } catch (err) {
       saveBtn.disabled = false;
@@ -3530,7 +3671,7 @@ function renderIntegrations(holder, data) {
     // registry with unconfigured entries.
     holder.append(el('p', { class: 'muted', style: 'font-size:13px' }, 'No integrations yet. Add your own, or start from an example:'));
     holder.append(el('div', { class: 'llm-list' },
-      starterTemplates().map((t) => templateCard(t, list, persist, presets, caps, holder))));
+      starterTemplates(presets).map((t) => templateCard(t, list, persist, presets, caps, holder))));
   } else {
     holder.append(el('div', { class: 'llm-list' },
       list.map((i, idx) => integrationRow(i, idx, list, persist, presets, caps, holder, activeId))));
@@ -3659,12 +3800,20 @@ async function runBenchmark(btn, out, list, caps) {
 // Example integration templates for the empty-state gallery - the full range, most→
 // least powerful, so the platform-aware greying showcases the multiplatform design.
 // The Ollama one is the exact endpoint that reaches a host Ollama from the dev pod.
-function starterTemplates() {
+// Model ids come from the server's catalog (presets.offline), never hardcoded here - so a
+// catalog swap can't leave the starter templates pointing at a dead id. `default` = the
+// catalog's balanced pick; `smallest` = the safe-everywhere one.
+function starterTemplates(presets) {
+  const offline = (presets && presets.offline) || [];
+  const auto = offline.filter((m) => m.auto);
+  const bySize = auto.slice().sort((a, b) => (a.min_vram_mb || 0) - (b.min_vram_mb || 0));
+  const smallId = (bySize[0] && bySize[0].id) || '';
+  const defId = ((offline.find((m) => m.default) || bySize[0] || {}).id) || smallId;
   return [
-    { name: 'On-device GPU (CUDA)', kind: 'offline', offline_model: 'qwen2.5-1.5b', device: 'gpu', note: 'Embedded model on an NVIDIA GPU - fastest local (needs a CUDA build/host).' },
-    { name: 'In-browser (WebGPU)', kind: 'webgpu', offline_model: 'qwen2.5-1.5b', note: 'Runs on your GPU in the browser - no install, no server GPU.' },
-    { name: 'Local Ollama (your GPU)', kind: 'online', provider: 'custom', endpoint: 'http://host.minikube.internal:11434/v1/chat/completions', model: 'qwen2.5:1.5b', note: 'Your own Ollama over HTTP - this endpoint reaches a host Ollama from the dev/minikube pod.' },
-    { name: 'On-device CPU', kind: 'offline', offline_model: 'qwen2.5-0.5b', device: 'cpu', note: 'Embedded model on CPU - runs anywhere, slower.' },
+    { name: 'On-device GPU (CUDA)', kind: 'offline', offline_model: defId, device: 'gpu', note: 'Embedded model on an NVIDIA GPU - fastest local (needs a CUDA build/host).' },
+    { name: 'In-browser (WebGPU)', kind: 'webgpu', offline_model: defId, note: 'Runs on your GPU in the browser - no install, no server GPU.' },
+    { name: 'Local Ollama (your GPU)', kind: 'online', provider: 'custom', endpoint: 'http://host.minikube.internal:11434/v1/chat/completions', model: 'qwen3:1.7b', note: 'Your own Ollama over HTTP - this endpoint reaches a host Ollama from the dev/minikube pod.' },
+    { name: 'On-device CPU', kind: 'offline', offline_model: smallId, device: 'cpu', note: 'Embedded model on CPU - runs anywhere, slower.' },
     { name: 'Claude (Anthropic)', kind: 'online', provider: 'anthropic', note: 'Cloud - fast; needs an API key. Item titles are sent to the provider.' },
     { name: 'Gemini (Google)', kind: 'online', provider: 'gemini', note: 'Cloud - needs an API key.' },
     { name: 'ChatGPT (OpenAI)', kind: 'online', provider: 'openai', note: 'Cloud - needs an API key.' },
@@ -4396,6 +4545,13 @@ async function autotuneAi() {
     const caps = await detectBrowserCaps();
     await api.autotuneLlm(caps);
   } catch { /* AI autotune is best-effort */ }
+  // Populate the WebGPU id map + fallback ladder from the server's model catalog
+  // (presets.rs is the single source of truth). Best-effort and independent of the
+  // autotune call above - must run before any WebGPU tag/draft, so do it on boot.
+  try {
+    const cfg = await api.llmConfig();
+    if (cfg && cfg.presets && cfg.presets.offline) registerModels(cfg.presets.offline);
+  } catch { /* model registration is best-effort */ }
 }
 
 // The signed-in user block in the sidebar foot. Shown only for an authenticated
@@ -4610,6 +4766,13 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
   let kind = e.kind || (caps.embedded ? 'offline' : 'online');
   let provider = e.provider || (presets.online[0] && presets.online[0].id) || 'anthropic';
   let offlineModel = e.offline_model || (presets.offline[0] && presets.offline[0].id) || '';
+  // Guard the select/variable desync: if the stored id is no longer in the catalog (e.g.
+  // a pre-swap Qwen2.5 id), the <select> shows its first option while this var still holds
+  // the dead id - and with no onchange fired, save would write the dead id straight back.
+  // Coerce to a real option so what's shown and what's saved agree.
+  if (!presets.offline.some((m) => m.id === offlineModel)) {
+    offlineModel = (presets.offline[0] && presets.offline[0].id) || offlineModel;
+  }
   let device = e.device || 'cpu';
   const nameInput = el('input', { class: 'inp', style: 'width:100%', placeholder: 'Name (e.g. Local GPU, Claude)', value: e.name || '' });
   const fields = el('div', { style: 'margin-top:8px' });
@@ -4639,7 +4802,7 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
       ]));
       if (isCustom) {
         endpointInput = el('input', { class: 'inp', style: 'width:100%;margin-top:6px', placeholder: 'http://localhost:11434/v1/chat/completions', value: e.endpoint || '' });
-        modelInput = el('input', { class: 'inp', style: 'width:100%;margin-top:6px', placeholder: 'model (e.g. qwen2.5:1.5b)', value: e.model || '' });
+        modelInput = el('input', { class: 'inp', style: 'width:100%;margin-top:6px', placeholder: 'model (e.g. qwen3:1.7b)', value: e.model || '' });
         keyInput = el('input', { class: 'inp', type: 'password', style: 'width:100%;margin-top:6px', placeholder: keySet ? 'key set - leave blank to keep' : 'API key (blank for local models)' });
         fields.append(
           el('div', { class: 'muted', style: 'font-size:12px;margin:6px 0 4px' },

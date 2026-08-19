@@ -582,6 +582,15 @@ fn detect_orphaned_children(items: &[WorkItem], rules: &RuleSet, flags: &mut Vec
         if is_ignored(it, rules) || is_resolved(it) {
             continue;
         }
+        // A Blocked (or otherwise configured) child is parked on purpose, not orphaned -
+        // don't flag it under a resolved parent.
+        if rules
+            .orphaned_child_ignore_states
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&it.state))
+        {
+            continue;
+        }
         let Some(pid) = it.parent_id else { continue };
         let Some(parent) = by_id.get(&pid) else {
             continue;
@@ -1584,6 +1593,42 @@ mod tests {
         assert_eq!(orphans.len(), 1, "only the OPEN child is flagged");
         assert_eq!(orphans[0].work_item_id, 2);
         assert!(orphans[0].message.contains("#1"), "{}", orphans[0].message);
+    }
+
+    #[test]
+    fn orphaned_child_ignores_configured_states_like_blocked() {
+        // A Blocked child under a resolved parent is parked on purpose - not orphaned.
+        let rules = RuleSet {
+            flag_orphaned_children: true,
+            resolved_states: vec!["Closed".into()],
+            orphaned_child_ignore_states: vec!["Blocked".into()],
+            ..Default::default()
+        };
+        let parent = item(|w| {
+            w.id = 1;
+            w.state = "Closed".into();
+        });
+        let blocked_child = item(|w| {
+            w.id = 2;
+            w.state = "Blocked".into();
+            w.parent_id = Some(1);
+        });
+        let active_child = item(|w| {
+            w.id = 3;
+            w.state = "Active".into();
+            w.parent_id = Some(1);
+        });
+        let flags = evaluate(&[parent, blocked_child, active_child], &rules, now());
+        let orphans: Vec<_> = flags
+            .iter()
+            .filter(|f| f.code == FlagCode::OrphanedChild)
+            .collect();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "Blocked excluded; only the Active child flags"
+        );
+        assert_eq!(orphans[0].work_item_id, 3);
     }
 
     #[test]

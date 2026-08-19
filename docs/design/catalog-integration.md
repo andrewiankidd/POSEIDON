@@ -15,7 +15,7 @@ new product/service lands and goes stale silently — the AI then correctly retu
 in the Port export — was absent from the config).
 
 The repo→service→product→team graph is **owned by an internal developer portal**
-(Port, at AMCS). POSEIDON should consume that graph, not re-curate a copy of it.
+(e.g. Port). POSEIDON should consume that graph, not re-curate a copy of it.
 
 ## Shape: a generic **Catalog**, mirroring `Provider`
 

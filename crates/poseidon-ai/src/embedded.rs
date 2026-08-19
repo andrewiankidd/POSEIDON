@@ -1,10 +1,17 @@
-//! Offline, in-process tag suggestion via a small quantized Qwen2.5 model
-//! (candle). On first use it downloads the preset GGUF + tokenizer from Hugging
-//! Face (cached under the HF cache dir), loads them once, and generates locally -
-//! no Ollama, no server, no network at inference time. CPU by default.
+//! Offline, in-process tag suggestion via a small quantized model (candle). On
+//! first use it downloads the preset GGUF + tokenizer from Hugging Face (cached
+//! under the HF cache dir), loads them once, and generates locally - no Ollama,
+//! no server, no network at inference time. CPU by default.
 //!
-//! Compilation validates the candle API usage; output quality (does a 0.5-1.5B
-//! model tag well) needs a real model run to confirm and tune.
+//! MODEL ARCHITECTURE: this uses candle's `quantized_qwen2` loader. candle has no
+//! dedicated Qwen3 GGUF loader yet, so the catalog's Qwen3 GGUF coords are NOT
+//! verified to load here - the tested/authoritative offline path is WebGPU
+//! (web-llm, see frontend/web/lib/webgpu.js). If a Qwen3 GGUF fails to load through
+//! the Qwen2 loader, either pin a Qwen2.5 GGUF for this embedded engine or wait for
+//! a `quantized_qwen3` in candle-transformers and switch the import below.
+//!
+//! Compilation validates the candle API usage; output quality (does a small model
+//! tag well) needs a real model run to confirm and tune.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -251,7 +258,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "downloads a model + runs CPU inference; opt-in via --ignored"]
     async fn embedded_tagger_loads_and_infers() {
-        let preset = offline_model("qwen2.5-0.5b").expect("preset exists");
+        let preset = offline_model("qwen3-0.6b").expect("preset exists");
         let tagger = EmbeddedTagger::new(preset);
         let item = TaggerInput {
             id: 1,
@@ -288,7 +295,7 @@ mod tests {
     #[ignore = "downloads a model + runs CPU inference; opt-in benchmark via --ignored --nocapture"]
     fn embedded_cpu_latency_bench() {
         use std::time::Instant;
-        let preset = offline_model("qwen2.5-0.5b").expect("preset exists");
+        let preset = offline_model("qwen3-0.6b").expect("preset exists");
         let allowed = [
             "type:bug",
             "area:frontend",

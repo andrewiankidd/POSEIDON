@@ -10,6 +10,8 @@ description = "POSEIDON domain types - provider-agnostic normalised shapes (work
 
 [dependencies]
 serde = { workspace = true }
+# Opaque per-item results in AiActivityRecord are carried as serde_json::Value.
+serde_json = { workspace = true }
 chrono = { workspace = true }
 # Telemetry settings live in the config schema. Core only touches the IO-free
 # `TelemetrySettings` types; the OTEL machinery is pulled in by the binaries, so

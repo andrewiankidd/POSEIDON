@@ -312,6 +312,12 @@ pub struct RuleSet {
     /// uses `resolved_states` to decide "closed". Opt-in (off by default).
     #[serde(default)]
     pub flag_orphaned_children: bool,
+    /// Child states that are NOT treated as "orphaned" under a resolved parent - a
+    /// Blocked child is parked on purpose (waiting on something), not stranded, so it
+    /// isn't the "closed the parent too early" signal this rule looks for. Case-
+    /// insensitive; defaults to `["Blocked"]`.
+    #[serde(default = "default_orphaned_child_ignore_states")]
+    pub orphaned_child_ignore_states: Vec<String>,
     /// Left-to-right column order for the Board (Kanban) view's **State** axis, e.g.
     /// `["New", "Ready", "Blocked", "Active", "Resolved", "Closed"]`. Case-insensitive;
     /// states not listed fall to the end (alphabetically). Empty = a built-in lifecycle
@@ -410,6 +416,12 @@ fn default_resolved_states() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// Child states excluded from the orphaned-child check by default: a Blocked child
+/// under a resolved parent is parked on purpose, not stranded.
+fn default_orphaned_child_ignore_states() -> Vec<String> {
+    vec!["Blocked".to_string()]
 }
 
 /// "Still needs work" tags seeded by default - contradictory once an item is in a

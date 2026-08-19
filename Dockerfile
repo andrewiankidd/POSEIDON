@@ -29,7 +29,10 @@ RUN cargo install cargo-chef --locked
 WORKDIR /build
 
 FROM chef AS planner
-COPY . .
+# Only the Cargo manifests + crate sources drive the dependency recipe, so a
+# frontend/docs edit never reruns this (or busts the cook layer below).
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -40,15 +43,20 @@ FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release -p poseidon-server --recipe-path recipe.json
 
-# Now the real source; from here only our crates recompile on a code change.
-COPY . .
-
-# Bundle the docs into the web assets so the served UI's in-app docs viewer can
-# fetch assets/docs/*.md (the desktop build does this via build.rs; here we do it
-# for the container's static bundle). Source of truth stays /docs.
-RUN mkdir -p frontend/web/assets/docs && cp docs/*.md frontend/web/assets/docs/
-
+# The RUST build inputs ONLY (no frontend/, no docs/) - so editing the frontend or
+# the docs does NOT invalidate this layer and `cargo build` stays cached; only a
+# Rust change recompiles our crates. This is what keeps UI-only redeploys fast.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
 RUN cargo build --release -p poseidon-server --bin poseidon-server
+
+# Frontend bundle assembled AFTER the compile: a JS/CSS or docs edit rebuilds only
+# these fast file-copy layers, never the Rust workspace. Docs are bundled into the
+# web assets so the served UI's in-app docs viewer can fetch assets/docs/*.md (the
+# desktop build does this via build.rs); source of truth stays /docs.
+COPY frontend ./frontend
+COPY docs ./docs
+RUN mkdir -p frontend/web/assets/docs && cp docs/*.md frontend/web/assets/docs/
 
 # ---- Dev stage: Docker-only live-reload loop --------------------------------
 # `docker compose up` (see compose.yaml) builds this (`--target dev`) and runs the

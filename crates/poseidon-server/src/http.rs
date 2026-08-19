@@ -168,6 +168,15 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
             post(store_healthcheck_audit),
         )
         .route("/api/healthcheck/duplicates/scan", post(scan_duplicates))
+        .route(
+            "/api/work-items/{id}/drafts",
+            put(set_field_drafts).delete(clear_field_drafts),
+        )
+        .route("/api/ai/drafts", get(list_field_drafts))
+        .route(
+            "/api/ai/activity",
+            get(ai_activity_list).post(record_ai_activity),
+        )
         .route("/env.js", get(env_js))
         .with_state(service);
 
@@ -434,6 +443,68 @@ async fn update_work_item_fields(
         Ok((item, flags)) => Ok(Json(serde_json::json!({ "item": item, "flags": flags }))),
         Err(e) => Err(err500(e)),
     }
+}
+
+// ── Durable AI state: improve-all drafts + the activity log ──────────────────
+
+#[derive(serde::Deserialize)]
+struct SetDraftsBody {
+    team: String,
+    drafts: Vec<poseidon_core::AiFieldDraft>,
+}
+
+#[derive(serde::Deserialize)]
+struct ActivityQuery {
+    limit: Option<i64>,
+}
+
+/// Persist the pending "Improve all" drafts for one work item (survives a refresh).
+async fn set_field_drafts(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<SetDraftsBody>,
+) -> ApiResult {
+    svc.set_ai_field_drafts(&body.team, id, &body.drafts)
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Clear one work item's pending drafts (on review/apply).
+async fn clear_field_drafts(
+    svc: Scoped,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> ApiResult {
+    svc.clear_ai_field_drafts(id).await.map_err(err500)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// All pending drafts for the owner (optionally one team), keyed by work-item id -
+/// drives the ✨ badges + editor pre-fill after a refresh.
+async fn list_field_drafts(
+    svc: Scoped,
+    axum::extract::Query(q): axum::extract::Query<ScopeQuery>,
+) -> ApiResult {
+    let map = svc.ai_field_drafts(scope(&q.team)).await.map_err(err500)?;
+    Ok(Json(serde_json::json!({ "drafts": map })))
+}
+
+/// The owner's recent AI activity (queue-across-refresh + audit trail), newest first.
+async fn ai_activity_list(
+    svc: Scoped,
+    axum::extract::Query(q): axum::extract::Query<ActivityQuery>,
+) -> ApiResult {
+    let list = svc.ai_activity(q.limit).await.map_err(err500)?;
+    Ok(Json(serde_json::json!({ "activity": list })))
+}
+
+/// Upsert one activity record as a job starts / progresses / finishes.
+async fn record_ai_activity(
+    svc: Scoped,
+    Json(rec): Json<poseidon_core::AiActivityRecord>,
+) -> ApiResult {
+    svc.record_ai_activity(&rec).await.map_err(err500)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(serde::Deserialize)]

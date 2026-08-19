@@ -16,8 +16,8 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use poseidon_core::{
-    CatalogEntity, Pipeline, PipelineReport, PipelineRun, PrStatus, PullRequest, ReportSpec,
-    RunStatus, TagCount, TicketReport, UserConfig, WorkItem,
+    AiActivityRecord, AiFieldDraft, CatalogEntity, Pipeline, PipelineReport, PipelineRun, PrStatus,
+    PullRequest, ReportSpec, RunStatus, TagCount, TicketReport, UserConfig, WorkItem,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, Row, SqlitePool};
@@ -439,6 +439,153 @@ impl Store {
             map.entry(id).or_default().push((kind, detail));
         }
         Ok(map)
+    }
+
+    // ── Durable "Improve all" field drafts (owner-scoped) ───────────────────────
+
+    /// Replace the pending improve-all drafts for one work item with `drafts`
+    /// (`reference` -> proposed `value`). An empty slice just clears them.
+    pub async fn set_ai_field_drafts(
+        &self,
+        owner: &str,
+        team: &str,
+        work_item_id: i64,
+        drafts: &[AiFieldDraft],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM ai_field_drafts WHERE owner = ? AND work_item_id = ?")
+            .bind(owner)
+            .bind(work_item_id)
+            .execute(&mut *tx)
+            .await?;
+        for d in drafts {
+            sqlx::query(
+                "INSERT INTO ai_field_drafts (owner, team, work_item_id, field_ref, value)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(owner)
+            .bind(team)
+            .bind(work_item_id)
+            .bind(&d.reference)
+            .bind(&d.value)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// All pending improve-all drafts for `owner` (optionally one team), grouped by
+    /// work-item id. The frontend uses the keys for the ✨ badges and the values to
+    /// pre-fill the editor's review panes.
+    pub async fn ai_field_drafts(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<std::collections::HashMap<i64, Vec<AiFieldDraft>>> {
+        let rows = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT work_item_id, field_ref, value FROM ai_field_drafts
+             WHERE owner = ? AND team = COALESCE(?, team)
+             ORDER BY work_item_id, field_ref",
+        )
+        .bind(owner)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map: std::collections::HashMap<i64, Vec<AiFieldDraft>> =
+            std::collections::HashMap::new();
+        for (id, reference, value) in rows {
+            map.entry(id)
+                .or_default()
+                .push(AiFieldDraft { reference, value });
+        }
+        Ok(map)
+    }
+
+    /// Clear the pending drafts for one work item (called when it's reviewed/applied).
+    pub async fn clear_ai_field_drafts(&self, owner: &str, work_item_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM ai_field_drafts WHERE owner = ? AND work_item_id = ?")
+            .bind(owner)
+            .bind(work_item_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── AI activity log (owner-scoped): queue-across-refresh + audit trail ───────
+
+    /// Upsert one activity record by (owner, id) - inserted on job start, updated as it
+    /// progresses and on completion, so the queue survives a refresh.
+    pub async fn upsert_ai_activity(&self, owner: &str, rec: &AiActivityRecord) -> Result<()> {
+        let items = serde_json::to_string(&rec.items).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO ai_activity
+               (id, owner, team, name, where_at, status, done, total, outcome, items_json, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(owner, id) DO UPDATE SET
+               team=excluded.team, name=excluded.name, where_at=excluded.where_at,
+               status=excluded.status, done=excluded.done, total=excluded.total,
+               outcome=excluded.outcome, items_json=excluded.items_json,
+               updated_at=datetime('now')",
+        )
+        .bind(&rec.id)
+        .bind(owner)
+        .bind(&rec.team)
+        .bind(&rec.name)
+        .bind(&rec.where_at)
+        .bind(&rec.status)
+        .bind(rec.done)
+        .bind(rec.total)
+        .bind(&rec.outcome)
+        .bind(items)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The owner's most-recent activity records (newest first, capped at `limit`).
+    pub async fn list_ai_activity(&self, owner: &str, limit: i64) -> Result<Vec<AiActivityRecord>> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, String, String, String, String)>(
+            "SELECT id, team, name, where_at, status, done, total, outcome, items_json, started_at, updated_at
+             FROM ai_activity WHERE owner = ? ORDER BY updated_at DESC LIMIT ?",
+        )
+        .bind(owner)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    team,
+                    name,
+                    where_at,
+                    status,
+                    done,
+                    total,
+                    outcome,
+                    items_json,
+                    started_at,
+                    updated_at,
+                )| {
+                    AiActivityRecord {
+                        id,
+                        team,
+                        name,
+                        where_at,
+                        status,
+                        done,
+                        total,
+                        outcome,
+                        items: serde_json::from_str(&items_json)
+                            .unwrap_or(serde_json::Value::Array(vec![])),
+                        started_at,
+                        updated_at,
+                    }
+                },
+            )
+            .collect())
     }
 
     /// Replace the near-duplicate findings for a team scope in one shot: delete the
@@ -1184,6 +1331,91 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use poseidon_core::DEFAULT_OWNER;
+
+    #[tokio::test]
+    async fn ai_drafts_and_activity_round_trip() {
+        let store = Store::connect_in_memory().await.unwrap();
+
+        // Drafts: set (grouped read), overwrite replaces, clear removes.
+        store
+            .set_ai_field_drafts(
+                DEFAULT_OWNER,
+                "Platform",
+                42,
+                &[
+                    AiFieldDraft {
+                        reference: "System.Description".into(),
+                        value: "improved".into(),
+                    },
+                    AiFieldDraft {
+                        reference: "AcceptanceCriteria".into(),
+                        value: "GWT".into(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        let map = store.ai_field_drafts(DEFAULT_OWNER, None).await.unwrap();
+        assert_eq!(map.get(&42).unwrap().len(), 2);
+        store
+            .set_ai_field_drafts(
+                DEFAULT_OWNER,
+                "Platform",
+                42,
+                &[AiFieldDraft {
+                    reference: "System.Description".into(),
+                    value: "v2".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .ai_field_drafts(DEFAULT_OWNER, None)
+                .await
+                .unwrap()
+                .get(&42)
+                .unwrap()
+                .len(),
+            1,
+            "overwrite replaced, did not append"
+        );
+        store
+            .clear_ai_field_drafts(DEFAULT_OWNER, 42)
+            .await
+            .unwrap();
+        assert!(store
+            .ai_field_drafts(DEFAULT_OWNER, None)
+            .await
+            .unwrap()
+            .get(&42)
+            .is_none());
+
+        // Activity: same id upserts in place (not appends); items JSON round-trips.
+        let mut rec = AiActivityRecord {
+            id: "job-1".into(),
+            team: "Platform".into(),
+            name: "Suggest tags".into(),
+            where_at: "gpu".into(),
+            status: "running".into(),
+            done: 1,
+            total: 3,
+            outcome: String::new(),
+            items: serde_json::json!([{"id": 1, "tags": ["area:x"]}]),
+            started_at: String::new(),
+            updated_at: String::new(),
+        };
+        store.upsert_ai_activity(DEFAULT_OWNER, &rec).await.unwrap();
+        rec.status = "done".into();
+        rec.done = 3;
+        rec.outcome = "tagged 3/3".into();
+        store.upsert_ai_activity(DEFAULT_OWNER, &rec).await.unwrap();
+        let list = store.list_ai_activity(DEFAULT_OWNER, 50).await.unwrap();
+        assert_eq!(list.len(), 1, "same id upserts, not appends");
+        assert_eq!(list[0].status, "done");
+        assert_eq!(list[0].done, 3);
+        assert_eq!(list[0].items[0]["id"], 1);
+    }
 
     fn wi(id: i64, tags: &[&str], created: &str, changed: &str, closed: Option<&str>) -> WorkItem {
         WorkItem {

@@ -10,6 +10,12 @@ export function el(tag, attrs = {}, children = []) {
     else if (k === 'html') node.innerHTML = v;
     else if (k.startsWith('on') && typeof v === 'function') {
       node.addEventListener(k.slice(2).toLowerCase(), v);
+    } else if (typeof v === 'boolean') {
+      // Boolean attributes (selected/disabled/checked/readonly…): presence = true, so
+      // setAttribute(k, false) would STILL mark them on (the value is ignored). Set the
+      // property instead, which honours false. This is why a <select>'s options must not
+      // all end up `selected` - the last one would win and desync from the saved value.
+      node[k] = v;
     } else node.setAttribute(k, v);
   }
   for (const c of [].concat(children)) {

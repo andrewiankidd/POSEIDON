@@ -20,6 +20,7 @@
 //! provider crate's problem, not the domain's. New providers normalise *into*
 //! these shapes.
 
+mod ai_activity;
 mod catalog;
 mod config;
 mod config_bundle;
@@ -31,6 +32,7 @@ mod report;
 mod report_spec;
 mod work_item;
 
+pub use ai_activity::{AiActivityRecord, AiFieldDraft};
 pub use catalog::{canonical_product_slug, repo_product_map, CatalogEntity};
 pub use config::{
     parse_duration, AzureDevOpsAuth, CatalogConfig, CatalogFieldMap, DoctorConfig, PipelineRules,

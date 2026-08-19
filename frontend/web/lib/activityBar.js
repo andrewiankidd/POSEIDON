@@ -29,7 +29,24 @@ function outcomeText(job) {
   return s.length > 48 ? s.slice(0, 47) + '…' : s;
 }
 
+// Compact relative time ("just now" / "5m" / "2h" / "3d") for a finished job; the full
+// local timestamp goes in the tooltip. `ms` may be null (older records without a time).
+function fmtAgo(ms) {
+  if (!ms) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
 function jobRow(job, kind) {
+  const when = kind === 'done' && job.finishedAt
+    ? el('span', {
+        class: 'ai-row-time',
+        title: new Date(job.finishedAt).toLocaleString(),
+      }, fmtAgo(job.finishedAt))
+    : null;
   const meta = el('div', { class: 'ai-row-meta' }, [
     whereLabel(job.where),
     el('span', { class: 'ai-row-sub' },
@@ -38,7 +55,8 @@ function jobRow(job, kind) {
           : job.status === 'cancelled' ? 'cancelled'
           : outcomeText(job))
         : progressText(job) || (kind === 'queued' ? 'waiting' : '')),
-  ]);
+    when,
+  ].filter(Boolean));
   let right;
   if (kind === 'queued') {
     right = el('button', {
@@ -55,6 +73,23 @@ function jobRow(job, kind) {
     el('span', { class: 'ai-row-icon' }, job.icon || '✨'),
     el('div', { class: 'ai-row-body' }, [el('div', { class: 'ai-row-name' }, job.name), meta]),
     right,
+  ]);
+}
+
+// One row in any job's per-item list: `#id → …`. A tagging job passes `tags` (rendered
+// as +chips); every other job passes a `note` string (e.g. 'audited', 'ready (3 fields)',
+// 'too sparse'). `tone: 'warn'` dims/marks a skip or failure.
+function itemLine(it) {
+  let detail;
+  if (it.tags && it.tags.length) {
+    detail = el('span', { class: 'ai-item-tags' }, it.tags.map((t) => el('span', { class: 'ai-item-tag' }, '+' + t)));
+  } else {
+    detail = el('span', { class: it.tone === 'warn' ? 'ai-item-skip' : 'ai-item-none' }, it.note || 'none');
+  }
+  return el('div', { class: 'ai-item' }, [
+    el('span', { class: 'ai-item-id' }, '#' + it.id),
+    el('span', { class: 'ai-item-arrow' }, '→'),
+    detail,
   ]);
 }
 
@@ -92,10 +127,55 @@ export function mountActivityBar() {
   const toggle = el('button', { class: 'btn btn-xs', type: 'button' }, 'View details ▴');
 
   let open = false;
+  let lastSnap = aiQueue.snapshot();
+  // Which finished jobs have their per-item list expanded. Kept here (not on the job)
+  // so it survives the full-rebuild renders below.
+  const expanded = new Set();
+
+  // A job's row plus, if it processed items, their per-item list. The running job shows
+  // it expanded and live (tailing to the newest); a finished job collapses it behind a
+  // toggle so a long Completed history stays compact.
+  function jobBlock(job, kind) {
+    const row = jobRow(job, kind);
+    const items = job.items || [];
+    if (!items.length) return row;
+    const list = el('div', { class: 'ai-items' }, items.map(itemLine));
+    if (kind === 'running') {
+      list.dataset.tail = '1';
+      return el('div', { class: 'ai-job-block' }, [row, list]);
+    }
+    const isOpen = expanded.has(job.id);
+    const toggle = el('button', {
+      class: 'btn btn-xs ai-items-toggle', type: 'button',
+      onclick: () => {
+        if (isOpen) expanded.delete(job.id); else expanded.add(job.id);
+        renderPanel(lastSnap);
+      },
+    }, `${isOpen ? '▾' : '▸'} ${items.length} item${items.length === 1 ? '' : 's'}`);
+    return el('div', { class: 'ai-job-block' }, isOpen ? [row, toggle, list] : [row, toggle]);
+  }
+
+  // Rebuild the panel body from a snapshot. Called on every queue update while open AND
+  // the instant the panel is opened - the latter matters because a server-polled job only
+  // notify()s once per poll, so without an on-open render the panel sits empty until the
+  // next tick (which read as "details panel empty while a job is running").
+  function renderPanel(snap) {
+    clear(panel);
+    [
+      section('Running', snap.running ? [jobBlock(snap.running, 'running')] : []),
+      section('Queued', snap.queued.map((j) => jobRow(j, 'queued'))),
+      section('Completed', snap.completed.map((j) => jobBlock(j, 'done'))),
+    ].filter(Boolean).forEach((s) => panel.appendChild(s));
+    // Keep the live running list scrolled to the newest item.
+    const tail = panel.querySelector('.ai-items[data-tail="1"]');
+    if (tail) tail.scrollTop = tail.scrollHeight;
+  }
+
   toggle.addEventListener('click', () => {
     open = !open;
     panel.hidden = !open;
     toggle.textContent = open ? 'Hide details ▾' : 'View details ▴';
+    if (open) renderPanel(lastSnap);
   });
 
   const spin = el('span', { class: 'ai-bar-spin' }, '◐');
@@ -118,6 +198,7 @@ export function mountActivityBar() {
   document.body.appendChild(root);
 
   aiQueue.subscribe((snap) => {
+    lastSnap = snap;
     // Reserve space at the bottom of the content column while the bar is up, so it never
     // overlays the last row / pagination (the bar is position:fixed).
     document.body.classList.toggle('ai-bar-visible', snap.active);
@@ -159,14 +240,10 @@ export function mountActivityBar() {
     queuedInfo.textContent = snap.queued.length ? `${snap.queued.length} queued` : '';
     clearBtn.style.display = snap.completed.length ? '' : 'none';
 
-    if (open) {
-      clear(panel);
-      const running = r ? [jobRow(r, 'running')] : [];
-      [
-        section('Running', running),
-        section('Queued', snap.queued.map((j) => jobRow(j, 'queued'))),
-        section('Completed', snap.completed.map((j) => jobRow(j, 'done'))),
-      ].filter(Boolean).forEach((s) => panel.appendChild(s));
-    }
+    if (open) renderPanel(snap);
   });
+
+  // Rebuild the finished list from the server activity log so the queue + per-item
+  // results are visible after a refresh (and interrupted runs surface with partials).
+  aiQueue.hydrateFromServer();
 }
