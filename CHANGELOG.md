@@ -8,6 +8,15 @@ Each entry below is headed by the SHA (+ date) that shipped it, newest first,
 mirroring this file's own commit history. Within an entry, changes are grouped
 **Added / Changed / Fixed**.
 
+## [3fbf03a] — 2026-08-19
+
+### Fixed
+- **Suggested-tag chips rendered `[object Object]`** — the WebGPU tagger returns
+  `{ tag, reason }` objects; the AI activity-queue per-item list and the editor's
+  inline "+tag" chips stringified the object instead of showing the tag name (and the
+  editor chip would have written the object back to the provider on click). Both now
+  normalise to the tag name; server storage still receives the full objects.
+
 ## [396872e] — 2026-08-19
 
 ### Added
