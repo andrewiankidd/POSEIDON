@@ -8,6 +8,38 @@ Each entry below is headed by the SHA (+ date) that shipped it, newest first,
 mirroring this file's own commit history. Within an entry, changes are grouped
 **Added / Changed / Fixed**.
 
+## [396872e] — 2026-08-19
+
+### Added
+- **Durable AI activity + field drafts** — the "Improve all fields" queue and each
+  item's per-field drafts are persisted server-side (`ai_activity` + `ai_field_drafts`,
+  migration `0007`) and rehydrated on load, so a refresh (or another machine) keeps the
+  queue, the ✨ badges, and an audit trail. Improve-all also gains a **"Force re-do all"**
+  split button — the plain click stays resumable (skips items that already have drafts),
+  the caret regenerates everything.
+- **Desktop command parity** — the work-item field editor and the AI activity/draft
+  endpoints are exposed as Tauri commands (previously HTTP-only), so the standalone
+  desktop app matches the hosted web build.
+
+### Changed
+- **Offline models switched Qwen2.5 → Qwen3** (0.6B / 1.7B / 4B / 8B; 4B is the auto
+  ceiling, 8B hand-pick). `OFFLINE_MODELS` is now the single source of truth: the WebGPU
+  model-id map, the OOM fallback ladder, `recommend_model`, the seeded catalog and the
+  starter templates all derive from it, and a drift-guard test pins the demo fixture — so
+  swapping the model family is a one-place edit.
+
+### Fixed
+- **Form-control desync (`el()` boolean attributes)** — booleans like `selected` /
+  `disabled` / `checked` were written with `setAttribute`, which marks the attribute
+  *present* even for `false`, so every `<select>` option ended up selected and the
+  control showed its last option while the saved value stayed unchanged. This was the
+  root cause of the model picker "shows X but saves Y". Booleans are now set as
+  properties.
+- **AI config self-heal** — a stored `offline_model` id that's no longer in the catalog
+  (e.g. after the Qwen3 switch) is coerced to the current recommended model on load and
+  re-persisted, so a model swap can't strand a saved integration on a dead id.
+- **Blocked children no longer flagged as orphaned** (`orphaned_child_ignore_states`).
+
 ## [ea0453e] — 2026-08-18
 
 ### Added
