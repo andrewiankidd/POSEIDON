@@ -8,6 +8,21 @@ Each entry below is headed by the SHA (+ date) that shipped it, newest first,
 mirroring this file's own commit history. Within an entry, changes are grouped
 **Added / Changed / Fixed**.
 
+## [dde7376] — 2026-08-24
+
+### Added
+- **Type + Assignee filters on Work Items** — two facet dropdowns in the shared
+  toolbar that filter **both** the table and the board (they drive the one predicate
+  those views share), so the board finally has the Type/Assignee filtering that used
+  to exist only as table column filters. Built from the values present in the data,
+  persisted across reloads, and cleared by "Clear filters".
+
+### Fixed
+- **Qwen3 `<think>` block leaking into AI output** — Qwen3 emits an empty
+  `<think></think>` even with `/no_think`, and it was showing up in Bulk-improve
+  drafts, tag JSON, and the healthcheck audit. Stripped wherever raw model text is
+  consumed (chat, tagging, audit parse).
+
 ## [3fbf03a] — 2026-08-19
 
 ### Fixed
