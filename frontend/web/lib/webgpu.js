@@ -203,7 +203,7 @@ function extractJson(s) {
 // falsely "clean"); the server re-parses authoritatively for the stored flags.
 export function parseAudit(text) {
   let reply;
-  try { reply = JSON.parse(extractJson(text)); } catch { return null; }
+  try { reply = JSON.parse(extractJson(stripThink(text))); } catch { return null; }
   const issues = Array.isArray(reply && reply.issues) ? reply.issues : [];
   return issues
     .filter((i) => i && i.kind && String(i.detail || '').trim())
@@ -346,7 +346,7 @@ export async function runWebGpuTagging(offlineModel, items, allowed, onStatus, o
     const text =
       (resp && resp.choices && resp.choices[0] && resp.choices[0].message &&
         resp.choices[0].message.content) || '';
-    const tags = parseSuggestions(text, allowed, cap);
+    const tags = parseSuggestions(stripThink(text), allowed, cap);
     // Diagnostic: WebGPU inference is client-only, so the server can't log why an item
     // got zero tags. Surface the raw model output + what survived allow-list filtering
     // here, so an empty Suggested cell is explainable from DevTools (not a black box).
@@ -384,7 +384,17 @@ export async function runWebGpuChat(offlineModel, system, user, onStatus) {
   const text =
     (resp && resp.choices && resp.choices[0] && resp.choices[0].message &&
       resp.choices[0].message.content) || '';
-  return stripOuterFence(text.trim());
+  return stripOuterFence(stripThink(text));
+}
+
+// Qwen3 emits a <think>…</think> block even with /no_think - usually empty, but always
+// present - and it leaks into drafts / parsed output. Strip the whole block (and any stray
+// unmatched tag) wherever we consume raw model text.
+function stripThink(s) {
+  return String(s || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?think>/gi, '')
+    .trim();
 }
 
 // Drop a single outer ```lang … ``` fence if the model wrapped its whole answer in one
