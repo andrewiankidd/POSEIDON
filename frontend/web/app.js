@@ -52,10 +52,13 @@ function saveToggles(state) {
   try {
     const k = `poseidon.toggles.${state.persistKey}`;
     const view = state.view && state.view !== 'table' ? state.view : null;
+    const facets = state.facets || {};
+    const facetsSet = Object.values(facets).some(Boolean);
     // Drop the entry at defaults so we don't leave empty state lying around.
-    if (!state.flaggedOnly && !state.hideEmpty && !view) { localStorage.removeItem(k); return; }
+    if (!state.flaggedOnly && !state.hideEmpty && !view && !facetsSet) { localStorage.removeItem(k); return; }
     localStorage.setItem(k, JSON.stringify({
       flaggedOnly: !!state.flaggedOnly, hideEmpty: !!state.hideEmpty, view: state.view || 'table',
+      facets,
     }));
   } catch { /* private mode / quota - persistence is best-effort */ }
 }
@@ -69,6 +72,7 @@ function listState(persistKey, flagCode) {
     flaggedOnly: routeParams().get('flagged') === '1' || !!flagCode || !!saved.flaggedOnly,
     hideEmpty: !!saved.hideEmpty,
     view: saved.view || 'table',
+    facets: (saved.facets && typeof saved.facets === 'object') ? saved.facets : {},
   };
 }
 
@@ -119,6 +123,16 @@ function passesFlagFilter(state, codes) {
   }
   if (state.flagCode) return codes.includes(state.flagCode);
   if (state.flaggedOnly) return codes.length > 0;
+  return true;
+}
+
+// Field-facet filter: exact-match dropdowns (Type, Assignee) from the shared toolbar.
+// `state.facets` maps a field key to the chosen value ('' = any). Applied in BOTH the
+// table predicate and the board's `shown` set, so it filters whichever view is showing.
+function passesFacets(state, it) {
+  const f = state.facets || {};
+  if (f.type && (it.work_item_type || '') !== f.type) return false;
+  if (f.assignee && (it.assigned_to || '') !== f.assignee) return false;
   return true;
 }
 
@@ -1241,7 +1255,13 @@ async function renderWorkItems() {
   const countEl = el('span', { class: 'dt-count dt-count-link', title: 'Rows shown / total — click to change page size', onclick: () => showSettings('display') }, '');
   const clearFilters = el('a', {
     class: 'dt-clear', href: '#', title: 'Clear the search and all column filters',
-    onclick: (e) => { e.preventDefault(); state.keyword = ''; keywordInput.value = ''; table.resetFilters(); redraw(); },
+    onclick: (e) => {
+      e.preventDefault();
+      state.keyword = ''; keywordInput.value = '';
+      state.facets = {}; facetSelects.forEach((s) => { s.value = ''; }); // reset the facet dropdowns
+      saveToggles(state);
+      table.resetFilters(); redraw();
+    },
   }, 'Clear filters');
   let boardChecks = new Map();
   let boardColHeads = [];
@@ -1254,7 +1274,7 @@ async function renderWorkItems() {
     emptyText: 'No matching work items.',
     // Rule-break filter + the shared keyword search (per-column filters live in the
     // table header row and are table-only).
-    predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword),
+    predicate: (it) => passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword) && passesFacets(state, it),
     pageSize: getPageSize(),
     selectable: true,
     rowKey: (it) => it.id,
@@ -1271,10 +1291,34 @@ async function renderWorkItems() {
   //   [view] | [filter toggles] | search(grows) | [AI actions] | [count · clear]
   // The search grows (flex:1, .wi-keyword) to fill the slack, so actions + count pin
   // right with no jumpy gap when a button's label changes width.
+  // Field-facet dropdowns (Type, Assignee) - the ONLY filters the board had lacked, since
+  // per-column filters are table-only. Built from the distinct values present in the data;
+  // an empty selection means "all". Drives `passesFacets`, so it filters table AND board.
+  const facetSelects = [];
+  const mkFacet = (key, allLabel, valueOf) => {
+    const vals = [...new Set((items || []).map((it) => valueOf(it) || '').filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    if (!vals.length) return null; // nothing to filter on (e.g. no assignees) - hide it
+    const cur = (state.facets && state.facets[key]) || '';
+    const sel = el('select', {
+      class: 'facet-select', title: `Filter by ${allLabel.replace(/^All /, '').toLowerCase()}`,
+      'aria-label': allLabel,
+      onchange: (e) => { state.facets = { ...(state.facets || {}), [key]: e.target.value }; saveToggles(state); redraw(); },
+    }, [
+      el('option', { value: '' }, allLabel),
+      ...vals.map((v) => el('option', { value: v, selected: v === cur }, v)),
+    ]);
+    facetSelects.push(sel);
+    return sel;
+  };
+  const typeFacet = mkFacet('type', 'All types', (it) => it.work_item_type);
+  const assigneeFacet = mkFacet('assignee', 'All assignees', (it) => it.assigned_to);
+
   const sep = () => el('span', { class: 'dt-sep', 'aria-hidden': 'true' });
   const sharedToolbar = el('div', { class: 'dt-toolbar' }, [
     mkViewSelect(), sep(),
-    flaggedToggle, emptyToggle, sep(),
+    flaggedToggle, emptyToggle,
+    typeFacet, assigneeFacet, sep(),
     keywordInput,
     // Flexible spacer takes the slack so the search keeps a sane width and the
     // actions + count group pins to the right (filters left, actions right).
@@ -1355,7 +1399,7 @@ async function renderWorkItems() {
     boardChecks = new Map();
     boardColHeads = [];
     const shown = items.filter((it) =>
-      passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword));
+      passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword) && passesFacets(state, it));
     const cols = el('div', { class: 'board-cols' });
     const groups = groupForBoard(shown, axis, rules.board_state_order);
     for (const g of groups) {
