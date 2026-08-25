@@ -21,7 +21,6 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_qwen2::ModelWeights;
-use poseidon_core::TagSuggestion;
 use tokenizers::Tokenizer;
 
 use crate::presets::OfflineModel;
@@ -82,9 +81,9 @@ impl AiTagger for EmbeddedTagger {
         required: &[String],
         hints: &crate::TagHints,
         background: &str,
-    ) -> Result<Vec<TagSuggestion>, AiError> {
+    ) -> Result<crate::Suggestions, AiError> {
         if allowed.is_empty() {
-            return Ok(vec![]);
+            return Ok(crate::Suggestions::default());
         }
         let prompt = chat_prompt(&build_prompt(item, allowed, required, hints, background));
         let allowed = allowed.to_vec();
@@ -105,11 +104,11 @@ impl AiTagger for EmbeddedTagger {
         .map_err(|e| AiError::Http(format!("inference task failed: {e}")))?
         .map_err(AiError::Http)?;
 
-        let mut suggestions = parse_suggestions(&text, &allowed);
+        let mut tags = parse_suggestions(&text, &allowed);
         let have: std::collections::HashSet<String> =
             current.iter().map(|t| t.to_lowercase()).collect();
-        suggestions.retain(|s| !have.contains(&s.tag.to_lowercase()));
-        Ok(suggestions)
+        tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
+        Ok(crate::Suggestions { tags, debug_raw: None })
     }
 }
 

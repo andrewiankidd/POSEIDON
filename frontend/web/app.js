@@ -369,6 +369,7 @@ function doctorFixButton(c) {
 
 async function route() {
   const name = currentRoute();
+  try { localStorage.setItem('poseidon.lastRoute', name); } catch { /* best-effort */ }
   document.querySelectorAll('.sidebar nav a').forEach((a) => {
     a.classList.toggle('active', a.dataset.route === name);
   });
@@ -836,6 +837,18 @@ async function renderWorkItems() {
     const webgpuInteg = be.where === 'browser' ? { offline_model: be.model } : null;
 
     if ((st && st.enabled) || webgpuInteg) {
+      function formatSuggestOutcome(sum) {
+        const considered = sum.considered ?? 0;
+        const withSugg = sum.with_suggestions ?? 0;
+        const total = sum.suggestions ?? 0;
+        const base = `tagged ${withSugg}/${considered} (${total} tags)`;
+        if (total === 0) {
+          if (considered === 0) return `${base} — no eligible items (underspecified or no allowed tags configured)`;
+          if (sum.debug_raw) return `${base} — ${String(sum.debug_raw).trim().slice(0, 300)}`;
+        }
+        return base;
+      }
+
       aiBtn = el('button', {
         class: 'btn btn-xs', type: 'button', disabled: true,
         title: webgpuInteg
@@ -892,7 +905,7 @@ async function renderWorkItems() {
                 report('storing');
                 const sum = await api.storeTagSuggestions(getTeamScope(), results);
                 await refreshRows();
-                return `tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} (${sum.suggestions ?? 0} tags)`;
+                return formatSuggestOutcome(sum);
               }
               // Server path: background run + poll (slow offline models never block).
               await api.runTagSuggestions(getTeamScope(), ids);
@@ -907,7 +920,7 @@ async function renderWorkItems() {
                 if (s.state === 'done') {
                   const sum = s.summary || {};
                   await refreshRows();
-                  return `tagged ${sum.with_suggestions ?? 0}/${sum.considered ?? 0} (${sum.suggestions ?? 0} tags)`;
+                  return formatSuggestOutcome(sum);
                 }
                 throw new Error(s.error || 'unknown error');
               }
@@ -4574,7 +4587,10 @@ async function bootApp() {
 // The normal startup: pick a default route, resolve auth + teams before the
 // first render (both tolerate a missing backend), then start Doctor polling.
 function finishBoot() {
-  if (!location.hash) location.hash = '#dashboard';
+  if (!location.hash) {
+    const last = localStorage.getItem('poseidon.lastRoute');
+    location.hash = (last && ROUTES[last]) ? '#' + last : '#dashboard';
+  }
   Promise.all([refreshAuth(), initTeamSelector()]).finally(route);
   startDoctorPolling();
   renderUserMenu();
@@ -4867,6 +4883,11 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
           presets.offline.map((m) => el('option', { value: m.id, selected: m.id === offlineModel }, m.label))),
       );
       if (!webgpuAvailable()) fields.append(warn('This browser has no WebGPU - this backend will be unsupported here (try Chrome/Edge).'));
+    } else if (kind === 'claude-code') {
+      fields.append(
+        el('div', { class: 'muted', style: 'font-size:12px;margin-bottom:4px' }, 'Uses the Claude Code desktop app already installed on this machine — no API key, no endpoint, no extra config. Reuses your existing Claude Code authentication.'),
+        el('div', { class: 'muted', style: 'font-size:12px' }, caps.claude_code ? '✓ Claude Code CLI detected' : '⚠ Claude Code CLI not found in PATH — install the Claude Code desktop app first.'),
+      );
     }
   }
 
@@ -4874,6 +4895,7 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
     el('option', { value: 'offline', selected: kind === 'offline' }, 'On-device model (embedded, private)'),
     el('option', { value: 'online', selected: kind === 'online' }, 'Online / self-hosted endpoint (Claude, Gemini, GPT, Ollama…)'),
     el('option', { value: 'webgpu', selected: kind === 'webgpu' }, 'In-browser (WebGPU) - experimental'),
+    el('option', { value: 'claude-code', selected: kind === 'claude-code' }, 'Claude Code (local desktop app)'),
   ]);
 
   const save = el('button', { class: 'btn btn-primary', onclick: async () => {
@@ -4887,7 +4909,7 @@ function integrationForm(container, existing, presets, caps, onSubmit, onCancel)
       endpoint: kind === 'online' && provider === 'custom' && endpointInput ? endpointInput.value.trim() : null,
       model: kind === 'online' && provider === 'custom' && modelInput ? modelInput.value.trim() : null,
       offline_model: (kind === 'offline' || kind === 'webgpu') ? offlineModel : null,
-      api_key: k ? k : (keySet ? '' : null), // blank + keySet => keep stored key
+      api_key: kind === 'claude-code' ? null : (k ? k : (keySet ? '' : null)), // claude-code needs no key
     };
     save.disabled = true; save.textContent = 'Saving…';
     try { await onSubmit(integ); }

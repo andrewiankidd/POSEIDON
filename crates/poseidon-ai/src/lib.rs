@@ -17,6 +17,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use async_trait::async_trait;
 use poseidon_core::{TagSuggestion, WorkItem};
 use serde::Deserialize;
@@ -73,6 +78,15 @@ pub type TagHints = std::collections::HashMap<String, Vec<String>>;
 /// tag with a long keyword list doesn't blow up the prompt.
 pub(crate) const MAX_HINTS_PER_TAG: usize = 6;
 
+/// Outcome of a single `AiTagger::suggest` call: the proposed tags plus an
+/// optional raw model response for diagnostics (populated by backends that have
+/// direct access to the model output, e.g. `ClaudeCodeTagger`).
+#[derive(Debug, Default)]
+pub struct Suggestions {
+    pub tags: Vec<TagSuggestion>,
+    pub debug_raw: Option<String>,
+}
+
 /// A backend that proposes tags for a work item from an allowed set.
 ///
 /// `allowed` is the full concrete candidate set; `required` is the subset of the
@@ -91,7 +105,7 @@ pub trait AiTagger: Send + Sync {
         required: &[String],
         hints: &TagHints,
         background: &str,
-    ) -> Result<Vec<TagSuggestion>, AiError>;
+    ) -> Result<Suggestions, AiError>;
 
     /// Draft or improve the text of ONE work-item field, given the item's context.
     /// Returns markdown (the editor's rich-field format). Default: unsupported - only
@@ -708,6 +722,93 @@ fn env_nonempty(key: &str) -> Option<String> {
 // custom-endpoint entry; a browser client can run a WebGPU entry). One codebase,
 // one config surface, several execution engines - each user picks what fits.
 
+/// Resolve the path to the Claude Code CLI, checking PATH first then the
+/// well-known desktop-app install locations on each OS.
+fn find_claude_exe() -> Option<std::path::PathBuf> {
+    // On Windows the `claude` shim in PATH is almost always the Squirrel launcher
+    // (%LOCALAPPDATA%\AnthropicClaude\claude.exe). It exits 0 for `--version`
+    // (routing via Electron IPC to the running desktop app) but produces no stdout
+    // when called with `--print` from a subprocess. Skip the PATH probe on Windows
+    // and go straight to the bundled versioned CLI which writes to stdout correctly.
+    #[cfg(not(target_os = "windows"))]
+    {
+        // On non-Windows, PATH `claude` is typically the npm-installed CLI — fine to use.
+        let mut probe = std::process::Command::new("claude");
+        probe.arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Ok(st) = probe.status() {
+            if st.success() {
+                return Some(std::path::PathBuf::from("claude"));
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // 2. %APPDATA%\Claude\claude-code\<version>\claude.exe
+        //    This is the proper subprocess-compatible CLI bundled inside the Claude
+        //    desktop app. Unlike the Squirrel launcher at %LOCALAPPDATA%\AnthropicClaude\
+        //    claude.exe, this binary writes its response to stdout and exits cleanly
+        //    when invoked with --print. Scan all versioned subdirs and pick the latest.
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let base = std::path::Path::new(&appdata)
+                .join("Claude")
+                .join("claude-code");
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                let mut found: Vec<std::path::PathBuf> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .map(|d| d.join("claude.exe"))
+                    .filter(|p| p.exists())
+                    .collect();
+                found.sort_by(|a, b| b.cmp(a)); // descending = latest version first
+                if let Some(best) = found.into_iter().next() {
+                    return Some(best);
+                }
+            }
+        }
+        // 3. Squirrel launcher — last resort. When the Claude desktop app is running
+        //    it routes via Electron single-instance IPC; stdout is not captured by the
+        //    calling process. Prefer the bundled CLI above.
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let candidate = std::path::Path::new(&local)
+                .join("AnthropicClaude")
+                .join("claude.exe");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for p in &["/usr/local/bin/claude", "/opt/homebrew/bin/claude"] {
+            let c = std::path::PathBuf::from(p);
+            if c.exists() {
+                return Some(c);
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let c = std::path::Path::new(&home)
+                .join("Library/Application Support/Claude/claude");
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+
+    None
+}
+
+/// Detect whether the Claude Code CLI is available. Used to gate the
+/// `claude-code` integration kind — no API key needed, just the desktop
+/// app installed alongside POSEIDON.
+pub fn claude_code_available() -> bool {
+    find_claude_exe().is_some()
+}
+
 /// What the current runtime can actually do. The server fills this for its own
 /// resolution; the browser client computes its own (for WebGPU) on the frontend.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
@@ -721,6 +822,10 @@ pub struct PlatformCaps {
     /// Can run a model in-browser via WebGPU (client-side only).
     #[serde(default)]
     pub webgpu: bool,
+    /// The Claude Code CLI (`claude`) is available in PATH — enables the
+    /// `claude-code` integration kind (no API key, reuses desktop-app auth).
+    #[serde(default)]
+    pub claude_code: bool,
     /// Best-effort GPU/accelerator VRAM in MB, when the platform can report it (a
     /// native CUDA probe; WebGPU can't expose total VRAM, so this stays None there
     /// and the WebGPU tier falls back to a safe default). Drives model sizing.
@@ -741,6 +846,7 @@ impl PlatformCaps {
             embedded: true,
             gpu: embedded::cuda_available(),
             webgpu: false,
+            claude_code: claude_code_available(),
             vram_mb: None,
             ram_mb: None,
             cpu_cores: std::thread::available_parallelism()
@@ -751,12 +857,13 @@ impl PlatformCaps {
 
     /// Merge browser-supplied caps over this (server) set: the browser is the only
     /// place that knows WebGPU availability + client RAM/cores, so those win; the
-    /// server keeps its own embedded/gpu truth. Used by the autotune endpoint.
+    /// server keeps its own embedded/gpu and claude_code truth (browser can't know).
     pub fn merged_with_browser(self, browser: &PlatformCaps) -> Self {
         Self {
             embedded: self.embedded,
             gpu: self.gpu || browser.gpu,
             webgpu: browser.webgpu,
+            claude_code: self.claude_code,
             vram_mb: browser.vram_mb.or(self.vram_mb),
             ram_mb: browser.ram_mb.or(self.ram_mb),
             cpu_cores: browser.cpu_cores.or(self.cpu_cores),
@@ -861,6 +968,7 @@ impl LlmIntegration {
             "online" => true, // an HTTP endpoint runs anywhere with a network
             "offline" => caps.embedded && (self.device != "gpu" || caps.gpu),
             "webgpu" => caps.webgpu,
+            "claude-code" => caps.claude_code,
             _ => false,
         }
     }
@@ -868,7 +976,8 @@ impl LlmIntegration {
     /// Whether the integration is filled in enough to run (not whether it'll succeed).
     /// A hosted cloud preset additionally needs an API key - without one it's a
     /// template, not a usable backend (so it never resolves as "active"). A custom
-    /// endpoint (local Ollama/LM Studio) needs no key.
+    /// endpoint (local Ollama/LM Studio) needs no key. Claude Code needs nothing
+    /// beyond the CLI being present (checked via `compatible`).
     pub fn configured(&self) -> bool {
         match self.kind.as_str() {
             "online" => {
@@ -884,12 +993,16 @@ impl LlmIntegration {
             }
             "offline" => self.to_ai_config().enabled(),
             "webgpu" => self.model.is_some() || self.offline_model.is_some(),
+            "claude-code" => true,
             _ => false,
         }
     }
 
     /// Build the server-side tagger (None for webgpu - handled by the browser).
     pub fn build(&self) -> Option<std::sync::Arc<dyn AiTagger>> {
+        if self.kind == "claude-code" {
+            return Some(std::sync::Arc::new(ClaudeCodeTagger));
+        }
         self.to_ai_config().build()
     }
 }
@@ -989,7 +1102,15 @@ impl LlmConfig {
                     model: Some("qwen3:1.7b".to_string()),
                     ..Default::default()
                 },
-                cloud("claude", "Claude (Anthropic)", "anthropic"),
+                // Claude Code desktop: uses the local `claude` CLI + existing desktop-app
+                // auth. No API key, no extra config — compatible() gates it on CLI presence.
+                LlmIntegration {
+                    id: "claude-code".to_string(),
+                    name: "Claude Code (local desktop)".to_string(),
+                    kind: "claude-code".to_string(),
+                    ..Default::default()
+                },
+                cloud("claude", "Claude (Anthropic API)", "anthropic"),
                 cloud("gemini", "Gemini (Google)", "gemini"),
                 cloud("openai", "ChatGPT (OpenAI)", "openai"),
             ],
@@ -1309,9 +1430,9 @@ impl AiTagger for ChatTagger {
         required: &[String],
         hints: &TagHints,
         background: &str,
-    ) -> Result<Vec<TagSuggestion>, AiError> {
+    ) -> Result<Suggestions, AiError> {
         if allowed.is_empty() {
-            return Ok(vec![]); // nothing to choose from
+            return Ok(Suggestions::default());
         }
         let body = serde_json::json!({
             "model": self.model,
@@ -1338,11 +1459,11 @@ impl AiTagger for ChatTagger {
             .map_err(|e| AiError::Http(e.to_string()))?;
         let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
 
-        let mut suggestions = parse_suggestions(content, allowed);
+        let mut tags = parse_suggestions(content, allowed);
         // Never re-suggest a tag the item already has.
         let have: HashSet<String> = item.current_tags.iter().map(|t| t.to_lowercase()).collect();
-        suggestions.retain(|s| !have.contains(&s.tag.to_lowercase()));
-        Ok(suggestions)
+        tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
+        Ok(Suggestions { tags, debug_raw: None })
     }
 
     async fn draft_field(&self, ctx: &FieldDraftContext) -> Result<String, AiError> {
@@ -1441,6 +1562,166 @@ impl AiTagger for ChatTagger {
             .map_err(|e| AiError::Http(e.to_string()))?;
         let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
         Ok(parse_fields_consistency(content, &refs))
+    }
+}
+
+/// An [`AiTagger`] that shells out to the Claude Code CLI (`claude -p … --print`),
+/// reusing the existing desktop-app authentication. No API key, no proxy, no extra
+/// runtime dependencies. Each call is a blocking subprocess wrapped in
+/// `spawn_blocking` so it doesn't stall the async executor.
+struct ClaudeCodeTagger;
+
+impl ClaudeCodeTagger {
+    fn call(prompt: String) -> Result<String, AiError> {
+        use std::process::{Command, Stdio};
+        let exe = find_claude_exe()
+            .ok_or_else(|| AiError::Http("claude CLI not found — install the Claude Code desktop app".into()))?;
+
+        tracing::debug!(chars = prompt.len(), "claude-code prompt:\n{prompt}");
+
+        // Attempt the call; on first "not logged in" response auto-trigger the
+        // browser OAuth flow and retry once. This handles first-run setup
+        // transparently — the user sees a browser window, logs in, and the
+        // original request completes automatically.
+        for attempt in 0u8..2 {
+            let mut cmd = Command::new(&exe);
+            cmd.args(["--print", &prompt])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            let out = cmd.output()
+                .map_err(|e| AiError::Http(format!("claude CLI unavailable: {e}")))?;
+
+            let stderr_str = String::from_utf8_lossy(&out.stderr);
+
+            // Detect "not authenticated" — the bundled CLI writes this to STDOUT
+            // (not stderr) and exits 1, so we must check both streams.
+            let stdout_str = String::from_utf8_lossy(&out.stdout);
+            let not_authed = stderr_str.contains("Not logged in")
+                || stderr_str.contains("Please run /login")
+                || stdout_str.contains("Not logged in")
+                || stdout_str.contains("Please run /login");
+
+            if not_authed {
+                if attempt == 0 {
+                    tracing::info!("claude-code not authenticated — opening browser login flow");
+                    // Inherit stdio so the OAuth URL/instructions are visible to the
+                    // user (browser opens automatically on most systems).
+                    // Note: login intentionally shows a window (user needs to interact).
+                    let login = Command::new(&exe)
+                        .args(["auth", "login"])
+                        .stdin(Stdio::inherit())
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit())
+                        .status()
+                        .map_err(|e| AiError::Http(format!("claude auth login failed to start: {e}")))?;
+                    if !login.success() {
+                        return Err(AiError::Http(format!(
+                            "claude login exited with {login} — authentication cancelled?"
+                        )));
+                    }
+                    continue; // retry the original call with fresh credentials
+                }
+                return Err(AiError::Http(
+                    "Claude Code still not authenticated after login — check your Anthropic account".into(),
+                ));
+            }
+
+            if out.stdout.is_empty() && out.stderr.is_empty() {
+                return Err(AiError::Http(
+                    "claude CLI returned no output (stdout+stderr both empty). \
+                     The Claude desktop app may be intercepting via Electron IPC.".into(),
+                ));
+            }
+
+            if !out.status.success() {
+                tracing::warn!(exit = %out.status, stderr = %stderr_str, "claude-code exited non-zero");
+                return Err(AiError::Http(format!("claude exited {}: {stderr_str}", out.status)));
+            }
+
+            let response = stdout_str.trim().to_string();
+            tracing::debug!(chars = response.len(), "claude-code response:\n{response}");
+            return Ok(response);
+        }
+
+        Err(AiError::Http("claude-code: unexpected retry exhaustion".into()))
+    }
+
+    /// Build a single prompt string for the Claude Code CLI's `--print` mode.
+    ///
+    /// Claude Code runs with its own system prompt (coding assistant). We can't
+    /// override that via a `<system>` XML tag in the user message, so we open
+    /// with an explicit task override and embed the role instructions as plain
+    /// text before the task body.
+    fn make_prompt(system: &str, user: &str) -> String {
+        format!(
+            "TASK OVERRIDE — ignore your default coding-assistant role for this request.\n\
+             {system}\n\n\
+             {user}"
+        )
+    }
+}
+
+#[async_trait]
+impl AiTagger for ClaudeCodeTagger {
+    async fn suggest(
+        &self,
+        item: &TaggerInput,
+        allowed: &[String],
+        required: &[String],
+        hints: &TagHints,
+        background: &str,
+    ) -> Result<Suggestions, AiError> {
+        if allowed.is_empty() {
+            return Ok(Suggestions::default());
+        }
+        let prompt = Self::make_prompt(
+            SYSTEM_PROMPT,
+            &build_prompt(item, allowed, required, hints, background),
+        );
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        let mut tags = parse_suggestions(&content, allowed);
+        let have: HashSet<String> = item.current_tags.iter().map(|t| t.to_lowercase()).collect();
+        tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
+        Ok(Suggestions { tags, debug_raw: Some(content) })
+    }
+
+    async fn draft_field(&self, ctx: &FieldDraftContext) -> Result<String, AiError> {
+        let prompt = Self::make_prompt(FIELD_DRAFT_SYSTEM_PROMPT, &build_field_draft_prompt(ctx));
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        Ok(strip_code_fence(&content))
+    }
+
+    async fn audit_item(
+        &self,
+        input: &AuditInput,
+        background: &str,
+    ) -> Result<Vec<AuditIssue>, AiError> {
+        let prompt = Self::make_prompt(AUDIT_SYSTEM_PROMPT, &build_audit_prompt(input, background));
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        Ok(parse_audit_response(&content))
+    }
+
+    async fn refine_fields(
+        &self,
+        ctx: &FieldsConsistencyContext,
+    ) -> Result<Vec<(String, String)>, AiError> {
+        let refs: Vec<String> = ctx.fields.iter().map(|f| f.reference.clone()).collect();
+        let prompt = Self::make_prompt(
+            FIELDS_CONSISTENCY_SYSTEM_PROMPT,
+            &build_fields_consistency_prompt(ctx),
+        );
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        Ok(parse_fields_consistency(&content, &refs))
     }
 }
 

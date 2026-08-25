@@ -554,10 +554,10 @@ impl Service {
                 match outcome {
                     Err(_) => base("timeout", Some(ms), vec![], None),
                     Ok(Err(e)) => base("error", Some(ms), vec![], Some(e.to_string())),
-                    Ok(Ok(tags)) => base(
+                    Ok(Ok(result)) => base(
                         "ok",
                         Some(ms),
-                        tags.into_iter().map(|t| t.tag).collect(),
+                        result.tags.into_iter().map(|t| t.tag).collect(),
                         None,
                     ),
                 }
@@ -1606,7 +1606,7 @@ impl Service {
                     )
                     .await
                 {
-                    Ok(sugg) => {
+                    Ok(result) => {
                         // Cap to the team's configured ceiling (or the adaptive default
                         // that scales with required axes). Required picks are listed
                         // first by the prompt, so truncation keeps them and trims only
@@ -1614,7 +1614,7 @@ impl Service {
                         let cap = rules.max_suggestions.unwrap_or_else(|| {
                             poseidon_ai::default_max_suggestions(rules.required_tags.len())
                         });
-                        let pairs: Vec<(String, String)> = sugg
+                        let pairs: Vec<(String, String)> = result.tags
                             .iter()
                             .take(cap)
                             .map(|s| {
@@ -1630,9 +1630,16 @@ impl Service {
                         if !pairs.is_empty() {
                             summary.with_suggestions += 1;
                             summary.suggestions += pairs.len();
+                        } else if summary.debug_raw.is_none() {
+                            summary.debug_raw = result.debug_raw;
                         }
                     }
-                    Err(e) => tracing::warn!(item = it.id, "AI tag suggestion failed: {e}"),
+                    Err(e) => {
+                        tracing::warn!(item = it.id, "AI tag suggestion failed: {e}");
+                        if summary.debug_raw.is_none() {
+                            summary.debug_raw = Some(format!("Error: {e}"));
+                        }
+                    }
                 }
             }
             progress(i + 1, total, summary.suggestions);
@@ -3210,6 +3217,10 @@ pub struct AiSuggestSummary {
     pub with_suggestions: usize,
     /// Total suggestions stored across all items.
     pub suggestions: usize,
+    /// Raw model output from the first item that produced zero suggestions.
+    /// Populated only by backends that surface their raw output (e.g. Claude Code).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_raw: Option<String>,
 }
 
 /// Outcome of a near-duplicate scan over the scoped items.
@@ -4036,16 +4047,19 @@ mod tests {
             _required: &[String],
             _hints: &poseidon_ai::TagHints,
             _background: &str,
-        ) -> Result<Vec<poseidon_core::TagSuggestion>, poseidon_ai::AiError> {
-            Ok(allowed
-                .first()
-                .map(|t| poseidon_core::TagSuggestion {
-                    tag: t.clone(),
-                    reasons: vec!["stub".into()],
-                    replaces: None,
-                })
-                .into_iter()
-                .collect())
+        ) -> Result<poseidon_ai::Suggestions, poseidon_ai::AiError> {
+            Ok(poseidon_ai::Suggestions {
+                tags: allowed
+                    .first()
+                    .map(|t| poseidon_core::TagSuggestion {
+                        tag: t.clone(),
+                        reasons: vec!["stub".into()],
+                        replaces: None,
+                    })
+                    .into_iter()
+                    .collect(),
+                debug_raw: None,
+            })
         }
     }
 
