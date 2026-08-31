@@ -510,7 +510,9 @@ impl AzureDevOpsProvider {
     ) -> Result<WorkItem, ProviderError> {
         // Content-Type MUST be application/json-patch+json, so build the body
         // ourselves rather than `.json()` (which would force application/json).
-        let url = self.project_url(&format!("wit/workitems/{id}"), "$expand=relations");
+        // bypassRules=true skips ADO's workflow-rule validation (e.g. System.Reason
+        // becoming invalid after a State change), which would otherwise return 400.
+        let url = self.project_url(&format!("wit/workitems/{id}"), "$expand=relations&bypassRules=true");
         let body = serde_json::to_vec(&serde_json::Value::Array(ops)).unwrap_or_default();
         let resp = self
             .client
@@ -1099,6 +1101,8 @@ struct AdoFields {
     changed_date: Option<DateTime<Utc>>,
     #[serde(rename = "Microsoft.VSTS.Common.ClosedDate")]
     closed_date: Option<DateTime<Utc>>,
+    #[serde(rename = "Microsoft.VSTS.Common.StateChangeDate")]
+    state_change_date: Option<DateTime<Utc>>,
     #[serde(rename = "System.IterationPath")]
     iteration_path: Option<String>,
     #[serde(rename = "Microsoft.VSTS.Scheduling.StoryPoints")]
@@ -1267,7 +1271,7 @@ fn normalise_work_item(
         assigned_to: f.assigned_to.and_then(|a| a.display_name),
         created_at: created,
         changed_at: changed,
-        closed_at: f.closed_date,
+        closed_at: f.closed_date.or(f.state_change_date),
         iteration_path: f.iteration_path,
         story_points: f.story_points,
         // Body = Description + Repro Steps COMBINED (not either/or). A bug usually has an

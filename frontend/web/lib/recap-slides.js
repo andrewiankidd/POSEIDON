@@ -56,9 +56,20 @@ function renderSection(s) {
 }
 
 function renderFeature(s) {
-  const items = (s.highlights || [])
-    .map((h) => `<div class="recap-hl-item"><em class="recap-hl-arrow">-&gt;</em><span>${esc(h)}</span></div>`)
-    .join('');
+  let highlightHtml = '';
+  if (s.groups && s.groups.length) {
+    highlightHtml = '<div class="recap-highlights">' + s.groups.map((g) => {
+      const rows = (g.items || [])
+        .map((h) => `<div class="recap-hl-item"><em class="recap-hl-arrow">-&gt;</em><span>${esc(h)}</span></div>`)
+        .join('');
+      return (g.heading ? `<div class="recap-hl-group-heading">${esc(g.heading)}</div>` : '') + rows;
+    }).join('') + '</div>';
+  } else {
+    const rows = (s.highlights || [])
+      .map((h) => `<div class="recap-hl-item"><em class="recap-hl-arrow">-&gt;</em><span>${esc(h)}</span></div>`)
+      .join('');
+    if (rows) highlightHtml = `<div class="recap-highlights">${rows}</div>`;
+  }
   const tags = (s.tags || [])
     .map((t) => `<span class="recap-tag">${esc(t)}</span>`)
     .join('');
@@ -67,7 +78,7 @@ function renderFeature(s) {
     ${s.label ? `<p class="recap-label">${esc(s.label)}</p>` : ''}
     <h2>${esc(s.title || '')}</h2>
     ${s.description ? `<p class="recap-desc">${esc(s.description)}</p>` : ''}
-    ${items ? `<div class="recap-highlights">${items}</div>` : ''}
+    ${highlightHtml}
   `;
   if (s.image) {
     return `
