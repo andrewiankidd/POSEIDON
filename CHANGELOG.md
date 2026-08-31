@@ -8,7 +8,28 @@ Each entry below is headed by the SHA (+ date) that shipped it, newest first,
 mirroring this file's own commit history. Within an entry, changes are grouped
 **Added / Changed / Fixed**.
 
-## [dde7376] — 2026-08-24
+> **Note (2026-08-31):** history was rewritten to scrub stray strings from old
+> doc revisions, so every SHA below this line changed. Entries have been
+> remapped. If you have an old clone, re-clone or
+> `git fetch && git reset --hard origin/main`.
+
+## [e6290e5] — 2026-08-25
+
+### Added
+- **Claude Code desktop-app AI backend** — `ClaudeCodeTagger` shells out to the
+  `claude` CLI bundled with the Claude Code desktop app, reusing its existing
+  OAuth session, so this backend needs **no API key**. First unauthenticated use
+  auto-triggers the `claude auth login` browser flow, and when a call returns
+  zero tags the raw model response is surfaced in the AI activity log. Windows
+  wrinkles handled: the versioned bundled `claude.exe` is invoked directly
+  (the Squirrel launcher routes via Electron IPC and produces no subprocess
+  stdout), and `CREATE_NO_WINDOW` suppresses console flicker on every call.
+
+### Changed
+- **Desktop app restores the last-visited page on launch** instead of always
+  opening on the dashboard.
+
+## [53877e0] — 2026-08-24
 
 ### Added
 - **Type + Assignee filters on Work Items** — two facet dropdowns in the shared
@@ -23,7 +44,7 @@ mirroring this file's own commit history. Within an entry, changes are grouped
   drafts, tag JSON, and the healthcheck audit. Stripped wherever raw model text is
   consumed (chat, tagging, audit parse).
 
-## [3fbf03a] — 2026-08-19
+## [030e726] — 2026-08-19
 
 ### Fixed
 - **Suggested-tag chips rendered `[object Object]`** — the WebGPU tagger returns
@@ -32,7 +53,7 @@ mirroring this file's own commit history. Within an entry, changes are grouped
   editor chip would have written the object back to the provider on click). Both now
   normalise to the tag name; server storage still receives the full objects.
 
-## [396872e] — 2026-08-19
+## [14a57b1] — 2026-08-19
 
 ### Added
 - **Durable AI activity + field drafts** — the "Improve all fields" queue and each
@@ -64,7 +85,7 @@ mirroring this file's own commit history. Within an entry, changes are grouped
   re-persisted, so a model swap can't strand a saved integration on a dead id.
 - **Blocked children no longer flagged as orphaned** (`orphaned_child_ignore_states`).
 
-## [ea0453e] — 2026-08-18
+## [3b6dfe7] — 2026-08-18
 
 ### Added
 - **Portable single-binary distribution** — the desktop build ships a
@@ -93,7 +114,7 @@ mirroring this file's own commit history. Within an entry, changes are grouped
   migration file changes its bytes and trips sqlx's embedded-migration checksum
   (a fatal "previously applied but has been modified" on boot).
 
-## [f293acd] — 2026-08-17
+## [c287d41] — 2026-08-17
 
 ### Added
 - **Service-catalog integration** — a provider-agnostic `CatalogSource` (CSV export
@@ -194,7 +215,7 @@ mirroring this file's own commit history. Within an entry, changes are grouped
 - **Clippy** — needless-borrow warnings in the GitHub provider's write-back calls.
 - Toast notifications render above modal dialogs instead of behind them.
 
-## [a194201] — 2026-08-12
+## [510f677] — 2026-08-12
 
 ### Added
 - **Capability-tiered AI auto-configuration** — on first load the platform
@@ -277,7 +298,7 @@ logic layer, three shells (hosted web, desktop, CLI).
   `default` when unauthenticated); native device-code OAuth sign-in for Azure
   DevOps; a self-checking Doctor and centralised telemetry (console, file, OTLP).
 
-[ea0453e]: https://github.com/andrewiankidd/POSEIDON/commit/ea0453e
-[f293acd]: https://github.com/andrewiankidd/POSEIDON/commit/f293acd
-[a194201]: https://github.com/andrewiankidd/POSEIDON/commit/a194201
+[3b6dfe7]: https://github.com/andrewiankidd/POSEIDON/commit/3b6dfe7
+[c287d41]: https://github.com/andrewiankidd/POSEIDON/commit/c287d41
+[510f677]: https://github.com/andrewiankidd/POSEIDON/commit/510f677
 [50c9f12]: https://github.com/andrewiankidd/POSEIDON/commit/50c9f12
