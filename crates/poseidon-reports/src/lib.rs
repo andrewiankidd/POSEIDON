@@ -155,6 +155,7 @@ fn bucket_keys<T: Queryable>(
         Some(GroupBy::WorkItemType) => {
             vec![row.field("work_item_type").unwrap_or_else(none_label)]
         }
+        Some(GroupBy::Title) => vec![row.field("title").unwrap_or_else(none_label)],
         Some(GroupBy::Day) => vec![row
             .timestamp(time_field)
             .map(|t| t.format("%Y-%m-%d").to_string())
@@ -230,6 +231,8 @@ fn order_points(points: &mut [Point], group_by: Option<GroupBy>) {
     match group_by {
         // Time buckets read chronologically (ISO labels sort lexically).
         Some(GroupBy::Day) | Some(GroupBy::Week) => points.sort_by(|a, b| a.label.cmp(&b.label)),
+        // Title lists: alphabetical by label.
+        Some(GroupBy::Title) => points.sort_by(|a, b| a.label.cmp(&b.label)),
         // Categorical: biggest first, ties broken by label.
         _ => points.sort_by(|a, b| {
             b.value
@@ -311,6 +314,11 @@ impl Queryable for WorkItem {
             "type" | "work_item_type" => Some(self.work_item_type.clone()),
             "team" => Some(self.team.clone()),
             "assigned_to" => self.assigned_to.clone(),
+            "title" => Some(if self.title.is_empty() {
+                format!("#{}", self.id)
+            } else {
+                self.title.clone()
+            }),
             _ => None,
         }
     }
@@ -400,6 +408,8 @@ pub const BUILTIN_WORK_ITEMS_BY_TAG: &str = "work-items-by-tag";
 pub const BUILTIN_PIPELINE_SUCCESS_RATE: &str = "pipeline-success-rate";
 pub const BUILTIN_WORK_ITEMS_CREATED_7D: &str = "work-items-created-7d";
 pub const BUILTIN_WORK_ITEMS_CLOSED_7D: &str = "work-items-closed-7d";
+pub const BUILTIN_WORK_ITEMS_CREATED_7D_LIST: &str = "work-items-created-7d-list";
+pub const BUILTIN_WORK_ITEMS_CLOSED_7D_LIST: &str = "work-items-closed-7d-list";
 pub const BUILTIN_PR_MERGE_RATE: &str = "pr-merge-rate";
 
 /// The built-in report templates shipped with POSEIDON. The last three are the
@@ -410,6 +420,8 @@ pub fn builtins() -> Vec<ReportSpec> {
         pipeline_success_rate(),
         work_items_created_7d(),
         work_items_closed_7d(),
+        work_items_created_7d_list(),
+        work_items_closed_7d_list(),
         pr_merge_rate(),
     ]
 }
@@ -460,6 +472,44 @@ fn work_items_closed_7d() -> ReportSpec {
         vec![cond("state", Op::In, "Closed,Resolved,Done,Completed")],
         Some("closed"),
     )
+}
+
+fn work_items_created_7d_list() -> ReportSpec {
+    ReportSpec {
+        name: BUILTIN_WORK_ITEMS_CREATED_7D_LIST.into(),
+        description: Some("Work items created in the last 7 days — individual titles.".into()),
+        builtin: true,
+        team: None,
+        time_range: TimeRange::LastDays { days: 7 },
+        series: vec![Series {
+            label: None,
+            source: DataSource::WorkItems,
+            metric: Metric::Count,
+            group_by: Some(GroupBy::Title),
+            filters: vec![],
+            time_field: None,
+        }],
+        render: RenderKind::List,
+    }
+}
+
+fn work_items_closed_7d_list() -> ReportSpec {
+    ReportSpec {
+        name: BUILTIN_WORK_ITEMS_CLOSED_7D_LIST.into(),
+        description: Some("Work items closed in the last 7 days — individual titles.".into()),
+        builtin: true,
+        team: None,
+        time_range: TimeRange::LastDays { days: 7 },
+        series: vec![Series {
+            label: None,
+            source: DataSource::WorkItems,
+            metric: Metric::Count,
+            group_by: Some(GroupBy::Title),
+            filters: vec![cond("state", Op::In, "Closed,Resolved,Done,Completed")],
+            time_field: Some("closed".into()),
+        }],
+        render: RenderKind::List,
+    }
 }
 
 fn pr_merge_rate() -> ReportSpec {

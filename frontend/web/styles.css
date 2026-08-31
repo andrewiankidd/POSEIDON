@@ -550,6 +550,12 @@ a.link:hover { text-decoration: underline; }
 .bulk-tag-input, .bulk-state-select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--ink); }
 .bulk-tag-input { flex: 0 0 160px; width: 160px; }
 .bulk-tag-input:focus, .bulk-state-select:focus { outline: none; border-color: var(--accent); }
+.bulk-chip-area { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; min-width: 100px; max-width: 260px; background: var(--panel); cursor: text; }
+.bulk-chip-input { background: none; border: none; outline: none; font: inherit; font-size: 13px; color: var(--ink); min-width: 60px; padding: 1px 0; flex: 1; }
+.bulk-chip-area:focus-within { border-color: var(--accent); }
+.bulk-tag-chip { display: inline-flex; align-items: center; gap: 3px; background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 1px 5px; font-size: 12px; white-space: nowrap; }
+.chip-remove { background: none; border: none; cursor: pointer; color: inherit; opacity: 0.6; padding: 0 1px; font-size: 11px; line-height: 1; }
+.chip-remove:hover { opacity: 1; }
 .bulk-btn { padding: 5px 11px; font-size: 13px; }
 /* Split button: primary action + a caret that opens the "force re-do" menu. The two
    buttons butt together (shared seam) and the menu floats below the caret. */
@@ -765,8 +771,13 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
 .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
 
 /* ── Reports (engine-driven) ─────────────────────────────────────── */
-.reports-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
-.reports-list { display: flex; flex-direction: column; gap: 8px; }
+.reports-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; transition: grid-template-columns 0.18s ease, gap 0.18s ease; }
+.reports-layout.list-collapsed { grid-template-columns: 36px 1fr; gap: 8px; }
+.reports-list { display: flex; flex-direction: column; gap: 8px; overflow: hidden; min-width: 0; }
+.reports-list-toggle { display: flex; align-items: center; justify-content: flex-end; width: 100%; background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: 3px 8px; cursor: pointer; font-size: 13px; color: var(--ink-soft); flex-shrink: 0; }
+.reports-list-toggle:hover { color: var(--ink); border-color: var(--ink-soft); }
+.list-collapsed .reports-list-toggle { justify-content: center; padding: 3px 0; }
+.list-collapsed .reports-list-cards { display: none; }
 .report-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 12px 14px; cursor: pointer; transition: border-color 0.12s; }
 .report-card:hover { border-color: var(--ink-soft); }
 .report-card.active { border-color: var(--accent); }
@@ -774,16 +785,22 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
 .report-badge { margin-left: 6px; font-size: 10px; vertical-align: middle; }
 .report-card-desc { color: var(--ink-soft); font-size: 12px; margin-top: 4px; }
 .report-card-actions { display: flex; gap: 6px; margin-top: 10px; }
-.reports-view { min-width: 0; }
-.report-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.editor-savebar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; min-height: 30px; }
+.reports-view { min-width: 0; container-type: inline-size; }
+.report-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; transition: grid-template-columns 0.18s ease, gap 0.18s ease; }
+.report-editor-grid.form-collapsed { grid-template-columns: 0 1fr; gap: 0; }
+.form-collapsed .builder-form { overflow: hidden; min-width: 0; }
+.builder-form { min-width: 0; }
+.builder-preview-col { min-width: 0; }.editor-savebar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; min-height: 30px; }
 .editor-savebar:empty { display: none; }
 .editor-dirty { font-size: 12px; color: var(--warn); }
+@container (max-width: 499px) { .report-editor-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .report-editor-grid { grid-template-columns: 1fr; } }
 .report-view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .report-view-head h2 { margin: 0; }
 .report-series-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
 .report-plaintext { background: var(--panel-2); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; }
+.report-item-list { margin: 0; padding: 0 0 0 20px; font-size: 13px; line-height: 1.7; }
+.report-item-list li { color: var(--ink); }
 
 /* Pie legend + line axis labels. */
 .chart-pie-wrap { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
@@ -995,6 +1012,8 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   margin-bottom: 2rem;
 }
 .recap-highlights { display: flex; flex-direction: column; gap: 0.65rem; }
+.recap-hl-group-heading { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-top: 0.8rem; margin-bottom: 0.2rem; }
+.recap-hl-group-heading:first-child { margin-top: 0; }
 .recap-hl-item {
   display: flex;
   gap: 0.85rem;

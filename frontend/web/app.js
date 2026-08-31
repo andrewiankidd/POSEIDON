@@ -1015,9 +1015,12 @@ async function renderWorkItems() {
   // target state) so nothing pointless is written back to ADO.
   const bulkTagList = el('datalist', { id: 'bulk-tag-options' },
     tagOptions.map((t) => el('option', { value: t })));
-  const bulkTag = el('input', {
-    type: 'text', class: 'bulk-tag-input', placeholder: 'tag…', list: 'bulk-tag-options',
+  // Chip-based bulk tag input: type + Enter to add a tag to all selected items;
+  // click ✕ on a chip to remove that tag from all selected items.
+  const chipInput = el('input', {
+    type: 'text', class: 'bulk-chip-input', placeholder: 'tag…', list: 'bulk-tag-options',
   });
+  const bulkChipArea = el('div', { class: 'bulk-chip-area' }, [chipInput]);
   const bulkState = el('select', { class: 'bulk-state-select' },
     [el('option', { value: '' }, 'set state…'), ...['New', 'Resolved', 'Closed'].map((s) => el('option', { value: s }, s))]);
   const bulkCount = el('span', { class: 'bulk-count muted' }, '');
@@ -1030,7 +1033,7 @@ async function renderWorkItems() {
   const bulkButtons = [];
   const setBulkBusy = (busy) => {
     bulkButtons.forEach((b) => { b.disabled = busy; });
-    bulkTag.disabled = busy;
+    chipInput.disabled = busy;
     bulkState.disabled = busy;
   };
 
@@ -1042,7 +1045,7 @@ async function renderWorkItems() {
     if (!rows.length) { toast('Select some work items first.'); return; }
     const changed = rows.map((it) => [it, mutate(it)]).filter(([, ch]) => ch);
     if (!changed.length) { toast(`Nothing to change (${label.toLowerCase()}).`); return; }
-    if (!confirm(`${label} on ${changed.length} work item${changed.length === 1 ? '' : 's'}? This writes back to Azure DevOps.`)) return;
+    if (!opts.skipConfirm && !confirm(`${label} on ${changed.length} work item${changed.length === 1 ? '' : 's'}? This writes back to Azure DevOps.`)) return;
     setBulkBusy(true);
     let ok = 0; const failed = [];
     for (let i = 0; i < changed.length; i++) {
@@ -1079,22 +1082,33 @@ async function renderWorkItems() {
     bulkButtons.push(b);
     return b;
   };
-  const addTagBtn = mkBulkBtn('+ Add tag', 'Add the typed tag to every selected item', () => {
-    const t = bulkTag.value.trim();
-    if (!t) { bulkTag.focus(); return; }
-    applyBulk('Add tag', (it) => {
-      const cur = it.tags || [];
-      return cur.some((x) => x.toLowerCase() === t.toLowerCase()) ? null : { tags: [...cur, t] };
-    });
-  });
-  const removeTagBtn = mkBulkBtn('- Remove tag', 'Remove the typed tag from every selected item', () => {
-    const t = bulkTag.value.trim();
-    if (!t) { bulkTag.focus(); return; }
+  function removeTagChip(tag, chipEl) {
+    chipEl.remove();
     applyBulk('Remove tag', (it) => {
       const cur = it.tags || [];
-      const next = cur.filter((x) => x.toLowerCase() !== t.toLowerCase());
+      const next = cur.filter((x) => x.toLowerCase() !== tag.toLowerCase());
       return next.length === cur.length ? null : { tags: next };
-    });
+    }, { skipConfirm: true });
+  }
+  function addTagChip(tag) {
+    const chip = el('span', { class: 'bulk-tag-chip' }, [
+      el('span', {}, tag),
+      el('button', { class: 'chip-remove', type: 'button', title: 'Remove tag from all selected items',
+        onclick: function() { removeTagChip(tag, chip); },
+      }, '✕'),
+    ]);
+    bulkChipArea.insertBefore(chip, chipInput);
+    applyBulk('Add tag', (it) => {
+      const cur = it.tags || [];
+      return cur.some((x) => x.toLowerCase() === tag.toLowerCase()) ? null : { tags: [...cur, tag] };
+    }, { skipConfirm: true });
+  }
+  chipInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      const t = chipInput.value.trim().replace(/,$/, '');
+      if (t) { chipInput.value = ''; addTagChip(t); }
+    }
   });
   bulkState.addEventListener('change', () => {
     const s = bulkState.value;
@@ -1105,8 +1119,8 @@ async function renderWorkItems() {
   // Backfill accelerator: accept EVERY suggestion (keyword + AI adds, and alias
   // rewrites) on each selected row in one sweep - the Suggested column, applied en
   // masse. Rewrites drop their legacy tag; adds that are already present are skipped.
-  const applySuggBtn = mkBulkBtn('✓ Apply suggestions', 'Apply every suggested add, rewrite, and flagged removal on each selected item', () => {
-    applyBulk('Apply suggestions', (it) => {
+  const applySuggBtn = mkBulkBtn('✓ Apply tags', 'Apply every suggested tag add, rewrite, and flagged removal on each selected item', () => {
+    applyBulk('Apply tags', (it) => {
       // Mirror the per-row Suggested column: apply the ADD/REWRITE chips (from
       // tag_suggestions) AND the "- tag" REMOVAL chips (from stale/disallowed flags).
       // Removals were previously skipped here, so a bulk apply left "to refine on a
@@ -1210,7 +1224,7 @@ async function renderWorkItems() {
     });
   };
 
-  const improveAllBtn = mkBulkBtn('✨ Improve all fields', 'Pre-compute an "Improve all fields" pass for each selected item — items that already have drafts are skipped (resumable). Use the ▾ to force-redo everything. Nothing is saved automatically.', () => enqueueImproveAll(false));
+  const improveAllBtn = mkBulkBtn('✨ Suggest improvements', 'Pre-compute field improvement suggestions (title, body, etc.) for each selected item — items that already have drafts are skipped (resumable). Use the ▾ to force-redo everything. Nothing is saved until you click "Apply suggestions".', () => enqueueImproveAll(false));
   // Split-button caret: a small menu for the "force re-do all" variant, so the plain
   // click stays safe/resumable and the destructive redo is one deliberate step away.
   const improveAllForce = el('button', { class: 'bulk-menu-item', type: 'button',
@@ -1231,10 +1245,58 @@ async function renderWorkItems() {
   improveAllCaret.classList.add('bulk-caret');
   const improveAllGroup = el('div', { class: 'bulk-split' }, [improveAllBtn, improveAllCaret, improveAllMenu]);
 
+  // Apply cached field drafts (from "Improve all fields") directly to ADO in bulk.
+  // No per-field review — the user chose to bulk-accept everything.
+  const applyFieldDraftsBtn = mkBulkBtn('✓ Apply suggestions',
+    'Write cached AI field drafts (from Improve all fields) to ADO for every selected item that has drafts ready — no per-field review.',
+    async () => {
+      const rows = table.getSelection();
+      const withDrafts = rows.filter((it) => improveAllCache.has(String(it.id)));
+      if (!withDrafts.length) {
+        toast('No selected items have cached field drafts. Run "✨ Improve all fields" first.');
+        return;
+      }
+      if (!confirm(`Apply AI field drafts to ${withDrafts.length} item${withDrafts.length === 1 ? '' : 's'}? This writes directly to ADO without per-field review.`)) return;
+      setBulkBusy(true);
+      let ok = 0; const failed = [];
+      for (let i = 0; i < withDrafts.length; i++) {
+        const it = withDrafts[i];
+        bulkStatus.textContent = `Apply suggestions… ${i + 1}/${withDrafts.length}`;
+        const drafts = improveAllCache.get(String(it.id));
+        if (!drafts) continue;
+        const changes = Object.entries(drafts)
+          .filter(([, v]) => v != null && v !== '')
+          .map(([reference, value]) => ({ reference, value }));
+        if (!changes.length) continue;
+        try {
+          await api.updateWorkItemFields(it.id, { team: it.team, changes });
+          improveAllCache.delete(String(it.id));
+          saveImproveCache();
+          api.clearFieldDrafts(it.id).catch(() => {});
+          ok++;
+        } catch (err) {
+          const detail = err?.message || String(err);
+          console.error(`[Apply suggestions] #${it.id} failed:`, detail);
+          failed.push(`#${it.id}: ${detail}`);
+        }
+      }
+      setBulkBusy(false);
+      bulkStatus.textContent = '';
+      await refreshRows();
+      if (failed.length) toast(`Apply suggestions: ${ok} updated, ${failed.length} failed (${failed[0]}${failed.length > 1 ? ', …' : ''})`, true);
+      else toast(`Apply suggestions: ${ok} item${ok === 1 ? '' : 's'} updated.`);
+    });
+
+  // Give aiBtn/hcBtn bulk-bar sizing so they blend with mkBulkBtn items.
+  if (aiBtn) aiBtn.classList.add('bulk-btn');
+  if (hcBtn) hcBtn.classList.add('bulk-btn');
   const bulkBar = el('div', { class: 'bulk-bar', hidden: true }, [
-    bulkCount, bulkClear, el('span', { class: 'dt-sep', 'aria-hidden': 'true' }),
-    bulkTag, addTagBtn, removeTagBtn, applySuggBtn, improveAllGroup, bulkState, bulkStatus, bulkTagList,
-  ]);
+    bulkCount, bulkClear, bulkChipArea,
+    el('span', { class: 'dt-sep', 'aria-hidden': 'true' }),
+    hcBtn, improveAllGroup, applyFieldDraftsBtn, aiBtn, applySuggBtn,
+    el('span', { class: 'dt-sep', 'aria-hidden': 'true' }),
+    bulkState, bulkStatus, bulkTagList,
+  ].filter(Boolean));
 
   // "Find duplicates": a whole-backlog scan (not a selection) for reworded near-dupes,
   // deterministic + server-side (no AI), storing near_duplicate flags. Always available.
@@ -1336,7 +1398,7 @@ async function renderWorkItems() {
     // Flexible spacer takes the slack so the search keeps a sane width and the
     // actions + count group pins to the right (filters left, actions right).
     el('span', { class: 'dt-spacer' }),
-    dupBtn, hcBtn, aiBtn, sep(),
+    dupBtn, sep(),
     countEl, clearFilters,
     flagFilterChip(state, 'work-items'),
   ].filter(Boolean));
@@ -1367,8 +1429,10 @@ async function renderWorkItems() {
     // Selection count + clear live ONLY in the bulk bar below (no redundant copy up top).
     bulkBar.hidden = n === 0;
     bulkCount.textContent = n ? `${n} selected` : '';
-    if (aiBtn) { aiBtn.disabled = n === 0; aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags'; }
-    if (hcBtn) { hcBtn.disabled = n === 0; hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck'; }
+    if (aiBtn) aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags';
+    if (hcBtn) hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck';
+    // Clear tag chips whenever the selection changes — they only make sense for the current set.
+    Array.from(bulkChipArea.querySelectorAll('.bulk-tag-chip')).forEach((c) => c.remove());
     if (boardMode()) syncBoardChecks();
   }
 
@@ -2525,12 +2589,31 @@ async function renderReports() {
   layout.appendChild(editorCol);
   wrap.appendChild(layout);
 
+  const listToggle = el('button', { class: 'reports-list-toggle', title: 'Hide list',
+    onclick: () => {
+      const collapsed = layout.classList.toggle('list-collapsed');
+      listToggle.textContent = collapsed ? '›' : '‹';
+      listToggle.title = collapsed ? 'Show list' : 'Hide list';
+      try { localStorage.setItem('poseidon.reports.listCollapsed', collapsed ? '1' : ''); } catch {}
+    }
+  }, '‹');
+  const listCards = el('div', { class: 'reports-list-cards' });
+  listCol.appendChild(listToggle);
+  listCol.appendChild(listCards);
+  try {
+    if (localStorage.getItem('poseidon.reports.listCollapsed') === '1') {
+      layout.classList.add('list-collapsed');
+      listToggle.textContent = '›';
+      listToggle.title = 'Show list';
+    }
+  } catch {}
+
   let specs = [];
   let currentName = null;
 
   async function refreshList() {
-    try { specs = (await api.reportSpecs()) || []; } catch (e) { specs = []; clear(listCol).appendChild(errorPanel('reports', e)); return; }
-    clear(listCol);
+    try { specs = (await api.reportSpecs()) || []; } catch (e) { specs = []; clear(listCards).appendChild(errorPanel('reports', e)); return; }
+    clear(listCards);
     specs.forEach((spec) => {
       const card = el('div', { class: 'report-card' + (spec.name === currentName ? ' active' : ''), onclick: () => showEditor(spec) }, [
         el('div', { class: 'report-card-name' }, spec.name),
@@ -2540,7 +2623,7 @@ async function renderReports() {
           el('button', { class: 'btn btn-xs', onclick: (e) => { e.stopPropagation(); removeReport(spec.name); } }, 'Delete'),
         ]),
       ].filter(Boolean));
-      listCol.appendChild(card);
+      listCards.appendChild(card);
     });
   }
 
@@ -2548,7 +2631,7 @@ async function renderReports() {
   // saved copies land selected after a save.
   function showEditor(spec) {
     currentName = spec ? spec.name : null;
-    listCol.querySelectorAll('.report-card').forEach((c) =>
+    listCards.querySelectorAll('.report-card').forEach((c) =>
       c.classList.toggle('active', c.querySelector('.report-card-name').textContent === currentName));
     clear(editorCol).appendChild(reportEditorPanel(spec, {
       onSaved: async (savedName) => {
@@ -2674,25 +2757,42 @@ function reportEditorPanel(spec, { onSaved }) {
   ]);
   daysInputEl.style.display = draft.time_range.kind === 'last_days' ? '' : 'none';
 
-  const panel = el('div', { class: 'card report-editor' }, [
-    el('div', { class: 'report-editor-grid' }, [
-      el('div', { class: 'builder-form' }, [
-        rfield('Name', spec && spec.builtin ? 'built-in templates are read-only; saving prompts for a new name' : 'shown in the report list', nameInput),
-        rfield('Description', 'optional', el('input', { class: 'inp', value: draft.description || '', oninput: (e) => { draft.description = e.target.value; onChange(); } })),
-        rfield('Render as', 'how to draw the result', selectEl(REPORT_RENDERS, draft.render, (v) => { draft.render = v; onChange(); })),
-        rfield('Time range', 'window applied to each series', rangeRow),
-        seriesWrap,
-      ]),
-      el('div', { class: 'builder-preview-col' }, [
-        el('div', { class: 'row', style: 'justify-content:space-between;align-items:center;gap:8px' }, [
-          el('h3', { style: 'margin:0' }, 'Preview'),
-          reportExportBar(() => preview, () => lastResult, () => draft.name),
-        ]),
-        preview,
-      ]),
+  let editorGrid;
+  const builderToggle = el('button', { class: 'btn btn-xs', title: 'Hide editor',
+    onclick: () => {
+      const collapsed = editorGrid.classList.toggle('form-collapsed');
+      builderToggle.textContent = collapsed ? '›' : '‹';
+      builderToggle.title = collapsed ? 'Show editor' : 'Hide editor';
+      try { localStorage.setItem('poseidon.reports.editorCollapsed', collapsed ? '1' : ''); } catch {}
+    }
+  }, '‹');
+  editorGrid = el('div', { class: 'report-editor-grid' }, [
+    el('div', { class: 'builder-form' }, [
+      rfield('Name', spec && spec.builtin ? 'built-in templates are read-only; saving prompts for a new name' : 'shown in the report list', nameInput),
+      rfield('Description', 'optional', el('input', { class: 'inp', value: draft.description || '', oninput: (e) => { draft.description = e.target.value; onChange(); } })),
+      rfield('Render as', 'how to draw the result', selectEl(REPORT_RENDERS, draft.render, (v) => { draft.render = v; onChange(); })),
+      rfield('Time range', 'window applied to each series', rangeRow),
+      seriesWrap,
     ]),
-    saveBar,
+    el('div', { class: 'builder-preview-col' }, [
+      el('div', { class: 'row', style: 'justify-content:space-between;align-items:center;gap:8px' }, [
+        el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+          builderToggle,
+          el('h3', { style: 'margin:0' }, 'Preview'),
+        ]),
+        reportExportBar(() => preview, () => lastResult, () => draft.name),
+      ]),
+      preview,
+    ]),
   ]);
+  try {
+    if (localStorage.getItem('poseidon.reports.editorCollapsed') === '1') {
+      editorGrid.classList.add('form-collapsed');
+      builderToggle.textContent = '›';
+      builderToggle.title = 'Show editor';
+    }
+  } catch {}
+  const panel = el('div', { class: 'card report-editor' }, [editorGrid, saveBar]);
   refreshSave();
   runPreview();
   return panel;
@@ -2812,6 +2912,9 @@ function renderReportResult(result) {
     case 'plaintext':
       return el('pre', { class: 'report-plaintext' },
         series.map((s) => `${s.label}\n` + s.points.map((p) => `  ${p.label || '(total)'}: ${fmtValue(p.value, s.percent)}`).join('\n')).join('\n\n'));
+    case 'list':
+      return el('ul', { class: 'report-item-list' },
+        series.flatMap((s) => s.points.map((p) => el('li', {}, p.label || '(untitled)'))));
     case 'bar':
     default:
       // One bar chart per series (labelled when there is more than one).
@@ -2851,10 +2954,10 @@ const REPORT_SOURCES = [
 ];
 const REPORT_GROUPBYS = [
   ['', 'None (single total)'], ['tag', 'Tag'], ['state', 'State'], ['status', 'Status'],
-  ['team', 'Team'], ['work_item_type', 'Work item type'], ['day', 'Day'], ['week', 'Week'],
+  ['team', 'Team'], ['work_item_type', 'Work item type'], ['title', 'Title'], ['day', 'Day'], ['week', 'Week'],
 ];
 const REPORT_RENDERS = [
-  ['stat', 'Stat'], ['bar', 'Bar'], ['pie', 'Pie'], ['line', 'Line'], ['table', 'Table'], ['plaintext', 'Plain text'],
+  ['stat', 'Stat'], ['bar', 'Bar'], ['pie', 'Pie'], ['line', 'Line'], ['table', 'Table'], ['plaintext', 'Plain text'], ['list', 'List'],
 ];
 const REPORT_OPS = [['eq', '='], ['ne', '≠'], ['in', 'in'], ['contains', 'contains']];
 
@@ -3012,7 +3115,9 @@ function buildRecapDeck(items, days) {
   const RESOLVED = new Set(['closed', 'done', 'resolved', 'completed', 'removed']);
   const closed = (items || []).filter((it) => {
     const st = (it.state || '').toLowerCase();
-    const when = Date.parse(it.changed_at || it.closed_at || it.created_at || '');
+    // Use closed_at (the actual close timestamp) and fall back to changed_at only
+    // when closed_at is absent. Never use created_at — that would include open items.
+    const when = Date.parse(it.closed_at || it.changed_at || '');
     return RESOLVED.has(st) && !Number.isNaN(when) && when >= cutoff;
   });
   if (!closed.length) return { title: 'Recap', slides: [] };
@@ -3045,12 +3150,46 @@ function buildRecapDeck(items, days) {
       { value: external, label: 'External', color: 'accent' },
     ],
   });
+  // Prefer showing larger work item types: Epic > Feature > Spike > Story > everything else.
+  const TYPE_RANK = { epic: 0, feature: 1, spike: 2, story: 3, 'user story': 3 };
+  const typeRank = (it) => TYPE_RANK[(it.work_item_type || '').toLowerCase()] ?? 99;
+  // Build a lookup for ALL items (not just closed) so we can resolve parent titles.
+  const itemById = new Map((items || []).map((it) => [it.id, it]));
+  // Track items already shown so a multi-area item doesn't appear in multiple slides.
+  const shownIds = new Set();
   const topAreas = [...byArea.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 6);
   for (const [area, its] of topAreas) {
+    const sorted = [...its].sort((a, b) => typeRank(a) - typeRank(b));
+    const candidates = sorted.filter((it) => !shownIds.has(it.id)).slice(0, 8);
+    candidates.forEach((it) => shownIds.add(it.id));
+
+    // Group candidates by their direct parent.
+    const parentGroups = new Map();
+    for (const it of candidates) {
+      const key = it.parent_id ?? null;
+      if (!parentGroups.has(key)) parentGroups.set(key, []);
+      parentGroups.get(key).push(it);
+    }
+
+    // Build slide groups sorted by parent type rank (Epic first, ungrouped last).
+    const slideGroups = [...parentGroups.entries()]
+      .map(([parentId, children]) => {
+        const parent = parentId != null ? itemById.get(parentId) : null;
+        const parentRank = parent ? (TYPE_RANK[(parent.work_item_type || '').toLowerCase()] ?? 98) : 99;
+        const heading = parent
+          ? `${parent.work_item_type || 'Parent'}: ${parent.title || `#${parentId}`}`
+          : null;
+        return { heading, parentRank, items: children.map((it) => `#${it.id} ${it.title || ''}`.trim()) };
+      })
+      .sort((a, b) => a.parentRank - b.parentRank);
+
+    const hasParents = slideGroups.some((g) => g.heading);
     slides.push({
       type: 'feature', label: 'Area', title: area,
       description: `${its.length} item${its.length === 1 ? '' : 's'} closed. Add the story: what shipped, why it mattered.`,
-      highlights: its.slice(0, 6).map((it) => `#${it.id} ${it.title || ''}`.trim()),
+      ...(hasParents
+        ? { groups: slideGroups }
+        : { highlights: candidates.slice(0, 6).map((it) => `#${it.id} ${it.title || ''}`.trim()) }),
     });
   }
   if (bySource.size) {

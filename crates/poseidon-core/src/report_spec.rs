@@ -27,6 +27,7 @@ pub enum GroupBy {
     Status,
     Team,
     WorkItemType,
+    Title,
     Day,
     Week,
 }
@@ -98,6 +99,7 @@ pub enum RenderKind {
     Line,
     Table,
     Plaintext,
+    List,
 }
 
 /// Time window a report covers, applied to each source's primary timestamp
