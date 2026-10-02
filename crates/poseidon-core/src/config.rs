@@ -130,9 +130,12 @@ impl RecapSettings {
                 .logo_position
                 .map(|p| p.trim().to_ascii_lowercase())
                 .filter(|p| RECAP_LOGO_POSITIONS.contains(&p.as_str())),
-            logo_opacity: self
-                .logo_opacity
-                .map(|o| o.clamp(*RECAP_LOGO_OPACITY_RANGE.start(), *RECAP_LOGO_OPACITY_RANGE.end())),
+            logo_opacity: self.logo_opacity.map(|o| {
+                o.clamp(
+                    *RECAP_LOGO_OPACITY_RANGE.start(),
+                    *RECAP_LOGO_OPACITY_RANGE.end(),
+                )
+            }),
         }
     }
 }
@@ -771,7 +774,8 @@ mod tests {
         }
         .sanitized();
         assert_eq!(s.logo_position, None);
-        assert_eq!(s.logo_opacity, Some(5)); // never fully invisible
+        // Never fully invisible.
+        assert_eq!(s.logo_opacity, Some(5));
         // Untouched stays unset so the defaults (top-right, 40%) can change later.
         assert!(RecapSettings::default().sanitized().is_empty());
     }
@@ -800,9 +804,9 @@ mod tests {
             "https://evil.example/logo.png",
             "javascript:alert(1)",
             "data:text/html;base64,PHNjcmlwdD4=",
-            "data:image/png;base64,",                      // empty payload
-            "data:image/png;base64,AAAA\"onerror=\"x",     // breaks out of an attribute
-            "data:image/png,rawbytes",                     // not base64
+            "data:image/png;base64,",                  // empty payload
+            "data:image/png;base64,AAAA\"onerror=\"x", // breaks out of an attribute
+            "data:image/png,rawbytes",                 // not base64
         ] {
             assert_eq!(recap("#fff", bad).sanitized().logo, None, "{bad}");
         }
@@ -824,8 +828,12 @@ mod tests {
         assert_eq!(back.recap, cfg.recap);
         // A tenant that never touched the deck look carries no `recap` key at all, and an
         // older stored config without one still loads.
-        assert!(serde_json::to_value(UserConfig::default()).unwrap().get("recap").is_none());
-        let legacy: UserConfig = serde_json::from_value(serde_json::json!({ "poll_all_teams": true })).unwrap();
+        assert!(serde_json::to_value(UserConfig::default())
+            .unwrap()
+            .get("recap")
+            .is_none());
+        let legacy: UserConfig =
+            serde_json::from_value(serde_json::json!({ "poll_all_teams": true })).unwrap();
         assert!(legacy.recap.is_empty());
     }
 

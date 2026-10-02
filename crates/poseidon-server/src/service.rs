@@ -440,8 +440,12 @@ impl Service {
                             obj.insert(
                                 "health".to_string(),
                                 match h {
-                                    Ok(detail) => serde_json::json!({ "ok": true, "detail": detail }),
-                                    Err(detail) => serde_json::json!({ "ok": false, "detail": detail }),
+                                    Ok(detail) => {
+                                        serde_json::json!({ "ok": true, "detail": detail })
+                                    }
+                                    Err(detail) => {
+                                        serde_json::json!({ "ok": false, "detail": detail })
+                                    }
                                 },
                             );
                         }
@@ -1700,7 +1704,8 @@ impl Service {
                         let cap = rules.max_suggestions.unwrap_or_else(|| {
                             poseidon_ai::default_max_suggestions(rules.required_tags.len())
                         });
-                        let pairs: Vec<(String, String)> = result.tags
+                        let pairs: Vec<(String, String)> = result
+                            .tags
                             .iter()
                             .take(cap)
                             .map(|s| {
@@ -3659,7 +3664,8 @@ mod tests {
     #[tokio::test]
     async fn recap_theme_and_logo_round_trip_through_import_export_and_are_validated() {
         let store = Store::connect_in_memory().await.unwrap();
-        let svc = Service::new(PoseidonConfig::default(), store, std::env::temp_dir()).with_owner("a@x.com");
+        let svc = Service::new(PoseidonConfig::default(), store, std::env::temp_dir())
+            .with_owner("a@x.com");
         let logo = "data:image/png;base64,iVBORw0KGgo=";
         let yaml = format!(
             "poseidon:\n  schema: 1\nrecap:\n  theme:\n    bg: \"#0F2A1D\"\n    accent: \"red; x:url(y)\"\n  logo: \"{logo}\"\n  logo_position: bottom-left\n  logo_opacity: 25\n"
@@ -3674,7 +3680,10 @@ mod tests {
 
         // Exported YAML carries it, so the next import of the same file keeps it.
         let exported = svc.export_config().await.unwrap();
-        assert!(exported.contains("recap:") && exported.contains("#0f2a1d"), "{exported}");
+        assert!(
+            exported.contains("recap:") && exported.contains("#0f2a1d"),
+            "{exported}"
+        );
 
         // A tenant that never set a deck look exports no `recap:` section.
         let blank = svc.with_owner("b@x.com");
@@ -3683,7 +3692,10 @@ mod tests {
         // Saving through the API validates too and reports what was stored.
         let stored = blank
             .update_recap_settings(poseidon_core::RecapSettings {
-                theme: poseidon_core::RecapTheme { ink: Some("#FFF".into()), ..Default::default() },
+                theme: poseidon_core::RecapTheme {
+                    ink: Some("#FFF".into()),
+                    ..Default::default()
+                },
                 logo: Some("https://evil.example/x.png".into()),
                 logo_position: Some("nowhere".into()),
                 logo_opacity: Some(0),

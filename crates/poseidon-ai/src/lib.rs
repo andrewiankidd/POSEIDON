@@ -210,7 +210,12 @@ pub fn build_recap_summary_prompt(ctx: &RecapSummaryContext) -> String {
     for it in ctx.items.iter().take(MAX_RECAP_ITEMS) {
         let kind = it.work_item_type.trim();
         let kind = if kind.is_empty() { "Item" } else { kind };
-        match it.parent_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        match it
+            .parent_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
             Some(parent) => p.push_str(&format!(
                 "- [{kind}] {} (part of: {parent})\n",
                 it.title.trim()
@@ -838,7 +843,9 @@ fn latest_bundled_claude(base: &std::path::Path) -> Option<std::path::PathBuf> {
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
                 walk(&path, depth + 1, out);
             } else if kind.is_file() && path.file_name().is_some_and(|n| n == "claude.exe") {
@@ -858,11 +865,9 @@ fn latest_bundled_claude(base: &std::path::Path) -> Option<std::path::PathBuf> {
             .map(|s| s.parse().unwrap_or(0))
             .collect()
     };
-    found.into_iter().max_by(|a, b| {
-        version_key(a)
-            .cmp(&version_key(b))
-            .then_with(|| a.cmp(b))
-    })
+    found
+        .into_iter()
+        .max_by(|a, b| version_key(a).cmp(&version_key(b)).then_with(|| a.cmp(b)))
 }
 
 fn find_claude_exe() -> Option<std::path::PathBuf> {
@@ -875,7 +880,8 @@ fn find_claude_exe() -> Option<std::path::PathBuf> {
     {
         // On non-Windows, PATH `claude` is typically the npm-installed CLI — fine to use.
         let mut probe = std::process::Command::new("claude");
-        probe.arg("--version")
+        probe
+            .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         if let Ok(st) = probe.status() {
@@ -922,8 +928,7 @@ fn find_claude_exe() -> Option<std::path::PathBuf> {
             }
         }
         if let Some(home) = std::env::var_os("HOME") {
-            let c = std::path::Path::new(&home)
-                .join("Library/Application Support/Claude/claude");
+            let c = std::path::Path::new(&home).join("Library/Application Support/Claude/claude");
             if c.exists() {
                 return Some(c);
             }
@@ -980,7 +985,11 @@ fn record_claude_health(result: &Result<String, AiError>) -> ClaudeHealth {
 pub fn claude_code_health_cached() -> Option<ClaudeHealth> {
     let slot = CLAUDE_HEALTH.lock().ok()?;
     let (at, verdict) = slot.as_ref()?;
-    let ttl = if verdict.is_ok() { CLAUDE_OK_TTL } else { CLAUDE_ERR_TTL };
+    let ttl = if verdict.is_ok() {
+        CLAUDE_OK_TTL
+    } else {
+        CLAUDE_ERR_TTL
+    };
     (at.elapsed() < ttl).then(|| verdict.clone())
 }
 
@@ -991,10 +1000,8 @@ pub async fn claude_code_health() -> ClaudeHealth {
     if let Some(v) = claude_code_health_cached() {
         return v;
     }
-    let prompt = ClaudeCodeTagger::make_prompt(
-        "Answer in one word.",
-        "Reply with the single word OK.",
-    );
+    let prompt =
+        ClaudeCodeTagger::make_prompt("Answer in one word.", "Reply with the single word OK.");
     let probe = tokio::task::spawn_blocking(move || ClaudeCodeTagger::run_cli(prompt, false));
     let outcome = match tokio::time::timeout(CLAUDE_PROBE_TIMEOUT, probe).await {
         Ok(Ok(r)) => r,
@@ -1681,7 +1688,10 @@ impl AiTagger for ChatTagger {
         // Never re-suggest a tag the item already has.
         let have: HashSet<String> = item.current_tags.iter().map(|t| t.to_lowercase()).collect();
         tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
-        Ok(Suggestions { tags, debug_raw: None })
+        Ok(Suggestions {
+            tags,
+            debug_raw: None,
+        })
     }
 
     async fn draft_field(&self, ctx: &FieldDraftContext) -> Result<String, AiError> {
@@ -1833,8 +1843,9 @@ impl ClaudeCodeTagger {
     /// NOT, or a signed-out Claude would pop a login window on every Doctor tick.
     fn run_cli(prompt: String, allow_login: bool) -> Result<String, AiError> {
         use std::process::{Command, Stdio};
-        let exe = find_claude_exe()
-            .ok_or_else(|| AiError::Http("claude CLI not found — install the Claude Code desktop app".into()))?;
+        let exe = find_claude_exe().ok_or_else(|| {
+            AiError::Http("claude CLI not found — install the Claude Code desktop app".into())
+        })?;
 
         tracing::debug!(chars = prompt.len(), "claude-code prompt:\n{prompt}");
 
@@ -1849,7 +1860,8 @@ impl ClaudeCodeTagger {
                 .stderr(Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
-            let out = cmd.output()
+            let out = cmd
+                .output()
                 .map_err(|e| AiError::Http(format!("claude CLI unavailable: {e}")))?;
 
             let stderr_str = String::from_utf8_lossy(&out.stderr);
@@ -1865,7 +1877,8 @@ impl ClaudeCodeTagger {
             if not_authed {
                 if !allow_login {
                     return Err(AiError::Http(
-                        "Claude Code is not signed in - open the Claude desktop app and sign in".into(),
+                        "Claude Code is not signed in - open the Claude desktop app and sign in"
+                            .into(),
                     ));
                 }
                 if attempt == 0 {
@@ -1879,7 +1892,9 @@ impl ClaudeCodeTagger {
                         .stdout(Stdio::inherit())
                         .stderr(Stdio::inherit())
                         .status()
-                        .map_err(|e| AiError::Http(format!("claude auth login failed to start: {e}")))?;
+                        .map_err(|e| {
+                            AiError::Http(format!("claude auth login failed to start: {e}"))
+                        })?;
                     if !login.success() {
                         return Err(AiError::Http(format!(
                             "claude login exited with {login} — authentication cancelled?"
@@ -1895,13 +1910,17 @@ impl ClaudeCodeTagger {
             if out.stdout.is_empty() && out.stderr.is_empty() {
                 return Err(AiError::Http(
                     "claude CLI returned no output (stdout+stderr both empty). \
-                     The Claude desktop app may be intercepting via Electron IPC.".into(),
+                     The Claude desktop app may be intercepting via Electron IPC."
+                        .into(),
                 ));
             }
 
             if !out.status.success() {
                 tracing::warn!(exit = %out.status, stderr = %stderr_str, "claude-code exited non-zero");
-                return Err(AiError::Http(format!("claude exited {}: {stderr_str}", out.status)));
+                return Err(AiError::Http(format!(
+                    "claude exited {}: {stderr_str}",
+                    out.status
+                )));
             }
 
             let response = stdout_str.trim().to_string();
@@ -1909,7 +1928,9 @@ impl ClaudeCodeTagger {
             return Ok(response);
         }
 
-        Err(AiError::Http("claude-code: unexpected retry exhaustion".into()))
+        Err(AiError::Http(
+            "claude-code: unexpected retry exhaustion".into(),
+        ))
     }
 
     /// Build a single prompt string for the Claude Code CLI's `--print` mode.
@@ -1950,7 +1971,10 @@ impl AiTagger for ClaudeCodeTagger {
         let mut tags = parse_suggestions(&content, allowed);
         let have: HashSet<String> = item.current_tags.iter().map(|t| t.to_lowercase()).collect();
         tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
-        Ok(Suggestions { tags, debug_raw: Some(content) })
+        Ok(Suggestions {
+            tags,
+            debug_raw: Some(content),
+        })
     }
 
     async fn draft_field(&self, ctx: &FieldDraftContext) -> Result<String, AiError> {
@@ -1962,7 +1986,10 @@ impl AiTagger for ClaudeCodeTagger {
     }
 
     async fn summarize_recap(&self, ctx: &RecapSummaryContext) -> Result<String, AiError> {
-        let prompt = Self::make_prompt(RECAP_SUMMARY_SYSTEM_PROMPT, &build_recap_summary_prompt(ctx));
+        let prompt = Self::make_prompt(
+            RECAP_SUMMARY_SYSTEM_PROMPT,
+            &build_recap_summary_prompt(ctx),
+        );
         let content = tokio::task::spawn_blocking(move || Self::call(prompt))
             .await
             .map_err(|e| AiError::Http(e.to_string()))??;
@@ -2056,7 +2083,8 @@ mod tests {
 
     #[test]
     fn bundled_claude_lookup_handles_both_layouts_and_numeric_versions() {
-        let root = std::env::temp_dir().join(format!("poseidon-claude-lookup-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("poseidon-claude-lookup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let touch = |rel: &str| {
             let p = root.join(rel);
@@ -2076,7 +2104,10 @@ mod tests {
         let only_old = root.join("only-old");
         std::fs::create_dir_all(only_old.join("1.0.0")).unwrap();
         std::fs::write(only_old.join("1.0.0/claude.exe"), b"").unwrap();
-        assert_eq!(latest_bundled_claude(&only_old), Some(only_old.join("1.0.0/claude.exe")));
+        assert_eq!(
+            latest_bundled_claude(&only_old),
+            Some(only_old.join("1.0.0/claude.exe"))
+        );
         assert_eq!(latest_bundled_claude(&root.join("missing")), None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2089,7 +2120,11 @@ mod tests {
                 .map(|i| RecapSummaryItem {
                     id: i as i64,
                     title: format!("Item {i}"),
-                    work_item_type: if i == 0 { "Feature".into() } else { String::new() },
+                    work_item_type: if i == 0 {
+                        "Feature".into()
+                    } else {
+                        String::new()
+                    },
                     parent_title: (i == 1).then(|| "QA DR proof-of-concept".to_string()),
                 })
                 .collect(),

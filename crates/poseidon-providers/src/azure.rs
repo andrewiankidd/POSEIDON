@@ -512,7 +512,10 @@ impl AzureDevOpsProvider {
         // ourselves rather than `.json()` (which would force application/json).
         // bypassRules=true skips ADO's workflow-rule validation (e.g. System.Reason
         // becoming invalid after a State change), which would otherwise return 400.
-        let url = self.project_url(&format!("wit/workitems/{id}"), "$expand=relations&bypassRules=true");
+        let url = self.project_url(
+            &format!("wit/workitems/{id}"),
+            "$expand=relations&bypassRules=true",
+        );
         let body = serde_json::to_vec(&serde_json::Value::Array(ops)).unwrap_or_default();
         let resp = self
             .client

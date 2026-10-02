@@ -108,7 +108,10 @@ impl AiTagger for EmbeddedTagger {
         let have: std::collections::HashSet<String> =
             current.iter().map(|t| t.to_lowercase()).collect();
         tags.retain(|s| !have.contains(&s.tag.to_lowercase()));
-        Ok(crate::Suggestions { tags, debug_raw: None })
+        Ok(crate::Suggestions {
+            tags,
+            debug_raw: None,
+        })
     }
 }
 
