@@ -46,6 +46,14 @@ data - every read resolves from a shipped fixture and every write is a harmless
 no-op - so you can click through every screen (including Recap) with **no backend
 and no sign-in**. It's a try-before-you-host tour, not a way to connect real data.
 
+The sample data is entirely fictional (a made-up "Platform" team with ~75 work items
+across nine areas) and **always looks current**: on every load the app slides all
+fixture timestamps forward by whole days so the newest data lands on yesterday, which
+keeps windows like Recap's and Reports' "last 30 days" populated no matter when the demo
+is opened. The fixtures under `frontend/web/assets/demo/` are generated - edit and
+re-run `python tools/demo/generate-demo-data.py` rather than changing the JSON by hand,
+so the Dashboard, Reports and Recap numbers stay consistent with the work items.
+
 ## Connect your work tracker
 
 Applies when you **run locally** (or when you administer the shared instance

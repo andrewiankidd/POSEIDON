@@ -55,15 +55,52 @@ function demoFixtureName(path) {
   return p || 'index';
 }
 
-// Resolve a GET from a static fixture. A missing/broken fixture resolves to a
-// benign empty object so the screen shows an empty state instead of throwing.
+// The demo fixtures are generated (tools/demo/generate-demo-data.py) with their newest data
+// on this "anchor" day. Left as-is they'd go stale and fall out of windows like "last 30
+// days" (Recap, Reports), so every load slides ALL their timestamps forward by whole days
+// until the anchor day is YESTERDAY. Yesterday rather than today so a shifted time-of-day
+// can never land in the future. Must equal ANCHOR in the generator script.
+const DEMO_ANCHOR = '2026-10-02';
+const DAY_MS = 86400000;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+/** Milliseconds to add to a fixture timestamp so the anchor day becomes yesterday (UTC). */
+export function demoShiftMs(nowMs = Date.now()) {
+  const todayStart = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  return todayStart - DAY_MS - Date.parse(DEMO_ANCHOR + 'T00:00:00Z');
+}
+
+/** Deep-copy `value`, moving every ISO timestamp string forward by `ms`. */
+export function shiftDemoDates(value, ms) {
+  if (typeof value === 'string') {
+    if (!ISO_TIMESTAMP.test(value)) return value;
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? value : new Date(t + ms).toISOString().replace('.000Z', 'Z');
+  }
+  if (Array.isArray(value)) return value.map((v) => shiftDemoDates(v, ms));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = shiftDemoDates(v, ms);
+    return out;
+  }
+  return value;
+}
+
+// Resolve a GET from a static fixture, with its dates made current (see above). A
+// missing/broken fixture resolves to a benign empty object so the screen shows an empty
+// state instead of throwing.
 async function demoGet(path) {
   const name = demoFixtureName(path);
   try {
     const url = new URL('../assets/demo/' + name + '.json', import.meta.url);
     const res = await fetch(url);
     if (!res.ok) return {};
-    return await res.json();
+    const data = shiftDemoDates(await res.json(), demoShiftMs());
+    // "Last polled" / "last checked" should read as moments ago, not as yesterday.
+    const now = Date.now();
+    if (name === 'dashboard' && data.last_polled_at) data.last_polled_at = new Date(now - 14 * 60000).toISOString();
+    if (name === 'doctor' && data.checked_at) data.checked_at = new Date(now - 2 * 60000).toISOString();
+    return data;
   } catch { return {}; }
 }
 
@@ -465,7 +502,8 @@ export const api = {
    *  An area missing from the map means "keep the placeholder" (no online model, or it
    *  failed). `areas` = [{ area, items: [{ id, title, work_item_type, parent_title }] }]. */
   recapSummaries: ({ team, period, areas }) =>
-    request('/recap/summaries', {
+    // The public demo has no model: serve canned (fictional) blurbs so the feature shows.
+    isDemo() ? demoGet('/recap/summaries') : request('/recap/summaries', {
       method: 'POST', body: { team: team || null, period, areas },
       invokeCmd: 'recap_summaries', invokeArgs: { team: team || null, period, areas },
     }),
