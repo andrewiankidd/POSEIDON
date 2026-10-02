@@ -30,6 +30,111 @@ pub struct UserConfig {
     /// When false (default), a poll fetches only the active team; true fetches
     /// every configured team. Per-owner, so each user chooses.
     pub poll_all_teams: bool,
+    /// How this owner's Recap deck looks (theme colours + branding logo). Part of the
+    /// tenant config so it survives restarts and round-trips through config import/export.
+    #[serde(skip_serializing_if = "RecapSettings::is_empty")]
+    pub recap: RecapSettings,
+}
+
+/// Largest accepted branding logo, as a data URL (the encoded string, not the pixels).
+/// The UI downsizes uploads well below this; the cap keeps a tenant config - and the
+/// import YAML it exports to - from ballooning.
+pub const MAX_RECAP_LOGO_BYTES: usize = 1_500_000;
+
+/// Image types a branding logo may be. Matched as the data-URL prefix, always base64.
+const RECAP_LOGO_PREFIXES: [&str; 5] = [
+    "data:image/png;base64,",
+    "data:image/jpeg;base64,",
+    "data:image/gif;base64,",
+    "data:image/webp;base64,",
+    "data:image/svg+xml;base64,",
+];
+
+/// The three base colours of the Recap deck theme (`#rrggbb`). Unset = follow the app's
+/// own light/dark palette. Everything else in the deck (panels, borders, muted text) is
+/// derived from these by the frontend.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecapTheme {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ink: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+}
+
+/// Per-owner Recap deck look: theme + branding logo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecapSettings {
+    pub theme: RecapTheme,
+    /// Branding logo as a base64 data URL (`data:image/png;base64,...`). `None` = the
+    /// built-in POSEIDON logo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    /// Which corner the logo sits in: one of [`RECAP_LOGO_POSITIONS`]. `None` = top-right.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_position: Option<String>,
+    /// Logo opacity as a percentage (5-100). `None` = 40.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_opacity: Option<u8>,
+}
+
+/// The corners a branding logo may be placed in.
+pub const RECAP_LOGO_POSITIONS: [&str; 4] =
+    ["top-right", "top-left", "bottom-right", "bottom-left"];
+
+/// Bounds for the logo opacity percentage - never fully invisible, never above opaque.
+pub const RECAP_LOGO_OPACITY_RANGE: std::ops::RangeInclusive<u8> = 5..=100;
+
+impl RecapSettings {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// Drop anything unsafe or malformed. These values end up in CSS and in an `<img src>`
+    /// of a downloadable HTML file, and arrive from untrusted places (an uploaded import
+    /// YAML, the API), so they are validated - not trusted - on every write: colours must
+    /// be `#rrggbb` (normalised to lowercase), the logo must be a base64 image data URL
+    /// of an allowed type within [`MAX_RECAP_LOGO_BYTES`].
+    pub fn sanitized(self) -> Self {
+        fn hex(v: Option<String>) -> Option<String> {
+            let s = v?;
+            let t = s.trim().trim_start_matches('#').to_ascii_lowercase();
+            let t = if t.len() == 3 {
+                t.chars().flat_map(|c| [c, c]).collect()
+            } else {
+                t
+            };
+            (t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("#{t}"))
+        }
+        fn logo(v: Option<String>) -> Option<String> {
+            let s = v?.trim().to_string();
+            let payload = RECAP_LOGO_PREFIXES.iter().find_map(|p| s.strip_prefix(p))?;
+            let clean = !payload.is_empty()
+                && s.len() <= MAX_RECAP_LOGO_BYTES
+                && payload
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='));
+            clean.then_some(s)
+        }
+        Self {
+            theme: RecapTheme {
+                bg: hex(self.theme.bg),
+                ink: hex(self.theme.ink),
+                accent: hex(self.theme.accent),
+            },
+            logo: logo(self.logo),
+            logo_position: self
+                .logo_position
+                .map(|p| p.trim().to_ascii_lowercase())
+                .filter(|p| RECAP_LOGO_POSITIONS.contains(&p.as_str())),
+            logo_opacity: self
+                .logo_opacity
+                .map(|o| o.clamp(*RECAP_LOGO_OPACITY_RANGE.start(), *RECAP_LOGO_OPACITY_RANGE.end())),
+        }
+    }
 }
 
 impl UserConfig {
@@ -636,6 +741,92 @@ mod tests {
         // Inheritor resolves to the global default; overrider to its own.
         assert_eq!(cfg.rules_for(inheritor).required_tags, vec!["team:*"]);
         assert_eq!(cfg.rules_for(overrider).required_tags, vec!["type:*"]);
+    }
+
+    fn recap(bg: &str, logo: &str) -> RecapSettings {
+        RecapSettings {
+            theme: RecapTheme {
+                bg: Some(bg.into()),
+                ..Default::default()
+            },
+            logo: Some(logo.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn recap_logo_position_and_opacity_are_validated() {
+        let s = RecapSettings {
+            logo_position: Some(" Bottom-Left ".into()),
+            logo_opacity: Some(250),
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.logo_position.as_deref(), Some("bottom-left")); // normalised
+        assert_eq!(s.logo_opacity, Some(100)); // clamped
+        let s = RecapSettings {
+            logo_position: Some("middle; position:fixed".into()), // not a corner
+            logo_opacity: Some(0),
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.logo_position, None);
+        assert_eq!(s.logo_opacity, Some(5)); // never fully invisible
+        // Untouched stays unset so the defaults (top-right, 40%) can change later.
+        assert!(RecapSettings::default().sanitized().is_empty());
+    }
+
+    #[test]
+    fn recap_colours_are_normalised_and_garbage_is_dropped() {
+        let s = RecapSettings {
+            theme: RecapTheme {
+                bg: Some(" #ABC ".into()),
+                ink: Some("0F2A43".into()),
+                accent: Some("red; background:url(x)".into()), // CSS injection attempt
+            },
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.theme.bg.as_deref(), Some("#aabbcc"));
+        assert_eq!(s.theme.ink.as_deref(), Some("#0f2a43"));
+        assert_eq!(s.theme.accent, None);
+    }
+
+    #[test]
+    fn recap_logo_must_be_a_base64_image_data_url() {
+        let ok = "data:image/png;base64,iVBORw0KGgo=";
+        assert_eq!(recap("#fff", ok).sanitized().logo.as_deref(), Some(ok));
+        for bad in [
+            "https://evil.example/logo.png",
+            "javascript:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "data:image/png;base64,",                      // empty payload
+            "data:image/png;base64,AAAA\"onerror=\"x",     // breaks out of an attribute
+            "data:image/png,rawbytes",                     // not base64
+        ] {
+            assert_eq!(recap("#fff", bad).sanitized().logo, None, "{bad}");
+        }
+        let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_RECAP_LOGO_BYTES));
+        assert_eq!(recap("#fff", &huge).sanitized().logo, None);
+    }
+
+    #[test]
+    fn recap_settings_round_trip_and_stay_out_of_empty_configs() {
+        let cfg = UserConfig {
+            recap: recap("#0f2a1d", "data:image/png;base64,iVBORw0KGgo="),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["recap"]["theme"]["bg"], "#0f2a1d");
+        // Unset colours are omitted rather than serialised as nulls.
+        assert!(json["recap"]["theme"].get("ink").is_none());
+        let back: UserConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back.recap, cfg.recap);
+        // A tenant that never touched the deck look carries no `recap` key at all, and an
+        // older stored config without one still loads.
+        assert!(serde_json::to_value(UserConfig::default()).unwrap().get("recap").is_none());
+        let legacy: UserConfig = serde_json::from_value(serde_json::json!({ "poll_all_teams": true })).unwrap();
+        assert!(legacy.recap.is_empty());
     }
 
     #[test]

@@ -98,6 +98,8 @@ pub fn run() {
             commands::work_item_fields,
             commands::update_work_item_fields,
             commands::draft_work_item_field,
+            commands::recap_summaries,
+            commands::update_recap_settings,
             commands::refine_work_item_fields,
             commands::parse_refine_reply,
             // Durable AI state (drafts + activity log)

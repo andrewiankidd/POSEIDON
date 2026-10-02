@@ -22,7 +22,7 @@ use poseidon_providers::{CatalogSource, Credential, CsvCatalog, FieldMap};
 use poseidon_store::Store;
 use tracing::{info, warn};
 
-use crate::checks::{AzureDevOpsAccessCheck, TeamCheckReconciler, UpdateCheck};
+use crate::checks::{AiBackendCheck, AzureDevOpsAccessCheck, TeamCheckReconciler, UpdateCheck};
 use crate::config_store::ConfigStore;
 
 /// How far back pipeline health looks when folding run history into a status.
@@ -70,6 +70,37 @@ pub struct PollOutcome {
 pub enum DraftOutcome {
     Value(String),
     Prompt { system: String, user: String },
+}
+
+/// One closed work item the Recap deck wants summarised.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecapItemInput {
+    pub id: i64,
+    pub title: String,
+    #[serde(default)]
+    pub work_item_type: String,
+    /// Title of the item's parent, when it has one - lets the model group related work.
+    #[serde(default)]
+    pub parent_title: Option<String>,
+}
+
+/// One Recap slide's worth of closed work (a `area:*` bucket).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecapAreaInput {
+    pub area: String,
+    pub items: Vec<RecapItemInput>,
+}
+
+/// What [`Service::recap_summaries`] produced: the blurbs, plus enough to tell the UI WHY
+/// an area has none (no model configured vs. the model erroring) instead of guessing.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RecapSummaries {
+    /// area -> blurb. An area is absent when its summary failed or was unsupported.
+    pub summaries: std::collections::HashMap<String, String>,
+    /// False when the owner has no usable AI backend at all.
+    pub ai_available: bool,
+    /// Distinct failure messages across areas (deduplicated, in first-seen order).
+    pub errors: Vec<String>,
 }
 
 /// The result of a whole-item consistency sweep. Like [`DraftOutcome`] but the value
@@ -363,6 +394,22 @@ impl Service {
         let cfg = self.stored_llm_config().await;
         let caps = poseidon_ai::PlatformCaps::server();
         let active = cfg.active_id(&caps).map(|s| s.to_string());
+        // Is the active Claude Code actually answering? Cached verdict only (the view must
+        // stay instant); when unknown, a probe starts in the background and the next view
+        // - or the UI's follow-up fetch - carries the answer.
+        let active_is_claude = cfg
+            .integrations
+            .iter()
+            .any(|i| active.as_deref() == Some(i.id.as_str()) && i.kind == "claude-code");
+        let claude_health = if active_is_claude {
+            let cached = poseidon_ai::claude_code_health_cached();
+            if cached.is_none() {
+                poseidon_ai::refresh_claude_code_health_in_background();
+            }
+            cached
+        } else {
+            None
+        };
         let integrations: Vec<serde_json::Value> = cfg
             .integrations
             .iter()
@@ -388,6 +435,17 @@ impl Service {
                         "active".to_string(),
                         serde_json::json!(active.as_deref() == Some(i.id.as_str())),
                     );
+                    if active.as_deref() == Some(i.id.as_str()) && i.kind == "claude-code" {
+                        if let Some(h) = &claude_health {
+                            obj.insert(
+                                "health".to_string(),
+                                match h {
+                                    Ok(detail) => serde_json::json!({ "ok": true, "detail": detail }),
+                                    Err(detail) => serde_json::json!({ "ok": false, "detail": detail }),
+                                },
+                            );
+                        }
+                    }
                 }
                 v
             })
@@ -643,7 +701,17 @@ impl Service {
             "team": uc.teams,
             "rules": uc.rules,
             "poll_all_teams": uc.poll_all_teams,
+            "recap": uc.recap,
         }))
+    }
+
+    /// Save the Recap deck look (theme colours + branding logo) for this owner. Validated
+    /// server-side; returns the settings as stored.
+    pub async fn update_recap_settings(
+        &self,
+        recap: poseidon_core::RecapSettings,
+    ) -> anyhow::Result<poseidon_core::RecapSettings> {
+        self.config.set_recap(&self.owner, recap).await
     }
 
     /// Export this owner's full configuration as a YAML document (see
@@ -696,6 +764,11 @@ impl Service {
             s
         } else {
             let mut current = self.config.user_config(&self.owner).await?;
+            // Merge never overwrites what's there: adopt the bundle's deck look only if
+            // this owner hasn't set one.
+            if current.recap.is_empty() {
+                current.recap = bundle.config.recap.clone().sanitized();
+            }
             let mut teams = 0;
             for t in bundle.config.teams {
                 if !current
@@ -1148,6 +1221,19 @@ impl Service {
             )),
             Arc::new(UpdateCheck::new()),
         ];
+
+        // The active AI backend gets a health check so a dead top integration shows up
+        // here instead of the light staying green. No active backend = AI isn't in use.
+        let llm = self.stored_llm_config().await;
+        if let Some(active) = llm
+            .active_id(&poseidon_ai::PlatformCaps::server())
+            .and_then(|id| llm.integrations.iter().find(|i| i.id == id))
+        {
+            checks.push(Arc::new(AiBackendCheck::new(
+                active.name.clone(),
+                active.kind.clone(),
+            )));
+        }
 
         for key in &registered {
             if let Some(team_name) = key.strip_prefix("ado-access:") {
@@ -2438,6 +2524,88 @@ impl Service {
         })
     }
 
+    /// AI-written "what we shipped" blurbs for the Recap deck, one per area slide, via
+    /// whatever tagger the owner has configured (the same path as field drafting). Returns
+    /// An area is simply ABSENT from the map when the model failed or this backend can't
+    /// write prose (embedded / keyword / no AI), so the caller keeps its deterministic
+    /// placeholder - a flaky model must never break the deck - and `errors` says why.
+    /// Areas run concurrently.
+    pub async fn recap_summaries(
+        &self,
+        team: Option<&str>,
+        period: &str,
+        areas: Vec<RecapAreaInput>,
+    ) -> anyhow::Result<RecapSummaries> {
+        let Some(ai) = self.ai_tagger().await else {
+            return Ok(RecapSummaries::default());
+        };
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        let background = match team {
+            Some(t) => rules_for_team(&cfg, t),
+            None => &cfg.rules,
+        }
+        .team_background
+        .clone()
+        .unwrap_or_default();
+
+        let mut jobs = Vec::new();
+        for area in areas.into_iter().filter(|a| !a.items.is_empty()) {
+            let ctx = poseidon_ai::RecapSummaryContext {
+                area: area.area.clone(),
+                period: period.to_string(),
+                background: background.clone(),
+                items: area
+                    .items
+                    .into_iter()
+                    .map(|i| poseidon_ai::RecapSummaryItem {
+                        id: i.id,
+                        title: i.title,
+                        work_item_type: i.work_item_type,
+                        parent_title: i.parent_title,
+                    })
+                    .collect(),
+            };
+            let ai = ai.clone();
+            let name = area.area;
+            jobs.push(tokio::spawn(async move {
+                (name, ai.summarize_recap(&ctx).await)
+            }));
+        }
+        let mut out = RecapSummaries {
+            ai_available: true,
+            ..Default::default()
+        };
+        let note = |out: &mut RecapSummaries, msg: String| {
+            if !out.errors.contains(&msg) {
+                out.errors.push(msg);
+            }
+        };
+        for job in jobs {
+            match job.await {
+                Ok((name, Ok(text))) if !text.trim().is_empty() => {
+                    out.summaries.insert(name, text);
+                }
+                Ok((name, Ok(_))) => {
+                    note(&mut out, "the model returned an empty summary".into());
+                    tracing::warn!(area = %name, "recap summary was empty");
+                }
+                Ok((name, Err(e))) => {
+                    tracing::warn!(area = %name, error = %e, "recap summary failed");
+                    note(&mut out, e.to_string());
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "recap summary task panicked");
+                    note(&mut out, "the summary task crashed".into());
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Assemble the whole-item consistency context from the item's editable fields with
     /// the editor's UNSAVED working values overlaid - the draftable (rich-text) fields
     /// only, since those are what "Improve all" proposes. Shared by the run + parse paths
@@ -3483,6 +3651,49 @@ mod tests {
             .await
             .unwrap()
             .contains("Injected"));
+    }
+
+    // The tenant's deck look (theme + logo) is part of the config bundle: a YAML import
+    // restores it, an export carries it, and anything unsafe in an untrusted import is
+    // dropped rather than stored.
+    #[tokio::test]
+    async fn recap_theme_and_logo_round_trip_through_import_export_and_are_validated() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let svc = Service::new(PoseidonConfig::default(), store, std::env::temp_dir()).with_owner("a@x.com");
+        let logo = "data:image/png;base64,iVBORw0KGgo=";
+        let yaml = format!(
+            "poseidon:\n  schema: 1\nrecap:\n  theme:\n    bg: \"#0F2A1D\"\n    accent: \"red; x:url(y)\"\n  logo: \"{logo}\"\n  logo_position: bottom-left\n  logo_opacity: 25\n"
+        );
+        svc.import_config(&yaml, true).await.unwrap();
+        let live = svc.config().await.unwrap();
+        assert_eq!(live["recap"]["theme"]["bg"], "#0f2a1d"); // normalised
+        assert!(live["recap"]["theme"].get("accent").is_none()); // injection dropped
+        assert_eq!(live["recap"]["logo"], logo);
+        assert_eq!(live["recap"]["logo_position"], "bottom-left");
+        assert_eq!(live["recap"]["logo_opacity"], 25);
+
+        // Exported YAML carries it, so the next import of the same file keeps it.
+        let exported = svc.export_config().await.unwrap();
+        assert!(exported.contains("recap:") && exported.contains("#0f2a1d"), "{exported}");
+
+        // A tenant that never set a deck look exports no `recap:` section.
+        let blank = svc.with_owner("b@x.com");
+        assert!(!blank.export_config().await.unwrap().contains("recap:"));
+
+        // Saving through the API validates too and reports what was stored.
+        let stored = blank
+            .update_recap_settings(poseidon_core::RecapSettings {
+                theme: poseidon_core::RecapTheme { ink: Some("#FFF".into()), ..Default::default() },
+                logo: Some("https://evil.example/x.png".into()),
+                logo_position: Some("nowhere".into()),
+                logo_opacity: Some(0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(stored.theme.ink.as_deref(), Some("#ffffff"));
+        assert_eq!(stored.logo, None);
+        assert_eq!(stored.logo_position, None);
+        assert_eq!(stored.logo_opacity, Some(5));
     }
 
     #[test]

@@ -903,12 +903,18 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   inset: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* `safe` keeps the top of a tall slide reachable: plain `center` overflows equally
+     above and below, and the part above the scroll origin can never be scrolled to. */
+  justify-content: safe center;
   padding: clamp(2rem, 6vw, 5rem);
   transition: transform 380ms var(--recap-ease), opacity 380ms var(--recap-ease);
   will-change: transform, opacity;
   overflow-y: auto;
 }
+
+/* Never shrink a slide's blocks: in a column flexbox they would otherwise compress when a
+   slide is taller than the deck, and their text would overflow onto the block below. */
+.recap-slide > * { flex-shrink: 0; }
 
 .recap-slide.pos-current { transform: translateX(0); opacity: 1; pointer-events: auto; }
 .recap-slide.pos-right { transform: translateX(100%); opacity: 0; pointer-events: none; }
@@ -1008,7 +1014,6 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   font-size: clamp(0.875rem, 1.4vw, 1.1rem);
   color: var(--ink-soft);
   line-height: 1.75;
-  max-width: 65ch;
   margin-bottom: 2rem;
 }
 .recap-highlights { display: flex; flex-direction: column; gap: 0.65rem; }
@@ -1411,3 +1416,71 @@ body.ai-bar-visible .content { padding-bottom: 108px; }
 .bulk-clear:hover { text-decoration: underline; }
 /* Single-line inputs/selects in the selection bar share the same band height. */
 .bulk-bar select, .bulk-bar input { height: 30px; box-sizing: border-box; }
+
+/* Recap theme popover - the deck-colour pickers next to the Recap toolbar buttons. */
+.recap-theme-wrap { position: relative; }
+.recap-theme-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: 300px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px 14px;
+}
+.recap-theme-pop h3 { margin: 0 0 4px; font-size: 13px; }
+.recap-theme-pop p { margin: 0 0 10px; font-size: 12px; color: var(--ink-soft); }
+.recap-theme-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.recap-theme-row > span { flex: 1; font-size: 13px; }
+.recap-theme-row input[type="color"] {
+  width: 38px; height: 28px; padding: 0; border: 1px solid var(--border);
+  border-radius: 6px; background: none; cursor: pointer;
+}
+.recap-theme-row input[type="text"] { width: 86px; font-family: ui-monospace, Consolas, monospace; }
+.recap-theme-row input.invalid { border-color: var(--err); }
+.recap-theme-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+
+/* Recap editor - the live preview only (the exported deck is never editable). */
+.recap-editable {
+  white-space: pre-wrap; cursor: text; min-height: 1.75em;
+  border-radius: 6px; outline: 1px dashed transparent; outline-offset: 6px;
+}
+.recap-editable:hover { outline-color: var(--border); }
+.recap-editable:focus { outline: 1px solid var(--accent); }
+.recap-hl-remove {
+  margin-left: auto; flex-shrink: 0; width: 22px; height: 22px; line-height: 1; padding: 0;
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  color: var(--ink-soft); opacity: 0.3; cursor: pointer; font-size: 15px;
+}
+.recap-hl-item:hover .recap-hl-remove, .recap-hl-remove:focus-visible {
+  opacity: 1; color: var(--err); border-color: var(--err);
+}
+
+/* The Recap page fills the window (see .view-fill): the deck takes the space under the
+   toolbar and follows the window as it resizes, instead of a fixed height. */
+.recap-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.recap-host > .recap-root { flex: 1 1 auto; height: auto; }
+
+/* Branding logo: faint, in a corner of every slide (it sits over the whole deck area, so
+   it stays put while slides transition), never intercepting clicks. Position + opacity are
+   tenant settings applied as data-pos / inline opacity by setDeckLogo; top-right, 40% default. */
+.recap-logo {
+  position: absolute; top: clamp(0.75rem, 2vw, 1.5rem); right: clamp(1rem, 2.5vw, 2rem);
+  width: clamp(40px, 5vw, 84px); height: auto; max-height: 84px; object-fit: contain;
+  opacity: 0.4; border-radius: 8px; pointer-events: none; user-select: none; z-index: 3;
+}
+.recap-logo[data-pos="top-left"] { right: auto; left: clamp(1rem, 2.5vw, 2rem); }
+.recap-logo[data-pos="bottom-right"] { top: auto; bottom: clamp(0.75rem, 2vw, 1.5rem); }
+.recap-logo[data-pos="bottom-left"] {
+  top: auto; right: auto; bottom: clamp(0.75rem, 2vw, 1.5rem); left: clamp(1rem, 2.5vw, 2rem);
+}
+
+/* Branding popover (shares .recap-theme-wrap / .recap-theme-pop with the Theme popover). */
+.recap-brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.recap-brand-preview {
+  width: 56px; height: 56px; object-fit: contain; flex-shrink: 0;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.recap-brand-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+
+.recap-brand-slider { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.recap-brand-slider > span:first-child { flex: 0 0 64px; font-size: 13px; }
+.recap-brand-slider input[type="range"] { flex: 1; }
+.recap-brand-slider .recap-brand-val { flex: 0 0 38px; text-align: right; font-size: 12px; color: var(--ink-soft); }
+.recap-brand-slider select { flex: 1; }

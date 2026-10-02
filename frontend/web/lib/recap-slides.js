@@ -55,12 +55,17 @@ function renderSection(s) {
   `;
 }
 
-function renderFeature(s) {
+// `editable` (the live preview only - never the exported file) adds a remove button to
+// every grouped row and makes the summary click-to-edit; renderDeck wires the events.
+function renderFeature(s, editable = false) {
   let highlightHtml = '';
   if (s.groups && s.groups.length) {
-    highlightHtml = '<div class="recap-highlights">' + s.groups.map((g) => {
+    highlightHtml = '<div class="recap-highlights">' + s.groups.map((g, gi) => {
       const rows = (g.items || [])
-        .map((h) => `<div class="recap-hl-item"><em class="recap-hl-arrow">-&gt;</em><span>${esc(h)}</span></div>`)
+        .map((h, ii) => `<div class="recap-hl-item"><em class="recap-hl-arrow">-&gt;</em><span>${esc(h)}</span>${
+          editable
+            ? `<button type="button" class="recap-hl-remove" data-remove data-g="${gi}" data-i="${ii}" title="Remove this item from the deck" aria-label="Remove item">×</button>`
+            : ''}</div>`)
         .join('');
       return (g.heading ? `<div class="recap-hl-group-heading">${esc(g.heading)}</div>` : '') + rows;
     }).join('') + '</div>';
@@ -77,7 +82,9 @@ function renderFeature(s) {
     ${tags ? `<div class="recap-tags">${tags}</div>` : ''}
     ${s.label ? `<p class="recap-label">${esc(s.label)}</p>` : ''}
     <h2>${esc(s.title || '')}</h2>
-    ${s.description ? `<p class="recap-desc">${esc(s.description)}</p>` : ''}
+    ${editable
+      ? `<p class="recap-desc recap-editable" contenteditable="plaintext-only" spellcheck="true" data-edit="description" title="Click to edit this summary">${esc(s.description || '')}</p>`
+      : s.description ? `<p class="recap-desc">${esc(s.description)}</p>` : ''}
     ${highlightHtml}
   `;
   if (s.image) {
@@ -233,11 +240,11 @@ function renderSummary(s) {
 }
 
 /** Render a single slide object to an HTML string. */
-function renderSlide(s) {
+function renderSlide(s, editable = false) {
   switch (s.type) {
     case 'title':     return renderTitle(s);
     case 'section':   return renderSection(s);
-    case 'feature':   return renderFeature(s);
+    case 'feature':   return renderFeature(s, editable);
     case 'metrics':   return renderMetrics(s);
     case 'bullets':   return renderBullets(s);
     case 'code':      return renderCode(s);
@@ -245,7 +252,7 @@ function renderSlide(s) {
     case 'image':     return renderImage(s);
     case 'coming-up': return renderComingUp(s);
     case 'summary':   return renderSummary(s);
-    default:          return renderFeature(s);
+    default:          return renderFeature(s, editable);
   }
 }
 
@@ -260,11 +267,23 @@ function renderSlide(s) {
  * Calling it again on the same `mountEl` tears down the previous instance's
  * keydown listener first, so re-rendering never leaks handlers.
  *
+ * `opts.startIndex` opens on that slide instead of the first, so a caller can re-render
+ * a patched deck (e.g. once AI summaries land) without bouncing the viewer back to
+ * slide 1; `mountEl._recapIndex()` reports the current slide for that purpose.
+ *
+ * `opts.editable` turns the preview into a WYSIWYG editor: each grouped item gets a
+ * remove button and the summary becomes click-to-edit. Edits mutate `deck` itself (so
+ * the exported file carries them) and are reported through `opts.onEdit(slide, kind)`
+ * with kind `'remove'` or `'description'`. The exported standalone deck never passes it.
+ * `opts.scrollTop` restores the current slide's scroll position after a re-render.
+ *
  * @param {{ title: string, slides: Array<object> }} deck
  * @param {HTMLElement} mountEl
+ * @param {{ startIndex?: number, editable?: boolean, onEdit?: (slide: object, kind: string) => void, scrollTop?: number }} [opts]
  */
-export function renderDeck(deck, mountEl) {
+export function renderDeck(deck, mountEl, opts = {}) {
   if (!mountEl) throw new Error('renderDeck: mountEl is required');
+  const editable = !!opts.editable;
 
   // Clean up a previous render on this mount (removes its keydown listener).
   if (typeof mountEl._recapCleanup === 'function') mountEl._recapCleanup();
@@ -297,20 +316,26 @@ export function renderDeck(deck, mountEl) {
 
   // Render every slide into the DOM up front; position them off-screen and let
   // CSS transitions reveal the current one (OCTOGON's approach).
+  const start = Math.max(0, Math.min(total - 1, opts.startIndex || 0));
   slides.forEach((slide, i) => {
     const elDiv = document.createElement('div');
-    elDiv.className = `recap-slide recap-slide-${slide.type || 'feature'} recap-no-transition ${i === 0 ? 'pos-current' : 'pos-right'}`;
+    const pos = i === start ? 'pos-current' : i < start ? 'pos-left' : 'pos-right';
+    elDiv.className = `recap-slide recap-slide-${slide.type || 'feature'} recap-no-transition ${pos}`;
     elDiv.dataset.index = String(i);
-    elDiv.innerHTML = renderSlide(slide);
+    elDiv.innerHTML = renderSlide(slide, editable);
     deckEl.appendChild(elDiv);
   });
+  const shown = deckEl.querySelector('.pos-current');
+  if (shown && opts.scrollTop) shown.scrollTop = opts.scrollTop;
+  setDeckLogo(mountEl, deck && deck.logo, { position: deck && deck.logoPosition, opacity: deck && deck.logoOpacity });
 
   // Force a reflow so transitions kick in after the initial placement.
   requestAnimationFrame(() => {
     deckEl.querySelectorAll('.recap-slide').forEach((el) => el.classList.remove('recap-no-transition'));
   });
 
-  let current = 0;
+  let current = start;
+  mountEl._recapIndex = () => current;
 
   function go(n) {
     const prev = current;
@@ -336,9 +361,48 @@ export function renderDeck(deck, mountEl) {
 
   prevBtn.addEventListener('click', (e) => { e.stopPropagation(); go(current - 1); });
   nextBtn.addEventListener('click', (e) => { e.stopPropagation(); go(current + 1); });
-  deckEl.addEventListener('click', () => go(current + 1));
+  deckEl.addEventListener('click', (e) => {
+    if (editable) {
+      const remove = e.target.closest('[data-remove]');
+      if (remove) { e.stopPropagation(); removeItem(remove); return; }
+      if (e.target.closest('[data-edit]')) return; // editing the summary, not paging
+    }
+    go(current + 1);
+  });
+
+  // Drop one listed item (and its group if that empties it), then re-render in place
+  // at the same slide + scroll offset so removing a run of rows doesn't jump around.
+  function removeItem(btn) {
+    const slideEl = btn.closest('.recap-slide');
+    const slide = slides[Number(slideEl.dataset.index)];
+    const gi = Number(btn.dataset.g);
+    const group = slide && slide.groups && slide.groups[gi];
+    if (!group) return;
+    group.items.splice(Number(btn.dataset.i), 1);
+    if (!group.items.length) slide.groups.splice(gi, 1);
+    if (opts.onEdit) opts.onEdit(slide, 'remove');
+    renderDeck(deck, mountEl, { ...opts, startIndex: current, scrollTop: slideEl.scrollTop });
+  }
+
+  // Commit the summary when the user leaves the field (plain text only).
+  deckEl.addEventListener('focusout', (e) => {
+    const field = editable && e.target.closest && e.target.closest('[data-edit="description"]');
+    if (!field) return;
+    const slide = slides[Number(field.closest('.recap-slide').dataset.index)];
+    const text = field.innerText.replace(/ /g, ' ').trim();
+    if (slide && text !== (slide.description || '')) {
+      slide.description = text;
+      if (opts.onEdit) opts.onEdit(slide, 'description');
+    }
+  });
 
   function onKeydown(e) {
+    // Typing in the summary must not page the deck (Space/arrows are text editing keys).
+    const typing = e.target && e.target.closest && e.target.closest('[contenteditable], input, textarea, select');
+    if (typing) {
+      if (e.key === 'Escape' && typing.blur) typing.blur();
+      return;
+    }
     switch (e.key) {
       case 'ArrowRight': case 'ArrowDown': case ' ': case 'PageDown':
         e.preventDefault(); go(current + 1); break;
@@ -355,7 +419,112 @@ export function renderDeck(deck, mountEl) {
   mountEl._recapCleanup = () => {
     document.removeEventListener('keydown', onKeydown);
     mountEl._recapCleanup = null;
+    mountEl._recapIndex = null;
   };
 
   updateHUD();
+}
+
+// ── Branding logo ────────────────────────────────────────────────────────────
+// `deck.logo` is a base64 image data URL drawn faintly bottom-right of every slide. It is
+// only ever a data URL (so the exported file stays self-contained) and is validated here
+// as well as on the server, because a deck can come from an imported config.
+
+const LOGO_RE = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
+
+/** The corners the logo can sit in (value is also the stored tenant setting). */
+export const LOGO_POSITIONS = [
+  { value: 'top-right', label: 'Top right' },
+  { value: 'top-left', label: 'Top left' },
+  { value: 'bottom-right', label: 'Bottom right' },
+  { value: 'bottom-left', label: 'Bottom left' },
+];
+export const DEFAULT_LOGO_POSITION = 'top-right';
+export const DEFAULT_LOGO_OPACITY = 40; // percent
+export const LOGO_OPACITY_RANGE = { min: 5, max: 100 };
+
+/** A valid corner value, else the default. */
+export function normalizeLogoPosition(v) {
+  const p = String(v ?? '').trim().toLowerCase();
+  return LOGO_POSITIONS.some((o) => o.value === p) ? p : DEFAULT_LOGO_POSITION;
+}
+
+/** Opacity percent clamped to the allowed range (default when not a number). */
+export function normalizeLogoOpacity(v) {
+  const n = Math.round(Number(v));
+  if (v == null || v === '' || !Number.isFinite(n)) return DEFAULT_LOGO_OPACITY;
+  return Math.min(LOGO_OPACITY_RANGE.max, Math.max(LOGO_OPACITY_RANGE.min, n));
+}
+
+/** True when `v` is an allowed base64 image data URL. */
+export function isLogoDataUrl(v) {
+  return typeof v === 'string' && LOGO_RE.test(v);
+}
+
+/**
+ * Show (or, with a falsy/invalid `url`, remove) the logo overlay on a rendered deck.
+ * `opts.position` (a corner) and `opts.opacity` (percent) are validated here, so a deck
+ * built from an imported config can't smuggle in anything but those.
+ */
+export function setDeckLogo(mountEl, url, opts = {}) {
+  const deckEl = mountEl && mountEl.querySelector('.recap-deck');
+  if (!deckEl) return;
+  let img = deckEl.querySelector('.recap-logo');
+  if (!isLogoDataUrl(url)) { if (img) img.remove(); return; }
+  if (!img) {
+    img = document.createElement('img');
+    img.className = 'recap-logo';
+    img.alt = '';
+    img.setAttribute('aria-hidden', 'true');
+    deckEl.appendChild(img);
+  }
+  img.dataset.pos = normalizeLogoPosition(opts.position);
+  img.style.opacity = String(normalizeLogoOpacity(opts.opacity) / 100);
+  img.src = url;
+}
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+// The deck is styled entirely from CSS custom properties, so a theme is just a handful
+// of overrides. Three base colours drive everything; the surfaces, borders and muted text
+// are derived from them with color-mix so a user only picks `bg`, `ink` and `accent`.
+// The same function feeds the live view (inline style on the deck host) and the exported
+// HTML (a :root block), so what you see is exactly what you download.
+
+/** The user-pickable base colours, in display order. */
+export const RECAP_THEME_KEYS = [
+  { key: 'bg', label: 'Background', cssVar: '--bg' },
+  { key: 'ink', label: 'Text', cssVar: '--ink' },
+  { key: 'accent', label: 'Accent', cssVar: '--accent' },
+];
+
+/** Normalise `#abc` / `abc` / `#AABBCC` to lowercase `#aabbcc`, or null if not a hex colour. */
+export function normalizeHex(v) {
+  let s = String(v ?? '').trim().replace(/^#/, '').toLowerCase();
+  if (/^[0-9a-f]{3}$/.test(s)) s = s.split('').map((c) => c + c).join('');
+  return /^[0-9a-f]{6}$/.test(s) ? `#${s}` : null;
+}
+
+/** CSS custom-property overrides for a theme `{ bg?, ink?, accent? }`. Unset keys are left
+ *  to the app's own light/dark palette. */
+export function recapThemeVars(theme = {}) {
+  const bg = normalizeHex(theme.bg);
+  const ink = normalizeHex(theme.ink);
+  const accent = normalizeHex(theme.accent);
+  const vars = {};
+  if (bg) vars['--bg'] = bg;
+  if (ink) vars['--ink'] = ink;
+  if (accent) vars['--accent'] = accent;
+  if (bg || ink) {
+    // Surfaces step from the background toward the text colour, whichever way round.
+    vars['--panel'] = 'color-mix(in srgb, var(--bg) 94%, var(--ink))';
+    vars['--panel-2'] = 'color-mix(in srgb, var(--bg) 89%, var(--ink))';
+    vars['--border'] = 'color-mix(in srgb, var(--bg) 84%, var(--ink))';
+    vars['--ink-soft'] = 'color-mix(in srgb, var(--ink) 62%, var(--bg))';
+  }
+  return vars;
+}
+
+/** The same overrides as a `prop:value;...` string, for the exported HTML's stylesheet. */
+export function recapThemeCss(theme) {
+  return Object.entries(recapThemeVars(theme)).map(([k, v]) => `${k}:${v}`).join(';');
 }

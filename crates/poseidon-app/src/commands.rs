@@ -719,6 +719,34 @@ pub async fn draft_work_item_field(
 }
 
 #[tauri::command]
+pub async fn recap_summaries(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    period: String,
+    areas: Vec<poseidon_server::RecapAreaInput>,
+) -> CmdResult {
+    let service = state.service()?;
+    let result = service
+        .recap_summaries(team.as_deref().filter(|t| !t.is_empty()), &period, areas)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_recap_settings(
+    state: State<'_, AppState>,
+    settings: poseidon_core::RecapSettings,
+) -> CmdResult {
+    let service = state.service()?;
+    let stored = service
+        .update_recap_settings(settings)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(stored).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn refine_work_item_fields(
     state: State<'_, AppState>,
     id: i64,

@@ -461,6 +461,22 @@ export const api = {
       invokeCmd: 'draft_work_item_field',
       invokeArgs: { id, team, reference, improve: !!improve, fields: fields || [] },
     }),
+  /** AI-written blurbs for the Recap deck's area slides → { summaries: { area: text } }.
+   *  An area missing from the map means "keep the placeholder" (no online model, or it
+   *  failed). `areas` = [{ area, items: [{ id, title, work_item_type, parent_title }] }]. */
+  recapSummaries: ({ team, period, areas }) =>
+    request('/recap/summaries', {
+      method: 'POST', body: { team: team || null, period, areas },
+      invokeCmd: 'recap_summaries', invokeArgs: { team: team || null, period, areas },
+    }),
+  /** Save the Recap deck look - `{ theme: { bg?, ink?, accent? }, logo }` (logo = base64
+   *  image data URL or null for the built-in one). Stored in the tenant config, so it is
+   *  also part of config export/import. Returns the settings as validated + stored. */
+  setRecapSettings: (settings) =>
+    request('/recap/settings', {
+      method: 'PUT', body: settings,
+      invokeCmd: 'update_recap_settings', invokeArgs: { settings },
+    }),
   /** Mark a work item as a duplicate of another via the provider's native mechanism
    *  (ADO: Duplicate Of link; GitLab: /duplicate; GitHub: label + close). Returns
    *  { item, flags }. A real write-back - explicit + user-initiated. */

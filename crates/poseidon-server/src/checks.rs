@@ -185,6 +185,50 @@ impl Check for UpdateCheck {
     }
 }
 
+/// Health of the ACTIVE AI integration - the topmost enabled backend in Settings → AI.
+/// "Active" only says the backend is configured and compatible; this says whether it
+/// actually answers, so a dead top-of-list integration turns the traffic light amber
+/// instead of reporting Healthy while every AI feature silently fails. Only Claude Code
+/// is probed (the others are plain HTTP/in-process backends with their own errors at use
+/// time). Warning severity: AI is advisory, the rest of the app still works.
+pub struct AiBackendCheck {
+    name: String,
+    kind: String,
+}
+
+impl AiBackendCheck {
+    pub fn new(name: String, kind: String) -> Self {
+        Self { name, kind }
+    }
+}
+
+#[async_trait]
+impl Check for AiBackendCheck {
+    fn id(&self) -> String {
+        "ai-backend".to_string()
+    }
+
+    fn label(&self) -> String {
+        format!("AI backend - {}", self.name)
+    }
+
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+
+    async fn run(&self) -> CheckResult {
+        if self.kind != "claude-code" {
+            return CheckResult::ok(format!("{} is active", self.name));
+        }
+        match poseidon_ai::claude_code_health().await {
+            Ok(exe) => CheckResult::ok(format!("Claude Code is answering ({exe})")),
+            Err(e) => CheckResult::failed(format!(
+                "Claude Code is the active AI backend but is not responding: {e}"
+            )),
+        }
+    }
+}
+
 /// The access-check key for a team (crosspose's parameterised `additional-key`).
 fn access_key(team_name: &str) -> String {
     format!("ado-access:{team_name}")
@@ -413,6 +457,15 @@ mod tests {
         // Rolling channels + dev are NOT semver -> compared by commit instead.
         assert_eq!(parse_version("latest-main"), None);
         assert_eq!(parse_version("local"), None);
+    }
+
+    #[tokio::test]
+    async fn ai_backend_check_only_probes_claude_code_and_is_amber_not_red() {
+        let other = AiBackendCheck::new("Local Ollama".into(), "online".into());
+        assert_eq!(other.label(), "AI backend - Local Ollama");
+        assert_eq!(other.severity(), Severity::Warning);
+        let r = other.run().await;
+        assert!(r.ok, "{}", r.message); // non-Claude backends are never probed here
     }
 
     #[test]

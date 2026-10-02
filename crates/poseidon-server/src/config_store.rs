@@ -76,7 +76,10 @@ impl ConfigStore {
 
     /// Replace an owner's entire config (import / restore, replace semantics).
     /// Write-through: persists and refreshes the cache.
-    pub async fn set_user_config(&self, owner: &str, cfg: UserConfig) -> anyhow::Result<()> {
+    pub async fn set_user_config(&self, owner: &str, mut cfg: UserConfig) -> anyhow::Result<()> {
+        // An imported bundle is untrusted input; its deck theme/logo end up in CSS and an
+        // <img src>, so they are validated on the way in.
+        cfg.recap = cfg.recap.sanitized();
         self.store.put_user_config(owner, &cfg).await?;
         self.cache.write().unwrap().insert(owner.to_string(), cfg);
         Ok(())
@@ -174,6 +177,19 @@ impl ConfigStore {
     /// Replace the owner's default ruleset (`[rules]`).
     pub async fn set_rules(&self, owner: &str, rules: RuleSet) -> anyhow::Result<()> {
         self.update(owner, move |c| c.rules = rules).await
+    }
+
+    /// Replace the owner's Recap deck look (theme + logo), validated. Returns what was
+    /// actually stored so the caller can show the cleaned values.
+    pub async fn set_recap(
+        &self,
+        owner: &str,
+        recap: poseidon_core::RecapSettings,
+    ) -> anyhow::Result<poseidon_core::RecapSettings> {
+        let clean = recap.sanitized();
+        let stored = clean.clone();
+        self.update(owner, move |c| c.recap = clean).await?;
+        Ok(stored)
     }
 
     /// Toggle whether polls fetch all teams or just the active one.

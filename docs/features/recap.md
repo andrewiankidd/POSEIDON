@@ -19,19 +19,47 @@ Open **Recap** from the sidebar (hash route `#recap`), grouped with
   a resolved state (Closed / Done / Resolved / Completed / Removed) whose state
   changed within that window, then **Regenerate** rebuilds the deck.
 - **Grouping** - closed items are bucketed by their `area:` and `source:` tags,
-  and counted **internal vs external** (from the `internal` / `external` tags),
   which is where the taxonomy you maintain on the [Rules](rules.md) screen pays
   off - well-tagged items land in the right slide, untagged ones don't.
 - **The slides** - the deck is built in a fixed order:
   - **Title** - the period label and the closed-item count.
-  - **At a glance** - headline metrics: items closed, areas touched, internal,
-    and external.
+  - **At a glance** - headline metrics: items closed and areas touched.
   - **One feature slide per top area** - the busiest `area:` buckets (up to six),
-    each listing its closed items and a prompt to add the story.
+    each listing its closed items. Every item sits under a heading that names a
+    work-item type: items whose parent is in the data group under it (**Epic: …**,
+    **Feature: …**); every other item groups under its own type (**User Stories**,
+    **Bugs**, **Spikes**, …). The type names come straight from the tracker's data, so
+    a customised Azure DevOps process labels itself - there is no catch-all "Other"
+    bucket. The blurb under the title is written by the
+    AI (see below), falling back to a prompt to add the story yourself.
   - **By source** - a breakdown of closed items per `source:` tag.
   - **Before you present** - a checklist reminding you to replace the
     auto-generated highlights with the real narrative, add screenshots for the
     marquee items, and trim to a tight story.
+- **Edit the preview** - the preview is WYSIWYG. Every closed item is listed (no cap),
+  and you tidy the deck by hand: hover a row and click **×** to drop it (an emptied
+  group's heading goes with it), and click a slide's summary to rewrite it (plain
+  text; **Esc** or clicking away saves). Edits live in the deck itself, so **Download
+  deck** exports exactly what you see, and a late AI summary never overwrites wording
+  you've already changed. **Regenerate** (or changing the window) rebuilds the deck and
+  discards all edits.
+- **AI summaries** - the deck renders straight away with placeholder blurbs, then
+  POSEIDON sends each area's closed work items (titles, types, parent names, plus the
+  team background from Rules) to your configured AI model through the same backend
+  as tag suggestions and field drafting, and swaps in a short upbeat, product-owner
+  style "what we shipped" blurb per area slide. Grounded in the titles only - it is
+  told not to invent metrics or customers. If no online model is configured, or it
+  fails, the placeholders stay and a note says why; the deck never depends on it.
+  **Regenerate** asks the model again.
+- **Theme and Branding** - the **🎨 Theme** button sets the deck's three base colours
+  (background, text, accent; the rest is derived) and **🏷 Branding** swaps the faint
+  corner logo for your own (PNG / JPG / SVG / WebP, shrunk automatically), picks which
+  corner it sits in (default **top right**) and how opaque it is (default **40%**). Both
+  apply live and into the downloaded deck. They are **tenant settings**: saved to your
+  config, and carried in the config export/import YAML under a `recap:` key
+  (`theme: {bg, ink, accent}`, `logo` as a base64 data URL, `logo_position`,
+  `logo_opacity`), so a re-import restores them. Imported values are validated - only
+  `#rrggbb` colours, an image data URL, a real corner and 5-100% are kept.
 - **Download deck** - exports the deck as a **single self-contained HTML file**
   (deck data, slide renderer, and styles inlined). It opens and presents in any
   browser with no POSEIDON and no network - hand it to a stakeholder, drop it in a

@@ -142,6 +142,100 @@ pub trait AiTagger: Send + Sync {
             "AI drafting needs an online model (Settings → AI)".into(),
         ))
     }
+
+    /// Write the short "what we shipped" blurb for ONE Recap area slide from its closed
+    /// work items. Plain prose, not markdown. Default: unsupported - only the online
+    /// chat / Claude Code backends write free-form prose, so the caller keeps its
+    /// deterministic placeholder when this declines.
+    async fn summarize_recap(&self, _ctx: &RecapSummaryContext) -> Result<String, AiError> {
+        Err(AiError::Unsupported(
+            "AI summaries need an online model (Settings → AI)".into(),
+        ))
+    }
+}
+
+/// One closed work item as the Recap summariser sees it.
+#[derive(Debug, Clone)]
+pub struct RecapSummaryItem {
+    pub id: i64,
+    pub title: String,
+    pub work_item_type: String,
+    /// Title of the item's parent (Epic/Feature), when it has one - groups related work.
+    pub parent_title: Option<String>,
+}
+
+/// Everything the model needs to brag about one Recap slide's worth of closed work.
+#[derive(Debug, Clone)]
+pub struct RecapSummaryContext {
+    /// The slide's grouping, e.g. `area:kubernetes`.
+    pub area: String,
+    /// Human window label, e.g. "the last 30 days".
+    pub period: String,
+    pub items: Vec<RecapSummaryItem>,
+    /// The team background / glossary (`RuleSet.team_background`). May be empty.
+    pub background: String,
+}
+
+/// Max items fed to the Recap summariser per slide - titles are short, but an area with
+/// hundreds of closed items shouldn't blow the context window.
+pub const MAX_RECAP_ITEMS: usize = 40;
+
+/// System prompt for Recap blurbs: persuasive product-owner voice, grounded strictly in
+/// the supplied titles so the deck never claims what the backlog doesn't support.
+pub const RECAP_SUMMARY_SYSTEM_PROMPT: &str = "You are a product owner writing the headline \
+for one slide of a stakeholder update. Given the work items a team just completed, write a \
+confident, upbeat 2-3 sentence blurb (at most 60 words) that celebrates what was delivered \
+and why it matters - lead with outcomes and momentum, not ticket numbers. Group related items \
+into a theme rather than listing them. Be persuasive but honest: ground every claim in the \
+provided titles, and NEVER invent metrics, percentages, customer names, dates, or benefits \
+the titles don't imply. Write plain prose only - no markdown, no bullet points, no emojis, no \
+work-item ids, no quotation marks around the answer, and no preamble such as \"Here is\". \
+Output ONLY the blurb.";
+
+/// Build the user prompt for one Recap slide. Pure + testable.
+pub fn build_recap_summary_prompt(ctx: &RecapSummaryContext) -> String {
+    let mut p = String::new();
+    if !ctx.background.trim().is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(ctx.background.trim());
+        p.push_str("\n\n");
+    }
+    p.push_str(&format!(
+        "SLIDE: {}\nPERIOD: {}\nCOMPLETED WORK ({} item{}):\n",
+        ctx.area.trim(),
+        ctx.period.trim(),
+        ctx.items.len(),
+        if ctx.items.len() == 1 { "" } else { "s" },
+    ));
+    for it in ctx.items.iter().take(MAX_RECAP_ITEMS) {
+        let kind = it.work_item_type.trim();
+        let kind = if kind.is_empty() { "Item" } else { kind };
+        match it.parent_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(parent) => p.push_str(&format!(
+                "- [{kind}] {} (part of: {parent})\n",
+                it.title.trim()
+            )),
+            None => p.push_str(&format!("- [{kind}] {}\n", it.title.trim())),
+        }
+    }
+    if ctx.items.len() > MAX_RECAP_ITEMS {
+        p.push_str(&format!(
+            "- …and {} more similar items\n",
+            ctx.items.len() - MAX_RECAP_ITEMS
+        ));
+    }
+    p.push_str("\nWrite the blurb for this slide.");
+    p
+}
+
+/// Tidy a model's Recap blurb into the single plain paragraph the slide shows: drop an
+/// outer code fence and wrapping quotes, collapse whitespace/newlines.
+fn clean_recap_summary(s: &str) -> String {
+    let unfenced = strip_code_fence(s);
+    let flat = unfenced.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.trim_matches(|c| c == '"' || c == '\u{201c}' || c == '\u{201d}')
+        .trim()
+        .to_string()
 }
 
 /// Whether to write a field from scratch or refine what's already there.
@@ -724,6 +818,53 @@ fn env_nonempty(key: &str) -> Option<String> {
 
 /// Resolve the path to the Claude Code CLI, checking PATH first then the
 /// well-known desktop-app install locations on each OS.
+/// The newest `claude.exe` anywhere under `base` (`%APPDATA%\Claude\claude-code`), at ANY
+/// depth. The desktop app has moved the binary between releases (`<version>\claude.exe`,
+/// then `<version>\<hash>\claude.exe`); a fixed-depth lookup silently missed the new
+/// layout and fell through to the Squirrel launcher, which prints nothing under `--print`
+/// and made every Claude Code call fail. So search the whole tree rather than chase the
+/// layout. The version is the first directory under `base`, compared numerically
+/// (2.1.10 > 2.1.9); ties break on path so the choice is deterministic.
+#[cfg(any(target_os = "windows", test))]
+fn latest_bundled_claude(base: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Guards a junction/symlink cycle; real installs are 2-3 levels deep.
+    const MAX_DEPTH: usize = 16;
+    fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                walk(&path, depth + 1, out);
+            } else if kind.is_file() && path.file_name().is_some_and(|n| n == "claude.exe") {
+                out.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(base, 0, &mut found);
+    let version_key = |p: &std::path::PathBuf| -> Vec<u64> {
+        p.strip_prefix(base)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("")
+            .split('.')
+            .map(|s| s.parse().unwrap_or(0))
+            .collect()
+    };
+    found.into_iter().max_by(|a, b| {
+        version_key(a)
+            .cmp(&version_key(b))
+            .then_with(|| a.cmp(b))
+    })
+}
+
 fn find_claude_exe() -> Option<std::path::PathBuf> {
     // On Windows the `claude` shim in PATH is almost always the Squirrel launcher
     // (%LOCALAPPDATA%\AnthropicClaude\claude.exe). It exits 0 for `--version`
@@ -755,18 +896,8 @@ fn find_claude_exe() -> Option<std::path::PathBuf> {
             let base = std::path::Path::new(&appdata)
                 .join("Claude")
                 .join("claude-code");
-            if let Ok(entries) = std::fs::read_dir(&base) {
-                let mut found: Vec<std::path::PathBuf> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .map(|d| d.join("claude.exe"))
-                    .filter(|p| p.exists())
-                    .collect();
-                found.sort_by(|a, b| b.cmp(a)); // descending = latest version first
-                if let Some(best) = found.into_iter().next() {
-                    return Some(best);
-                }
+            if let Some(best) = latest_bundled_claude(&base) {
+                return Some(best);
             }
         }
         // 3. Squirrel launcher — last resort. When the Claude desktop app is running
@@ -807,6 +938,93 @@ fn find_claude_exe() -> Option<std::path::PathBuf> {
 /// app installed alongside POSEIDON.
 pub fn claude_code_available() -> bool {
     find_claude_exe().is_some()
+}
+
+// ── Claude Code health ───────────────────────────────────────────────────────
+// "Available" only means an exe was found. The CLI can be found yet unable to answer (the
+// Squirrel launcher prints nothing under --print; an expired login), which used to hide
+// behind a green "Active" badge. So health comes from REAL outcomes: every call records
+// its result, and a cheap probe fills the gap when nothing has run recently. Failures are
+// cached briefly so a fix is noticed fast; successes longer so the probe stays rare.
+
+type ClaudeHealth = Result<String, String>;
+
+static CLAUDE_HEALTH: std::sync::Mutex<Option<(std::time::Instant, ClaudeHealth)>> =
+    std::sync::Mutex::new(None);
+static CLAUDE_PROBING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const CLAUDE_OK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+const CLAUDE_ERR_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+const CLAUDE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn ai_error_detail(e: &AiError) -> String {
+    match e {
+        AiError::Http(m) | AiError::Unsupported(m) => m.clone(),
+    }
+}
+
+/// Store the verdict of one Claude Code call (Ok = the CLI path that answered).
+fn record_claude_health(result: &Result<String, AiError>) -> ClaudeHealth {
+    let verdict = match result {
+        Ok(_) => Ok(find_claude_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "claude".into())),
+        Err(e) => Err(ai_error_detail(e)),
+    };
+    if let Ok(mut slot) = CLAUDE_HEALTH.lock() {
+        *slot = Some((std::time::Instant::now(), verdict.clone()));
+    }
+    verdict
+}
+
+/// The last known Claude Code verdict if still fresh; `None` = unknown, probe needed.
+pub fn claude_code_health_cached() -> Option<ClaudeHealth> {
+    let slot = CLAUDE_HEALTH.lock().ok()?;
+    let (at, verdict) = slot.as_ref()?;
+    let ttl = if verdict.is_ok() { CLAUDE_OK_TTL } else { CLAUDE_ERR_TTL };
+    (at.elapsed() < ttl).then(|| verdict.clone())
+}
+
+/// Is Claude Code actually answering? Uses the cached verdict when fresh, otherwise asks
+/// it a one-word question. Never opens the browser login flow and is time-boxed, so it
+/// is safe to call from the periodic Doctor tick.
+pub async fn claude_code_health() -> ClaudeHealth {
+    if let Some(v) = claude_code_health_cached() {
+        return v;
+    }
+    let prompt = ClaudeCodeTagger::make_prompt(
+        "Answer in one word.",
+        "Reply with the single word OK.",
+    );
+    let probe = tokio::task::spawn_blocking(move || ClaudeCodeTagger::run_cli(prompt, false));
+    let outcome = match tokio::time::timeout(CLAUDE_PROBE_TIMEOUT, probe).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => Err(AiError::Http(e.to_string())),
+        Err(_) => Err(AiError::Http(format!(
+            "Claude Code did not answer within {}s",
+            CLAUDE_PROBE_TIMEOUT.as_secs()
+        ))),
+    }
+    .and_then(|text| {
+        if text.trim().is_empty() {
+            Err(AiError::Http("Claude Code returned an empty reply".into()))
+        } else {
+            Ok(text)
+        }
+    });
+    record_claude_health(&outcome)
+}
+
+/// Kick off a probe without waiting (one at a time) when the verdict is unknown/stale -
+/// lets the Settings view stay instant while the answer lands for its next refresh.
+pub fn refresh_claude_code_health_in_background() {
+    use std::sync::atomic::Ordering;
+    if claude_code_health_cached().is_some() || CLAUDE_PROBING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async {
+        let _ = claude_code_health().await;
+        CLAUDE_PROBING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// What the current runtime can actually do. The server fills this for its own
@@ -1500,6 +1718,36 @@ impl AiTagger for ChatTagger {
         Ok(strip_code_fence(&content))
     }
 
+    async fn summarize_recap(&self, ctx: &RecapSummaryContext) -> Result<String, AiError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            // Persuasive prose wants some variety, but it must stay grounded in the titles.
+            "temperature": 0.5,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": RECAP_SUMMARY_SYSTEM_PROMPT },
+                { "role": "user", "content": build_recap_summary_prompt(ctx) },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        Ok(clean_recap_summary(
+            v["choices"][0]["message"]["content"].as_str().unwrap_or(""),
+        ))
+    }
+
     async fn audit_item(
         &self,
         input: &AuditInput,
@@ -1572,7 +1820,18 @@ impl AiTagger for ChatTagger {
 struct ClaudeCodeTagger;
 
 impl ClaudeCodeTagger {
+    /// Run one prompt through the CLI and record the outcome for the health indicator,
+    /// so Doctor / Settings reflect what real calls actually experienced.
     fn call(prompt: String) -> Result<String, AiError> {
+        let result = Self::run_cli(prompt, true);
+        let _ = record_claude_health(&result);
+        result
+    }
+
+    /// `allow_login` = whether a "not signed in" reply may open the browser OAuth flow.
+    /// Real work does (first-run setup is transparent); the background health probe must
+    /// NOT, or a signed-out Claude would pop a login window on every Doctor tick.
+    fn run_cli(prompt: String, allow_login: bool) -> Result<String, AiError> {
         use std::process::{Command, Stdio};
         let exe = find_claude_exe()
             .ok_or_else(|| AiError::Http("claude CLI not found — install the Claude Code desktop app".into()))?;
@@ -1604,6 +1863,11 @@ impl ClaudeCodeTagger {
                 || stdout_str.contains("Please run /login");
 
             if not_authed {
+                if !allow_login {
+                    return Err(AiError::Http(
+                        "Claude Code is not signed in - open the Claude desktop app and sign in".into(),
+                    ));
+                }
                 if attempt == 0 {
                     tracing::info!("claude-code not authenticated — opening browser login flow");
                     // Inherit stdio so the OAuth URL/instructions are visible to the
@@ -1697,6 +1961,14 @@ impl AiTagger for ClaudeCodeTagger {
         Ok(strip_code_fence(&content))
     }
 
+    async fn summarize_recap(&self, ctx: &RecapSummaryContext) -> Result<String, AiError> {
+        let prompt = Self::make_prompt(RECAP_SUMMARY_SYSTEM_PROMPT, &build_recap_summary_prompt(ctx));
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        Ok(clean_recap_summary(&content))
+    }
+
     async fn audit_item(
         &self,
         input: &AuditInput,
@@ -1780,6 +2052,78 @@ mod tests {
         assert!(p.contains("Description: A user can request access")); // sibling field
         assert!(!p.contains("System Info")); // blank sibling skipped
         assert!(p.contains("Draft the \"Acceptance Criteria\""));
+    }
+
+    #[test]
+    fn bundled_claude_lookup_handles_both_layouts_and_numeric_versions() {
+        let root = std::env::temp_dir().join(format!("poseidon-claude-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let touch = |rel: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"").unwrap();
+            p
+        };
+        // Old layout, a newer-by-string but older-by-number version, and the hashed layout.
+        touch("2.1.9/claude.exe");
+        let newest = touch("2.1.10/abc123/claude.exe");
+        touch("2.1.286/empty-dir-no-exe/readme.txt");
+        assert_eq!(latest_bundled_claude(&root), Some(newest));
+        // Any depth: a future layout change must not hide the binary again.
+        let deepest = touch("2.1.11/a/b/c/d/claude.exe");
+        assert_eq!(latest_bundled_claude(&root), Some(deepest));
+        // The pre-hash layout alone still resolves.
+        let only_old = root.join("only-old");
+        std::fs::create_dir_all(only_old.join("1.0.0")).unwrap();
+        std::fs::write(only_old.join("1.0.0/claude.exe"), b"").unwrap();
+        assert_eq!(latest_bundled_claude(&only_old), Some(only_old.join("1.0.0/claude.exe")));
+        assert_eq!(latest_bundled_claude(&root.join("missing")), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn recap_ctx(n: usize) -> RecapSummaryContext {
+        RecapSummaryContext {
+            area: "area:kubernetes".into(),
+            period: "the last 30 days".into(),
+            items: (0..n)
+                .map(|i| RecapSummaryItem {
+                    id: i as i64,
+                    title: format!("Item {i}"),
+                    work_item_type: if i == 0 { "Feature".into() } else { String::new() },
+                    parent_title: (i == 1).then(|| "QA DR proof-of-concept".to_string()),
+                })
+                .collect(),
+            background: "WS = the Widget Service team.".into(),
+        }
+    }
+
+    #[test]
+    fn recap_prompt_lists_items_with_type_and_parent_but_no_ids() {
+        let p = build_recap_summary_prompt(&recap_ctx(3));
+        assert!(p.contains("TEAM BACKGROUND"));
+        assert!(p.contains("SLIDE: area:kubernetes"));
+        assert!(p.contains("PERIOD: the last 30 days"));
+        assert!(p.contains("(3 items)"));
+        assert!(p.contains("- [Feature] Item 0"));
+        assert!(p.contains("- [Item] Item 2")); // blank type falls back
+        assert!(p.contains("(part of: QA DR proof-of-concept)"));
+        assert!(!p.contains('#'), "work-item ids must not reach the model");
+    }
+
+    #[test]
+    fn recap_prompt_caps_items_and_says_how_many_were_dropped() {
+        let p = build_recap_summary_prompt(&recap_ctx(MAX_RECAP_ITEMS + 5));
+        assert!(p.contains(&format!("Item {}", MAX_RECAP_ITEMS - 1)));
+        assert!(!p.contains(&format!("Item {}\n", MAX_RECAP_ITEMS)));
+        assert!(p.contains("…and 5 more similar items"));
+    }
+
+    #[test]
+    fn recap_summary_is_flattened_to_one_unquoted_paragraph() {
+        assert_eq!(
+            clean_recap_summary("```\n\"We shipped it.\n\nAnd more.\"\n```"),
+            "We shipped it. And more."
+        );
     }
 
     #[test]

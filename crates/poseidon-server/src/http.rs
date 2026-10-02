@@ -142,6 +142,8 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/client-error", post(log_client_error))
         .route("/api/poll", post(poll))
         .route("/api/ai/status", get(ai_status))
+        .route("/api/recap/summaries", post(recap_summaries))
+        .route("/api/recap/settings", put(update_recap_settings))
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
         .route("/api/llm-config/autotune", post(llm_config_autotune))
@@ -540,6 +542,39 @@ async fn draft_work_item_field(
         )),
         Err(e) => Err(err500(e)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct RecapSummariesBody {
+    /// The team scope the deck was built for (its background glossary feeds the prompt).
+    #[serde(default)]
+    team: Option<String>,
+    /// Human window label, e.g. "the last 30 days".
+    #[serde(default)]
+    period: String,
+    areas: Vec<crate::service::RecapAreaInput>,
+}
+
+/// AI-written blurbs for the Recap deck's area slides →
+/// `{ summaries: { area: text }, ai_available, errors: [..] }`. An area missing from
+/// `summaries` means "keep the placeholder"; `errors` / `ai_available` say why.
+async fn recap_summaries(svc: Scoped, Json(body): Json<RecapSummariesBody>) -> ApiResult {
+    let team = body.team.as_deref().filter(|t| !t.is_empty());
+    let result = svc
+        .recap_summaries(team, &body.period, body.areas)
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(result).map_err(err500)?))
+}
+
+/// Save the Recap deck look (theme + logo). Validated server-side; the response is the
+/// settings as stored (so the UI can show what survived validation).
+async fn update_recap_settings(
+    svc: Scoped,
+    Json(body): Json<poseidon_core::RecapSettings>,
+) -> ApiResult {
+    let stored = svc.update_recap_settings(body).await.map_err(err500)?;
+    Ok(Json(serde_json::to_value(stored).map_err(err500)?))
 }
 
 #[derive(serde::Deserialize)]

@@ -36,8 +36,8 @@ pub use ai_activity::{AiActivityRecord, AiFieldDraft};
 pub use catalog::{canonical_product_slug, repo_product_map, CatalogEntity};
 pub use config::{
     parse_duration, AzureDevOpsAuth, CatalogConfig, CatalogFieldMap, DoctorConfig, PipelineRules,
-    PoseidonConfig, PrRules, ProviderKind, RuleSet, ServerConfig, StaleRule, TagAlias, TagKeywords,
-    TeamConfig, UserConfig,
+    PoseidonConfig, PrRules, ProviderKind, RecapSettings, RecapTheme, RuleSet, ServerConfig,
+    StaleRule, TagAlias, TagKeywords, TeamConfig, UserConfig, MAX_RECAP_LOGO_BYTES,
 };
 pub use config_bundle::{BundleMeta, ConfigBundle, CONFIG_BUNDLE_SCHEMA};
 pub use editable_field::{EditableField, FieldChange, FieldKind};

@@ -276,7 +276,7 @@ mod tests {
             .suggest(&item, &allowed, &[], &Default::default(), "")
             .await
             .expect("suggest should load the model and run inference");
-        for s in &out {
+        for s in &out.tags {
             assert!(
                 allowed.iter().any(|a| a.eq_ignore_ascii_case(&s.tag)),
                 "suggested tag {:?} is not in the allowed set",

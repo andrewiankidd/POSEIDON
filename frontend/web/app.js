@@ -12,7 +12,11 @@ import { renderMarkdown } from './lib/markdown.js';
 import { dataTable } from './lib/table.js';
 import { webgpuAvailable, runWebGpuTagging, runWebGpuChat, prepareModel, isModelCached, detectBrowserCaps, parseAudit, registerModels } from './lib/webgpu.js';
 import { effectiveActiveId, activeBackend, resolveAiText, preserveMarkdownAssets, stripFieldLabelPrefix } from './lib/ai.js';
-import { renderDeck } from './lib/recap-slides.js';
+import {
+  renderDeck, setDeckLogo, isLogoDataUrl, recapThemeVars, recapThemeCss, normalizeHex, RECAP_THEME_KEYS,
+  LOGO_POSITIONS, DEFAULT_LOGO_POSITION, DEFAULT_LOGO_OPACITY, LOGO_OPACITY_RANGE,
+  normalizeLogoPosition, normalizeLogoOpacity,
+} from './lib/recap-slides.js';
 import { aiQueue } from './lib/aiQueue.js';
 import { mountActivityBar } from './lib/activityBar.js';
 
@@ -851,9 +855,10 @@ async function renderWorkItems() {
 
       aiBtn = el('button', {
         class: 'btn btn-xs', type: 'button', disabled: true,
-        title: webgpuInteg
+        title: 'Select one or more work items to enable tag suggestions',
+        'data-active-title': webgpuInteg
           ? 'Suggest tags for the selected items IN YOUR BROWSER on the GPU (WebGPU, experimental)'
-          : 'Select work items, then suggest canonical tags for them with AI (advisory)',
+          : 'Suggest canonical tags for the selected items with AI (advisory)',
         onclick: () => {
           const rows = table ? table.getSelection() : [];
           if (!rows.length) return; // disabled when empty; guard anyway
@@ -937,9 +942,10 @@ async function renderWorkItems() {
     if ((st && st.enabled) || webgpuInteg) {
       hcBtn = el('button', {
         class: 'btn btn-xs', type: 'button', disabled: true,
-        title: webgpuInteg
+        title: 'Select one or more work items to enable the healthcheck',
+        'data-active-title': webgpuInteg
           ? 'Audit the selected items for data-quality problems IN YOUR BROWSER on the GPU (WebGPU, experimental)'
-          : 'Select work items, then run an AI healthcheck for data-quality problems (advisory)',
+          : 'Run an AI healthcheck for data-quality problems on the selected items (advisory)',
         onclick: () => {
           const rows = table ? table.getSelection() : [];
           if (!rows.length) return;
@@ -1429,8 +1435,16 @@ async function renderWorkItems() {
     // Selection count + clear live ONLY in the bulk bar below (no redundant copy up top).
     bulkBar.hidden = n === 0;
     bulkCount.textContent = n ? `${n} selected` : '';
-    if (aiBtn) aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags';
-    if (hcBtn) hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck';
+    if (aiBtn) {
+      aiBtn.textContent = n ? `✨ Suggest tags (${n})` : '✨ Suggest tags';
+      aiBtn.disabled = n === 0;
+      aiBtn.title = n === 0 ? 'Select one or more work items to enable tag suggestions' : aiBtn.dataset.activeTitle;
+    }
+    if (hcBtn) {
+      hcBtn.textContent = n ? `🩺 Run healthcheck (${n})` : '🩺 Run healthcheck';
+      hcBtn.disabled = n === 0;
+      hcBtn.title = n === 0 ? 'Select one or more work items to enable the healthcheck' : hcBtn.dataset.activeTitle;
+    }
     // Clear tag chips whenever the selection changes — they only make sense for the current set.
     Array.from(bulkChipArea.querySelectorAll('.bulk-tag-chip')).forEach((c) => c.remove());
     if (boardMode()) syncBoardChecks();
@@ -3058,11 +3072,12 @@ function buildSpec(draft) {
 // ── Settings ────────────────────────────────────────────────────────
 // ── Recap (a shareable highlights deck, generated from closed work) ──
 // POSEIDON builds the data-driven SKELETON - what closed, grouped by area:/
-// source:, internal vs external - and renders it as slides. The human finishes
+// source: - and renders it as slides. The human finishes
 // the narrative + screenshots (that context isn't in the backlog). Merged in
 // from the OCTOGON slide tool; the renderer lives in lib/recap-slides.js.
 async function renderRecap() {
-  const wrap = el('div', {});
+  // view-fill: the page fills the window so the deck below grows/shrinks with it.
+  const wrap = el('div', { class: 'view-fill' });
   wrap.appendChild(pageHead('Recap',
     'A shareable highlights deck generated from your closed work. Pick a window, then finish the narrative yourself.'));
 
@@ -3073,36 +3088,324 @@ async function renderRecap() {
   ]);
   const deckHost = el('div', { class: 'recap-host' });
   let lastDeck = null;
+  // The deck's look - three theme colours + a branding logo - is TENANT config: loaded
+  // from the saved settings, written back on every change (debounced), and carried in the
+  // config import/export YAML. Theme colours apply as CSS variables on the deck host
+  // (live) and are written into the exported file; the logo rides inside the deck.
+  let savedLook = null;
+  try { savedLook = (await api.config())?.recap; } catch { /* unavailable: defaults */ }
+  const theme = cleanRecapTheme(savedLook?.theme);
+  // Branding: the logo (null = built-in), which corner, and how opaque. Position/opacity
+  // default to top-right / 40% and are stored as null while untouched, so a default can
+  // change later without rewriting every tenant.
+  const look = {
+    logo: isLogoDataUrl(savedLook?.logo) ? savedLook.logo : null,
+    position: normalizeLogoPosition(savedLook?.logo_position),
+    opacity: normalizeLogoOpacity(savedLook?.logo_opacity),
+  };
+  let saveTimer = null;
+  const saveLook = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      api.setRecapSettings({
+        theme: { ...theme }, logo: look.logo,
+        logo_position: look.position === DEFAULT_LOGO_POSITION ? null : look.position,
+        logo_opacity: look.opacity === DEFAULT_LOGO_OPACITY ? null : look.opacity,
+      }).catch((e) => toast('Could not save the deck look: ' + (e?.message || e), true));
+    }, 500);
+  };
+  applyRecapTheme(deckHost, theme);
+  const themeControl = recapThemeControl(deckHost, theme, saveLook);
+  // The branding popover edits `look` in place and calls this to apply + save it.
+  const brandingControl = recapBrandingControl(look, async () => {
+    const shown = look.logo || await defaultRecapLogo();
+    if (lastDeck) { lastDeck.logo = shown; lastDeck.logoPosition = look.position; lastDeck.logoOpacity = look.opacity; }
+    setDeckLogo(deckHost, shown, { position: look.position, opacity: look.opacity });
+    saveLook();
+  });
   const dlBtn = el('button', {
     class: 'btn', disabled: true,
     title: 'Download this deck as a single self-contained HTML file - opens and presents in any browser, no POSEIDON needed',
-    onclick: () => { if (lastDeck) downloadRecapHtml(lastDeck); },
+    onclick: () => { if (lastDeck) downloadRecapHtml(lastDeck, theme); },
   }, '⬇ Download deck');
 
+  const aiNote = el('span', { class: 'muted' });
+  let buildSeq = 0; // a slow AI reply from an earlier build must not patch a newer deck
+  // The preview is a WYSIWYG editor: remove rows, rewrite summaries. Edits live in the deck
+  // object (so Download exports them) until Regenerate rebuilds it. A summary the user has
+  // worded themselves is remembered so a late AI reply never overwrites it.
+  const editedSlides = new WeakSet();
+  const editor = {
+    editable: true,
+    onEdit: (slide, kind) => { if (kind === 'description') editedSlides.add(slide); },
+  };
+
   async function build() {
-    lastDeck = null; dlBtn.disabled = true;
+    const seq = ++buildSeq;
+    lastDeck = null; dlBtn.disabled = true; aiNote.textContent = '';
     clear(deckHost).appendChild(el('div', { class: 'loading' }, 'Generating deck…'));
     let items = [];
     try { ({ items } = await api.tickets()); }
     catch (e) { clear(deckHost).appendChild(el('div', { class: 'empty' }, 'Could not load work items: ' + (e?.message || e))); return; }
-    const deck = buildRecapDeck(items, parseInt(periodSel.value, 10));
+    const scope = getTeamScope();
+    const days = parseInt(periodSel.value, 10);
+    const deck = buildRecapDeck(items, days);
+    deck.logo = look.logo || await defaultRecapLogo();
+    deck.logoPosition = look.position;
+    deck.logoOpacity = look.opacity;
     clear(deckHost);
     if (!deck.slides.length) {
       deckHost.appendChild(el('div', { class: 'empty' }, 'No closed work items in this window to recap yet.'));
       return;
     }
     lastDeck = deck; dlBtn.disabled = false;
-    renderDeck(deck, deckHost);
+    renderDeck(deck, deckHost, editor);
+
+    // Progressive enhancement: show the deterministic deck now, then swap each area
+    // slide's placeholder for an AI blurb when the model answers. Any failure just
+    // leaves the placeholders - the deck never depends on the model.
+    if (!deck.summaryInputs.length) return;
+    aiNote.textContent = '✨ Writing summaries…';
+    try {
+      const res = await api.recapSummaries({
+        team: scope, period: `the last ${days} days`, areas: deck.summaryInputs,
+      });
+      if (seq !== buildSeq) return;
+      const summaries = res.summaries || {};
+      // Patch the page in place (no re-render, so nothing the user is typing is lost) and
+      // leave any summary they have already reworded alone.
+      let patched = 0;
+      const slideEls = deckHost.querySelectorAll('.recap-slide');
+      deck.slides.forEach((s, i) => {
+        const text = s.area && summaries[s.area];
+        if (!text) return;
+        patched++;
+        if (editedSlides.has(s)) return;
+        s.description = text;
+        const p = slideEls[i] && slideEls[i].querySelector('.recap-desc');
+        if (p) p.textContent = text;
+      });
+      // Say WHY nothing landed rather than blaming the config for every failure.
+      const why = !res.ai_available
+        ? 'no AI model is active - enable one in Settings → AI.'
+        : (res.errors || []).join('; ') || 'the model returned nothing.';
+      aiNote.textContent = patched === deck.summaryInputs.length ? ''
+        : patched ? `AI summaries partly failed: ${why}` : `AI summaries unavailable: ${why}`;
+    } catch (e) {
+      if (seq === buildSeq) aiNote.textContent = 'AI summaries failed: ' + (e?.message || e);
+    }
   }
   periodSel.onchange = build;
   wrap.appendChild(el('div', { class: 'row', style: 'gap:8px;align-items:center;margin-bottom:10px' }, [
     el('span', { class: 'muted' }, 'Window:'), periodSel,
     el('button', { class: 'btn', onclick: build }, '↻ Regenerate'),
-    dlBtn,
+    themeControl, brandingControl, dlBtn, aiNote,
   ]));
+  wrap.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin:-4px 0 10px' },
+    'Click a summary to edit it · × removes an item · Regenerate resets all edits.'));
   wrap.appendChild(deckHost);
   build();
   return wrap;
+}
+
+// "User Story" -> "User Stories", "Bug" -> "Bugs". Work-item type names are whatever the
+// tracker's process defines, so this only pluralises - it never maps to a fixed list.
+function pluralWorkItemType(type) {
+  const t = String(type || '').trim();
+  if (/[^aeiou]y$/i.test(t)) return t.slice(0, -1) + 'ies';
+  if (/(s|x|ch|sh)$/i.test(t)) return t + 'es';
+  return t + 's';
+}
+
+// Theme colours as stored on the tenant: only valid `#rrggbb` values for the known keys.
+function cleanRecapTheme(raw) {
+  const theme = {};
+  for (const { key } of RECAP_THEME_KEYS) { const hex = normalizeHex(raw && raw[key]); if (hex) theme[key] = hex; }
+  return theme;
+}
+
+// Put the theme on the deck host as inline CSS variables (they cascade into the deck),
+// first clearing whatever the previous theme set so a reset really resets.
+function applyRecapTheme(host, theme) {
+  for (const k of host._themeProps || []) host.style.removeProperty(k);
+  const vars = recapThemeVars(theme);
+  for (const [k, v] of Object.entries(vars)) host.style.setProperty(k, v);
+  host._themeProps = Object.keys(vars);
+}
+
+// A toolbar button that opens `pop` beside it; closes on outside click or a second click.
+// `onOpen` runs just before it shows (to refresh the popover's contents).
+function recapPopoverButton(label, title, pop, onOpen) {
+  const wrap = el('div', { class: 'recap-theme-wrap' });
+  const onOutside = (e) => { if (!wrap.isConnected || !wrap.contains(e.target)) close(); };
+  const close = () => { pop.hidden = true; document.removeEventListener('mousedown', onOutside); };
+  const btn = el('button', { class: 'btn', type: 'button', title,
+    onclick: () => {
+      if (!pop.hidden) { close(); return; }
+      if (onOpen) onOpen();
+      pop.hidden = false;
+      document.addEventListener('mousedown', onOutside);
+    } }, label);
+  wrap.append(btn, pop);
+  return wrap;
+}
+
+// "🎨 Theme": a colour picker + hex field for each base colour. Changes apply to the deck
+// immediately and are saved to the tenant (`onChange`); `theme` is mutated in place so the
+// download button always exports the current colours.
+function recapThemeControl(host, theme, onChange) {
+  const rows = new Map(); // key -> { picker, hex, cssVar }
+  const current = (key, cssVar) =>
+    theme[key] || normalizeHex(getComputedStyle(host).getPropertyValue(cssVar)) || '#000000';
+
+  const set = (key, value) => {
+    const hex = normalizeHex(value);
+    if (!hex) return;
+    theme[key] = hex;
+    applyRecapTheme(host, theme);
+    onChange();
+  };
+
+  const rowEls = RECAP_THEME_KEYS.map(({ key, label, cssVar }) => {
+    const picker = el('input', { type: 'color', 'aria-label': `${label} colour` });
+    const hex = el('input', { type: 'text', class: 'inp', maxlength: '7', spellcheck: 'false', 'aria-label': `${label} hex` });
+    picker.addEventListener('input', () => { hex.value = picker.value; hex.classList.remove('invalid'); set(key, picker.value); });
+    hex.addEventListener('input', () => {
+      const ok = normalizeHex(hex.value);
+      hex.classList.toggle('invalid', !ok);
+      if (ok) { picker.value = ok; set(key, ok); }
+    });
+    rows.set(key, { picker, hex, cssVar });
+    return el('div', { class: 'recap-theme-row' }, [el('span', {}, label), picker, hex]);
+  });
+
+  const refresh = () => {
+    for (const [key, { picker, hex, cssVar }] of rows) {
+      const v = current(key, cssVar);
+      picker.value = v; hex.value = v; hex.classList.remove('invalid');
+    }
+  };
+
+  const reset = el('button', { class: 'btn btn-xs', type: 'button', title: 'Drop your colours and follow the app theme again',
+    onclick: () => {
+      for (const k of Object.keys(theme)) delete theme[k];
+      applyRecapTheme(host, theme); onChange(); refresh();
+    } }, 'Reset');
+
+  const pop = el('div', { class: 'recap-theme-pop', hidden: true }, [
+    el('h3', {}, 'Deck colours'),
+    el('p', {}, 'Applies live and to the downloaded deck, and is saved with your tenant settings. Surfaces, borders and muted text follow from these.'),
+    ...rowEls,
+    el('div', { class: 'recap-theme-foot' }, [reset]),
+  ]);
+  return recapPopoverButton('🎨 Theme', 'Change the deck colours', pop, refresh);
+}
+
+// The built-in POSEIDON logo as a data URL (cached) - used whenever the tenant hasn't set
+// their own, and embedded so a downloaded deck needs nothing from the app.
+let defaultRecapLogoPromise = null;
+function defaultRecapLogo() {
+  if (!defaultRecapLogoPromise) {
+    defaultRecapLogoPromise = fetch(new URL('./assets/logo.png', import.meta.url))
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('logo not found'))))
+      .then(blobToDataUrl)
+      .catch(() => { defaultRecapLogoPromise = null; return null; });
+  }
+  return defaultRecapLogoPromise;
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error('could not read the file'));
+    r.readAsDataURL(blob);
+  });
+}
+
+// An uploaded image -> a compact base64 data URL fit to store in the tenant config.
+// Rasters are redrawn onto a canvas no larger than 400px a side (PNG, so transparency
+// survives); SVGs are kept as-is (they are vector, and only ever shown via <img>, which
+// does not run scripts).
+const RECAP_LOGO_MAX_PX = 400;
+const RECAP_LOGO_MAX_CHARS = 1_000_000;
+async function fileToLogoDataUrl(file) {
+  const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name || '');
+  if (!isSvg && !/^image\//.test(file.type || '')) throw new Error('choose an image file (PNG, JPG, SVG or WebP)');
+  const raw = await blobToDataUrl(file);
+  let out = raw;
+  if (isSvg) {
+    out = 'data:image/svg+xml;base64,' + raw.slice(raw.indexOf(',') + 1);
+  } else {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('that file is not a readable image'));
+      i.src = raw;
+    });
+    const scale = Math.min(1, RECAP_LOGO_MAX_PX / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    out = canvas.toDataURL('image/png');
+  }
+  if (!isLogoDataUrl(out)) throw new Error('unsupported image type');
+  if (out.length > RECAP_LOGO_MAX_CHARS) throw new Error('that image is too large - try a smaller one');
+  return out;
+}
+
+// "🏷 Branding": swap the faint corner logo for your own (or go back to POSEIDON's).
+// `look` = { logo (null = built-in), position, opacity } is edited in place; `onChange()`
+// then applies it to the deck and saves it to the tenant.
+function recapBrandingControl(look, onChange) {
+  const preview = el('img', { class: 'recap-brand-preview', alt: 'Current logo' });
+  const status = el('span', { class: 'muted', style: 'font-size:12px' });
+  const showCurrent = async () => {
+    preview.src = look.logo || (await defaultRecapLogo()) || '';
+    status.textContent = look.logo ? 'Your logo' : 'POSEIDON logo (default)';
+  };
+  const file = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/svg+xml,image/webp,image/gif,.svg', style: 'display:none' });
+  file.addEventListener('change', async () => {
+    const f = file.files && file.files[0];
+    file.value = '';
+    if (!f) return;
+    try {
+      look.logo = await fileToLogoDataUrl(f);
+      await onChange();
+      await showCurrent();
+    } catch (e) { toast('Logo not changed: ' + (e?.message || e), true); }
+  });
+  const upload = el('button', { class: 'btn btn-xs', type: 'button', onclick: () => file.click() }, 'Upload logo…');
+  const reset = el('button', { class: 'btn btn-xs', type: 'button', title: 'Go back to the POSEIDON logo',
+    onclick: async () => { look.logo = null; await onChange(); await showCurrent(); } }, 'Use POSEIDON logo');
+
+  // Corner + opacity apply live as you change them.
+  const position = el('select', { class: 'inp', 'aria-label': 'Logo position' },
+    LOGO_POSITIONS.map((o) => el('option', { value: o.value, selected: o.value === look.position }, o.label)));
+  position.addEventListener('change', () => { look.position = normalizeLogoPosition(position.value); onChange(); });
+  const opacityVal = el('span', { class: 'recap-brand-val' });
+  const opacity = el('input', {
+    type: 'range', min: String(LOGO_OPACITY_RANGE.min), max: String(LOGO_OPACITY_RANGE.max), step: '5',
+    'aria-label': 'Logo opacity',
+  });
+  opacity.value = String(look.opacity);
+  opacityVal.textContent = `${look.opacity}%`;
+  opacity.addEventListener('input', () => {
+    look.opacity = normalizeLogoOpacity(opacity.value);
+    opacityVal.textContent = `${look.opacity}%`;
+    onChange();
+  });
+
+  const pop = el('div', { class: 'recap-theme-pop', hidden: true }, [
+    el('h3', {}, 'Branding'),
+    el('p', {}, 'A faint logo on every slide and in the downloaded deck. Position and opacity are saved with your tenant settings too.'),
+    el('div', { class: 'recap-brand-row' }, [preview, el('div', { class: 'recap-brand-actions' }, [status, upload, reset, file])]),
+    el('div', { class: 'recap-brand-slider' }, [el('span', {}, 'Position'), position]),
+    el('div', { class: 'recap-brand-slider' }, [el('span', {}, 'Opacity'), opacity, opacityVal]),
+    el('p', { style: 'margin:0' }, 'PNG, JPG, SVG or WebP. Large images are shrunk automatically.'),
+  ]);
+  return recapPopoverButton('🏷 Branding', 'Change the logo shown on every slide', pop, showCurrent);
 }
 
 // Turn work items into an OCTOGON-format deck object: title -> at-a-glance
@@ -3123,7 +3426,6 @@ function buildRecapDeck(items, days) {
   if (!closed.length) return { title: 'Recap', slides: [] };
 
   const byArea = new Map(), bySource = new Map();
-  let internal = 0, external = 0;
   const addTo = (map, key, it) => { if (!map.has(key)) map.set(key, []); map.get(key).push(it); };
   for (const it of closed) {
     const tags = (it.tags || []).map((t) => t.toLowerCase());
@@ -3131,8 +3433,6 @@ function buildRecapDeck(items, days) {
       if (t.startsWith('area:')) addTo(byArea, t, it);
       else if (t.startsWith('source:')) addTo(bySource, t, it);
     }
-    if (tags.includes('internal')) internal++;
-    if (tags.includes('external')) external++;
   }
 
   const periodLabel = new Date(now).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
@@ -3146,8 +3446,6 @@ function buildRecapDeck(items, days) {
     type: 'metrics', title: 'At a glance', metrics: [
       { value: closed.length, label: 'Closed' },
       { value: byArea.size, label: 'Areas touched' },
-      { value: internal, label: 'Internal', color: 'green' },
-      { value: external, label: 'External', color: 'accent' },
     ],
   });
   // Prefer showing larger work item types: Epic > Feature > Spike > Story > everything else.
@@ -3157,39 +3455,56 @@ function buildRecapDeck(items, days) {
   const itemById = new Map((items || []).map((it) => [it.id, it]));
   // Track items already shown so a multi-area item doesn't appear in multiple slides.
   const shownIds = new Set();
+  const summaryInputs = [];
   const topAreas = [...byArea.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 6);
   for (const [area, its] of topAreas) {
     const sorted = [...its].sort((a, b) => typeRank(a) - typeRank(b));
-    const candidates = sorted.filter((it) => !shownIds.has(it.id)).slice(0, 8);
+    // Every closed item is listed - the preview is editable, so trimming is the user's
+    // call (× on a row) rather than a silent cap.
+    const candidates = sorted.filter((it) => !shownIds.has(it.id));
     candidates.forEach((it) => shownIds.add(it.id));
 
-    // Group candidates by their direct parent.
-    const parentGroups = new Map();
+    // Every row sits under a heading that names a work-item type, so the slide never
+    // shows an unlabelled bucket. Items whose parent is in the polled set group under
+    // that parent ("Epic: …"); every other item groups under its OWN type ("User
+    // Stories", "Bugs"). Type names come from the data, so a customised Azure DevOps
+    // process (Improvement, Spike, …) labels itself - nothing here is a fixed list.
+    const parentGroups = new Map(), typeGroups = new Map();
     for (const it of candidates) {
-      const key = it.parent_id ?? null;
-      if (!parentGroups.has(key)) parentGroups.set(key, []);
-      parentGroups.get(key).push(it);
+      const parent = it.parent_id != null ? itemById.get(it.parent_id) : null;
+      if (parent) addTo(parentGroups, parent.id, it);
+      else addTo(typeGroups, (it.work_item_type || '').trim() || 'Work item', it);
     }
+    const row = (it) => `#${it.id} ${it.title || ''}`.trim();
+    const rankOf = (type) => TYPE_RANK[(type || '').toLowerCase()] ?? 99;
+    const slideGroups = [
+      ...[...parentGroups.entries()].map(([parentId, children]) => {
+        const parent = itemById.get(parentId);
+        return {
+          heading: `${parent.work_item_type || 'Parent'}: ${parent.title || `#${parentId}`}`,
+          order: [0, rankOf(parent.work_item_type), ''], items: children.map(row),
+        };
+      }),
+      ...[...typeGroups.entries()].map(([type, its]) => ({
+        heading: pluralWorkItemType(type), order: [1, rankOf(type), type], items: its.map(row),
+      })),
+    ]
+      .sort((a, b) => (a.order[0] - b.order[0]) || (a.order[1] - b.order[1]) || a.order[2].localeCompare(b.order[2]))
+      .map(({ heading, items: rows }) => ({ heading, items: rows }));
 
-    // Build slide groups sorted by parent type rank (Epic first, ungrouped last).
-    const slideGroups = [...parentGroups.entries()]
-      .map(([parentId, children]) => {
-        const parent = parentId != null ? itemById.get(parentId) : null;
-        const parentRank = parent ? (TYPE_RANK[(parent.work_item_type || '').toLowerCase()] ?? 98) : 99;
-        const heading = parent
-          ? `${parent.work_item_type || 'Parent'}: ${parent.title || `#${parentId}`}`
-          : null;
-        return { heading, parentRank, items: children.map((it) => `#${it.id} ${it.title || ''}`.trim()) };
-      })
-      .sort((a, b) => a.parentRank - b.parentRank);
-
-    const hasParents = slideGroups.some((g) => g.heading);
     slides.push({
-      type: 'feature', label: 'Area', title: area,
-      description: `${its.length} item${its.length === 1 ? '' : 's'} closed. Add the story: what shipped, why it mattered.`,
-      ...(hasParents
-        ? { groups: slideGroups }
-        : { highlights: candidates.slice(0, 6).map((it) => `#${it.id} ${it.title || ''}`.trim()) }),
+      type: 'feature', label: `Area · ${its.length} closed`, title: area, area,
+      description: 'Add the story: what shipped, why it mattered.',
+      groups: slideGroups,
+    });
+    // The model summarises the area's WHOLE closed set (biggest work first), not just the
+    // handful of rows the slide has room to list.
+    summaryInputs.push({
+      area,
+      items: sorted.map((it) => ({
+        id: it.id, title: it.title || '', work_item_type: it.work_item_type || '',
+        parent_title: it.parent_id != null ? (itemById.get(it.parent_id)?.title || null) : null,
+      })),
     });
   }
   if (bySource.size) {
@@ -3206,14 +3521,18 @@ function buildRecapDeck(items, days) {
       'Trim to a tight 10-minute story.',
     ],
   });
-  return { title: `${periodLabel} Recap`, slides };
+  const deck = { title: `${periodLabel} Recap`, slides };
+  // Non-enumerable: the AI inputs ride along for the page but stay out of the downloaded
+  // deck's JSON.
+  Object.defineProperty(deck, 'summaryInputs', { value: summaryInputs });
+  return deck;
 }
 
 // Export the deck as ONE self-contained HTML file - the deck data, the slide
 // renderer, and the styles all inlined - so it opens and presents in any browser
 // with no POSEIDON and no network. This is the shareable artifact: hand it to
 // management, attach it to an email, drop it in Teams.
-async function downloadRecapHtml(deck) {
+async function downloadRecapHtml(deck, theme = {}) {
   let js, css;
   try {
     [js, css] = await Promise.all([
@@ -3232,6 +3551,7 @@ async function downloadRecapHtml(deck) {
 <title>${esc(deck.title || 'Recap')}</title>
 <style>
 ${css}
+${recapThemeCss(theme) ? `/* Deck colours chosen in POSEIDON's Theme popover. */\n:root { ${recapThemeCss(theme)} }` : ''}
 /* Standalone reset: the inlined app stylesheet lays the body out as an app
    shell (sidebar column + main). This file has ONLY the deck, so a lone child
    would land in that narrow sidebar column (the deck looked compressed). Force
@@ -3852,6 +4172,17 @@ function renderIntegrations(holder, data) {
   // active here (WebGPU judged by the browser, everything else by the server verdict).
   const activeId = effectiveActiveId(list, caps);
 
+  // The server probes the active Claude Code in the background when it hasn't heard how
+  // it's doing; re-read once the probe has had time to finish so the badge settles.
+  const activeNeedsHealth = list.some((i) => i.id === activeId && i.kind === 'claude-code' && !i.health);
+  if (activeNeedsHealth && !holder._healthRetry) {
+    holder._healthRetry = setTimeout(async () => {
+      holder._healthRetry = null;
+      if (!holder.isConnected) return;
+      try { renderIntegrations(holder, await api.llmConfig()); } catch { /* keep what's shown */ }
+    }, 15000);
+  }
+
   async function persist() {
     const clean = list.map((i) => ({
       id: i.id, name: i.name, kind: i.kind, provider: i.provider || null, endpoint: i.endpoint || null,
@@ -4058,7 +4389,12 @@ function integrationRow(i, idx, list, persist, presets, caps, holder, activeId) 
   // WebGPU compatibility is a BROWSER capability the server can't see, so judge it
   // client-side; every other kind uses the server's platform verdict.
   const compatible = i.kind === 'webgpu' ? webgpuAvailable() : i.compatible;
-  const status = i.id === activeId ? el('span', { class: 'pill ok' }, 'Active')
+  // The active integration can be "compatible" yet not actually answering (Claude Code
+  // not found / signed out). The server reports that as `health`; show it as broken
+  // rather than a green Active.
+  const broken = i.id === activeId && i.health && i.health.ok === false;
+  const status = broken ? el('span', { class: 'pill err', title: i.health.detail || 'Not responding' }, 'Active - broken')
+    : i.id === activeId ? el('span', { class: 'pill ok' }, 'Active')
     : !compatible ? el('span', { class: 'pill muted', title: incompatReason(i, caps) }, 'Unsupported here')
       : i.configured === false ? el('span', { class: 'pill warn', title: 'Add an API key (Edit) to activate this backend' }, 'Needs API key')
         : el('span', { class: 'pill muted' }, 'Standby');
@@ -4101,7 +4437,9 @@ function integrationRow(i, idx, list, persist, presets, caps, holder, activeId) 
 
   const detail = !compatible
     ? el('div', { class: 'muted', style: 'font-size:11px;opacity:0.8' }, incompatReason(i, caps))
-    : null;
+    : broken
+      ? el('div', { style: 'font-size:12px;color:var(--err)' }, `Not responding: ${i.health.detail || 'unknown error'}`)
+      : null;
   return el('div', { class: 'llm-row' + (compatible ? '' : ' llm-incompatible') }, [
     el('div', { style: 'min-width:0;flex:1 1 auto' }, [
       el('div', {}, [el('strong', {}, i.name || '(unnamed)'), ' ', status]),
