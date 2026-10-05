@@ -36,7 +36,7 @@ jobs:
     name: Upload static bundle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/configure-pages@v5
       - name: Bundle docs into the web assets
         # The in-app docs viewer fetches assets/docs/*.md by relative URL. The

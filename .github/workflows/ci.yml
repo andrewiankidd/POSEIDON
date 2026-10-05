@@ -31,7 +31,7 @@ jobs:
     name: Check + fmt + clippy (linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install system deps (Tauri webview)
         # Needed to compile poseidon-app (Tauri/wry) on Linux. The server, CLI,
         # and library crates don't need these, but `--workspace` builds all.
@@ -59,7 +59,7 @@ jobs:
     name: Audit + deny + machete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit (prebuilt binary)
         uses: taiki-e/install-action@v2
@@ -96,7 +96,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install system deps (Tauri webview)
         if: runner.os == 'Linux'
         run: |
@@ -120,7 +120,7 @@ jobs:
     name: Helm lint + render + kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
       - name: helm lint (also validates values against values.schema.json)
         run: helm lint deploy/helm/poseidon
