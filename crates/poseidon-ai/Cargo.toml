@@ -28,7 +28,7 @@ tracing = { workspace = true }
 # candle is pure Rust (no C++ toolchain), so it keeps the single-binary story and
 # cross-compiles to desktop + Android.
 candle-core = "0.8"
-candle-transformers = "0.8"
+candle-transformers = "0.11"
 tokenizers = "0.21"
 hf-hub = "0.3"
 
