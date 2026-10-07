@@ -50,6 +50,43 @@ TYPE_TAG = {
 }
 items = []
 
+# The fictional team's Kanban boards, in the shape the app serves (see poseidon_core::Board).
+# Note "New" and "To prioritize" are separate columns that both sit on State=New - the reason
+# the board view mirrors tracker columns instead of grouping by state.
+def _col(name, wip=None, kind="in_progress", split=False):
+    c = {"name": name, "kind": kind, "split": split}
+    if wip:
+        c["wip_limit"] = wip
+    return c
+
+
+BOARDS = [
+    {"name": "Stories",
+     "columns": [_col("New", kind="incoming"), _col("To prioritize", 25), _col("This week", 25),
+                 _col("Blocked"), _col("In Progress", 10), _col("Done", 20), _col("Closed", kind="outgoing")],
+     "work_item_types": ["Bug", "Spike", "Task", "User Story"]},
+    {"name": "Features",
+     "columns": [_col("New", kind="incoming"), _col("Planned", 8), _col("In Progress", 6),
+                 _col("Done"), _col("Closed", kind="outgoing")],
+     "work_item_types": ["Feature"]},
+    {"name": "Epics",
+     "columns": [_col("New", kind="incoming"), _col("In Progress", 5), _col("Done"),
+                 _col("Closed", kind="outgoing")],
+     "work_item_types": ["Epic"]},
+]
+
+
+def board_column(wit, state, id_):
+    """Which board column a card sits in, by type + state (an open 'New' story alternates
+    between the two columns that share that state)."""
+    if wit == "Epic":
+        return {"New": "New", "Closed": "Closed"}.get(state, "In Progress")
+    if wit == "Feature":
+        return {"New": "New", "Closed": "Closed", "Resolved": "Done", "Active": "Planned"}.get(state, "In Progress")
+    return {"New": "To prioritize" if id_ % 2 == 0 else "New", "Ready": "This week",
+            "Blocked": "Blocked", "Active": "In Progress", "In Progress": "In Progress",
+            "Resolved": "Done", "Closed": "Closed"}.get(state, "New")
+
 
 def add(id_, title, wit, state, area, source=None, *, parent=None, closed=None, created=None,
         changed=None, tags=None, who=None, pts="auto", prs=None, sprint=None):
@@ -60,6 +97,8 @@ def add(id_, title, wit, state, area, source=None, *, parent=None, closed=None, 
             tags.append(f"area:{area}")
         if source:
             tags.append(f"source:{source}")
+    if closed is not None and closed <= 2 and wit in ("User Story", "Bug", "Task", "Spike"):
+        state = "Resolved"  # finished but not yet swept into Closed
     closed_at = rand_time(closed) if closed is not None else None
     if created is None:
         created = (closed + rng.randint(2, 21)) if closed is not None else rng.randint(4, 60)
@@ -73,6 +112,11 @@ def add(id_, title, wit, state, area, source=None, *, parent=None, closed=None, 
         sprint = 24 - ((closed if closed is not None else 0) // 14)
     items.append({
         "assigned_to": who or rng.choice(PEOPLE),
+        "backlog_rank": float(2_000_000_000 - id_ * 1000),
+        # Fictional creator, spread deterministically (no RNG, so existing data is unchanged).
+        "created_by": PEOPLE[id_ % len(PEOPLE)],
+        "created_by_unique": PEOPLE[id_ % len(PEOPLE)].lower().replace(" ", ".") + "@example.test",
+        "board_column": board_column(wit, state, id_),
         "changed_at": z(changed_at),
         "closed_at": z(closed_at) if closed_at else None,
         "created_at": z(created_at),
@@ -200,10 +244,33 @@ for id_, title, wit, area, src, parent, closed in CLOSED_OLDER:
 # Open work in flight.
 add(1310, "Rate-limit the public API", "User Story", "New", "backend", "request", created=3, changed=1)
 add(1311, "Rework the dashboard empty states", "Task", "In Progress", "frontend", "request", created=6, changed=1)
-add(1312, "Canary releases for the portal", "User Story", "Active", "idp", "roadmap", parent=1112, changed=1)
-add(1313, "Cost dashboard per namespace", "User Story", "New", "observability", "roadmap", created=5, changed=2)
-add(1314, "Spike: replace the poller scheduler", "Spike", "Active", "backend", "roadmap", created=4, changed=2)
+add(1312, "Canary releases for the portal", "User Story", "Blocked", "idp", "roadmap", parent=1112, changed=1)
+add(1313, "Cost dashboard per namespace", "User Story", "Ready", "observability", "roadmap", created=5, changed=2)
+add(1314, "Spike: replace the poller scheduler", "Spike", "Ready", "backend", "roadmap", created=4, changed=2)
 add(1315, "Fix sporadic 502s through the ingress", "Bug", "Active", "networking", "incident", created=1, changed=0)
+
+# Open backlog waiting to be picked up - fills the board's "New" and "To prioritize" columns
+# (those two share State=New; the board_column() split alternates them by id). Added last so
+# the values generated for everything above stay stable.
+OPEN_BACKLOG = [
+    (1320, "Evaluate multi-region failover for the artifact store", "Spike", "networking", "roadmap"),
+    (1321, "Standardise alert severity labels across teams", "Task", "observability", "request"),
+    (1322, "Self-service namespace quotas", "User Story", "idp", "request"),
+    (1323, "Document the on-call escalation policy", "Task", "observability", "support"),
+    (1324, "Upgrade the ingress controller to the next minor", "User Story", "kubernetes", "roadmap"),
+    (1325, "Pipeline cost report per team", "User Story", "azuredevops", "request"),
+    (1326, "Fix duplicate alerts after cluster failover", "Bug", "observability", "incident"),
+    (1327, "Add retry to the secrets sync job", "Bug", "security", "incident"),
+    (1328, "Remove unused service accounts", "Task", "security", "support"),
+    (1329, "Template for event-driven services", "User Story", "idp", "roadmap"),
+    (1331, "Rotate the build agent images monthly", "Task", "azuredevops", "roadmap"),
+    (1332, "Dashboard for node pool utilisation", "User Story", "kubernetes", "request"),
+    (1333, "Clean up stale feature flags in the portal", "Task", "idp", "support"),
+    (1334, "Review the data retention defaults", "Spike", "security", "roadmap"),
+]
+for id_, title, wit, area, src in OPEN_BACKLOG:
+    c = rng.randint(3, 50)
+    add(id_, title, wit, "New", area, src, created=c, changed=c - 1)
 
 items.sort(key=lambda i: i["id"])
 ids = [i["id"] for i in items]
@@ -252,7 +319,7 @@ def read(name):
 
 
 flags = read("tickets")["flags"]  # the three hygiene flags belong to items 1001-1003, unchanged
-write("tickets", {"flags": flags, "items": items})
+write("tickets", {"boards": [{"team": "Platform", "boards": BOARDS}], "flags": flags, "items": items})
 
 write("reports-run-work-items-by-tag", {
     "name": "work-items-by-tag", "render": "bar",
@@ -322,6 +389,130 @@ RECAP_SUMMARIES = {
     "area:frontend": "The interface got friendlier: the board view is now fully keyboard-navigable and column overflow on narrow screens is fixed.",
 }
 write("recap-summaries", {"ai_available": True, "errors": [], "summaries": RECAP_SUMMARIES})
+
+# Per-contributor pull-request activity (the built-in "pr-contributors" report). The app
+# computes this from stored PRs; the static demo has no engine, so mirror its maths here over
+# a fictional 30-day PR history. A separate RNG keeps the work-item data above unchanged.
+pr_rng = random.Random(11)
+PR_VOLUME = {"Jordan Kim": 9, "Alex Rivera": 8, "Sam Lee": 6, "Priya Nair": 5, "Marcus Chen": 3, "Elena Rossi": 2}
+history = []
+for who, n in PR_VOLUME.items():
+    for _ in range(n):
+        created = ts(pr_rng.randint(0, 29), pr_rng.randint(8, 16), pr_rng.randint(0, 59))
+        roll = pr_rng.random()
+        if roll < 0.12 and (range_to - created).days < 6:
+            status, closed = "active", None
+        elif roll < 0.2:
+            status, closed = "abandoned", created + dt.timedelta(days=pr_rng.uniform(1, 9))
+        else:
+            status, closed = "completed", created + dt.timedelta(days=pr_rng.uniform(0.2, 6))
+        if closed and closed > range_to:
+            status, closed = "active", None
+        others = [p for p in PEOPLE if p != who]
+        history.append({"author": who, "status": status, "created": created, "closed": closed,
+                        "reviewers": pr_rng.sample(others, pr_rng.randint(1, 2))})
+
+
+def ranked(counter):
+    return [{"label": k, "value": float(v)} for k, v in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def in_win(t):
+    return t is not None and range_from <= t <= range_to
+
+
+def median(xs):
+    xs = sorted(xs)
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+opened_by = Counter(p["author"] for p in history if in_win(p["created"]))
+merged_by = Counter(p["author"] for p in history if p["status"] == "completed" and in_win(p["closed"]))
+abandoned_by = Counter(p["author"] for p in history if p["status"] == "abandoned" and in_win(p["closed"]))
+open_by = Counter(p["author"] for p in history if p["status"] == "active")
+closed_in_win = [p for p in history if p["status"] in ("completed", "abandoned") and in_win(p["closed"])]
+rate_by = {a: sum(p["status"] == "completed" for p in closed_in_win if p["author"] == a) /
+           sum(1 for p in closed_in_win if p["author"] == a) for a in {p["author"] for p in closed_in_win}}
+days_by = {}
+for p in history:
+    if p["status"] == "completed" and in_win(p["closed"]):
+        days_by.setdefault(p["author"], []).append((p["closed"] - p["created"]).total_seconds() / 86400)
+reviews_by = Counter(r for p in history if in_win(p["created"]) for r in p["reviewers"])
+
+
+def col(label, points, percent=False, summable=False):
+    s = {"label": label, "percent": percent, "points": points}
+    if summable:
+        s["summable"] = True
+    return s
+
+
+write("reports-run-pr-contributors", {
+    "name": "pr-contributors", "render": "table",
+    "series": [
+        col("Opened", ranked(opened_by), summable=True),
+        col("Merged", ranked(merged_by), summable=True),
+        col("Abandoned", ranked(abandoned_by), summable=True),
+        col("Open now", ranked(open_by), summable=True),
+        col("Merge rate", [{"label": k, "value": v} for k, v in sorted(rate_by.items(), key=lambda kv: (-kv[1], kv[0]))], percent=True),
+        col("Median days to merge", [{"label": k, "value": round(median(v), 4)} for k, v in
+                                     sorted(days_by.items(), key=lambda kv: (-median(kv[1]), kv[0]))]),
+        col("Reviews given", ranked(reviews_by), summable=True),
+    ]})
+
+# Work items created per person (bar) and as a listing (items table), over the same 30 days.
+created_in_win = sorted((i for i in items if in_win(parse(i["created_at"]))),
+                        key=lambda i: (i["created_at"], i["id"]), reverse=True)
+by_creator = Counter(i["created_by"] for i in created_in_win)
+write("reports-run-work-items-created-by-person", {
+    "name": "work-items-created-by-person", "render": "bar",
+    "series": [col("Work items created", ranked(by_creator), summable=True)]})
+write("reports-run-work-items-created-by-user", {
+    "name": "work-items-created-by-user", "render": "items", "series": [],
+    "table": {"columns": ["ID", "Type", "State", "Created", "Created by", "Assigned to", "Title"],
+              "rows": [{"cells": [str(i["id"]), i["work_item_type"], i["state"], i["created_at"][:10],
+                                  i["created_by"], i.get("assigned_to") or "", i["title"]],
+                        "url": i["url"]} for i in created_in_win]}})
+
+# The demo's report list: the built-in specs the app serves, plus the contributor report.
+specs = read("reports-specs")
+specs = [s for s in specs if s["name"] not in ("pr-contributors", "work-items-created-by-person",
+                                                "work-items-created-by-user")]
+specs.append({
+    "builtin": True, "name": "work-items-created-by-person", "render": "bar",
+    "description": "Work items created per team member (last 30 days).",
+    "time_range": {"days": 30, "kind": "last_days"},
+    "series": [{"label": "Work items created", "source": "work_items", "group_by": "author",
+                "time_field": "created", "metric": {"kind": "count"}}]})
+specs.append({
+    "builtin": True, "name": "work-items-created-by-user", "render": "items",
+    "description": "Work items created by a team member: every item in the window, newest first. Pick a person to narrow it down.",
+    "time_range": {"days": 30, "kind": "last_days"},
+    "series": [{"label": "Work items", "source": "work_items", "time_field": "created",
+                "metric": {"kind": "count"}}]})
+cond = lambda f, op, v: {"field": f, "op": op, "value": v}
+by_author = lambda label, tf, metric=None, flt=None: {
+    "label": label, "source": "pull_requests", "group_by": "author", "time_field": tf,
+    "metric": metric or {"kind": "count"}, **({"filters": flt} if flt else {})}
+specs.append({
+    "builtin": True, "name": "pr-contributors", "render": "table",
+    "description": "Pull requests per person: opened, merged, abandoned, open now, merge rate, median days to merge and reviews given.",
+    "time_range": {"days": 30, "kind": "last_days"},
+    "series": [
+        by_author("Opened", "created"),
+        by_author("Merged", "closed", flt=[cond("status", "eq", "completed")]),
+        by_author("Abandoned", "closed", flt=[cond("status", "eq", "abandoned")]),
+        by_author("Open now", "any", flt=[cond("status", "eq", "active")]),
+        by_author("Merge rate", "closed", metric={"kind": "ratio", "numerator": [cond("status", "eq", "completed")],
+                                                  "denominator": [cond("status", "in", "completed,abandoned")]}),
+        by_author("Median days to merge", "closed", metric={"kind": "median_days_to_close"},
+                  flt=[cond("status", "eq", "completed")]),
+        {"label": "Reviews given", "source": "pull_requests", "group_by": "reviewer", "time_field": "created",
+         "metric": {"kind": "count"}},
+    ]})
+write("reports-specs", specs)
+print("pr-contributors:", dict(opened_by), "merged", dict(merged_by))
 
 areas = Counter(t[5:] for i in closed_in_range for t in i["tags"] if t.startswith("area:"))
 print(f"{len(items)} work items | {len(closed_in_range)} closed in the 30-day window "

@@ -11,8 +11,9 @@ Open **Pull Requests** from the sidebar (hash route `#pull-requests`).
 ![Pull Requests screen](screenshots/pull-requests.png)
 
 - **The active set** - the screen lists open (active) PRs. Completed and
-  abandoned PRs are polled too, but only to colour the work-item link chips; they
-  don't clutter this list.
+  abandoned PRs are polled too (with their close date and reviewer votes), but only
+  to colour the work-item link chips and feed the per-person
+  [contributor activity report](reports.md); they don't clutter this list.
 - **Work-item chips** - the work item(s) each PR is linked to, as clickable
   chips that open the item in the provider. On **Azure DevOps** teams the links
   are editable - link/unlink a work item by id right on the row; GitHub and GitLab

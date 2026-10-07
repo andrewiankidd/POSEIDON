@@ -104,6 +104,29 @@ async function demoGet(path) {
   } catch { return {}; }
 }
 
+// Demo-only stand-in for the AI grouping suggester: buckets items by title keywords. Items that
+// match nothing are left out, exactly as the real thing leaves unplaced items where they were.
+function demoGroupings(area) {
+  const rules = [
+    ['Observability', /alert|slo|burn|dashboard|metric|loki|log\b|logs|monitor|trace|on-call|oncall|noise|signal/i],
+    ['Cluster Operations', /cluster|node|pod|upgrade|kubernetes|k8s|eviction|autoscal|namespace/i],
+    ['Developer Self-Service', /template|golden|scaffold|portal|self-service|cli\b|dev container|hot-reload|readme|repo/i],
+    ['Pipelines and Delivery', /pipeline|\bci\b|release|build|cache|gate|deploy/i],
+    ['Security and Networking', /secret|rotat|credential|cve|polic|network|dns|egress|private|access|privileged|audit/i],
+  ];
+  const buckets = new Map();
+  for (const it of (area && area.items) || []) {
+    const hit = rules.find(([, re]) => re.test(it.title || ''));
+    if (!hit) continue;
+    if (!buckets.has(hit[0])) buckets.set(hit[0], []);
+    buckets.get(hit[0]).push(it.id);
+  }
+  return {
+    ai_available: true, error: null,
+    groups: [...buckets.entries()].map(([heading, ids]) => ({ heading, ids })),
+  };
+}
+
 /** The selected team scope, or '' for "all teams". Persisted so the scope
  *  survives reloads and is shared across every view. */
 export function getTeamScope() {
@@ -507,6 +530,16 @@ export const api = {
       method: 'POST', body: { team: team || null, period, areas },
       invokeCmd: 'recap_summaries', invokeArgs: { team: team || null, period, areas },
     }),
+  /** AI-suggested themed groups for ONE Recap slide → { groups: [{ heading, ids }],
+   *  ai_available, error }. Suggestions only (the UI previews them before applying).
+   *  `area` = { area, items: [{ id, title, work_item_type, parent_title }] }; `guidance` is
+   *  optional free text from the user. Every id returned is one of `area.items`, once. */
+  recapGroupings: ({ team, period, area, guidance }) =>
+    // The public demo has no model: group by keyword so the feature can be seen working.
+    isDemo() ? Promise.resolve(demoGroupings(area)) : request('/recap/groupings', {
+      method: 'POST', body: { team: team || null, period, area, guidance: guidance || '' },
+      invokeCmd: 'recap_groupings', invokeArgs: { team: team || null, period, area, guidance: guidance || '' },
+    }),
   /** Save the Recap deck look - `{ theme: { bg?, ink?, accent? }, logo }` (logo = base64
    *  image data URL or null for the built-in one). Stored in the tenant config, so it is
    *  also part of config export/import. Returns the settings as validated + stored. */
@@ -597,6 +630,8 @@ export const api = {
     }),
   /** Run an unsaved spec (builder preview), scoped to the current team. */
   runReportSpec: (spec) =>
+    // The static demo has no engine: a preview serves the named report's canned result.
+    isDemo() ? demoGet('/reports/run/' + encodeURIComponent(spec.name || '')) :
     request('/reports/run', {
       method: 'POST', query: { team: team() }, body: spec,
       invokeCmd: 'run_report_spec', invokeArgs: { spec, team: team() },
@@ -739,6 +774,24 @@ export async function onDeviceCode(callback) {
   const listen = window.__TAURI__.event?.listen;
   if (!listen) return () => {};
   return listen('auth-device-code', (e) => callback(e.payload));
+}
+
+/** Save a user-requested export through the desktop shell, which reports where it landed
+ *  (the webview's own `<a download>` saves silently). Resolves `{ path, dir }`, or `null` when
+ *  there is no desktop shell (a browser - the caller falls back to a normal download). */
+export async function saveDownload(filename, bytes) {
+  if (!isTauri() || isDemo()) return null;
+  const t = window.__TAURI__;
+  const invoke = t.core?.invoke ?? t.invoke;
+  // A raw (non-JSON) body: the file's bytes go straight through, the name rides in a header.
+  return invoke('save_download', bytes, { headers: { 'x-filename': filename } });
+}
+
+/** Show a file saved by [`saveDownload`] in the system file manager. */
+export function revealDownload(path) {
+  const t = window.__TAURI__;
+  const invoke = t.core?.invoke ?? t.invoke;
+  return invoke('reveal_in_folder', { path });
 }
 
 /** Open a URL in the OS browser (Tauri) or a new tab (web). Used for the

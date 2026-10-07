@@ -19,13 +19,24 @@ pub struct PullRequest {
     pub repository: Option<String>,
     /// Display name of the author, if known.
     pub author: Option<String>,
+    /// The author's sign-in identity (email-style), when the provider gives one -
+    /// what team-roster matching keys on, since display names can differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_unique: Option<String>,
     /// When the PR was created.
     pub created_at: Option<DateTime<Utc>>,
     /// Source / target branch short names (the `refs/heads/` prefix stripped).
     pub source_branch: Option<String>,
     pub target_branch: Option<String>,
+    /// When the PR was merged / abandoned (`None` while still open).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<DateTime<Utc>>,
     /// Number of reviewers assigned.
     pub reviewer_count: i64,
+    /// Who reviewed and how they voted - drives the per-contributor "reviews
+    /// given" column. Providers that don't expose votes leave it empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviewers: Vec<PrReviewer>,
     /// Web URL to the PR in the provider's UI.
     pub url: String,
     /// Hygiene flags (stale-open / stale-draft), evaluated on read against the
@@ -37,6 +48,18 @@ pub struct PullRequest {
     /// time). Runtime-only, not stored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linked_work_items: Vec<i64>,
+}
+
+/// One reviewer on a pull request and their vote.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrReviewer {
+    pub name: String,
+    /// Sign-in identity (email-style), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_name: Option<String>,
+    /// Azure DevOps vote scale: 10 approved, 5 approved with suggestions, 0 no vote,
+    /// -5 waiting for author, -10 rejected. Non-zero means the person reviewed.
+    pub vote: i32,
 }
 
 /// A pull request linked to a work item, with just enough to render + colour a

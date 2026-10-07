@@ -307,6 +307,21 @@ pub struct TeamConfig {
     /// in the project. Naming a subset scopes "owned pipelines" to the team's.
     #[serde(default)]
     pub pipeline_ids: Vec<i64>,
+    /// Azure DevOps TEAM whose Kanban boards and member roster Poseidon mirrors (the
+    /// team name in the board URL, e.g. `Payments Team`). Normally left unset: the
+    /// provider auto-detects it by trying this team's name, `<name> Team` and
+    /// `<project> Team`. Set it only when the tracker's team is named something else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_team: Option<String>,
+    /// Explicit roster override: the people on this team, by display name or sign-in
+    /// (`Ana Example` / `ana.example@contoso.com`). Per-person reports (authors,
+    /// reviewers) are limited to the team's people, so a project-wide PR feed doesn't
+    /// drag in one-off contributors from other teams. Normally left empty: for Azure
+    /// DevOps the roster is read from the tracker's own team automatically. List
+    /// names here only to override that (or for a tracker that has no roster).
+    /// Matching ignores case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
     /// Optional per-team hygiene ruleset. Different teams run different processes
     /// (one may mandate `type:*` tags and a 5-day WIP limit while another is far
     /// looser), so each team can carry its own `[team.rules]` block. When absent,

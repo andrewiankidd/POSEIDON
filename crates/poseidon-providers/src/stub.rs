@@ -23,7 +23,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use poseidon_core::{
-    Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus, TeamConfig, WorkItem, WorkItemUpdate,
+    Pipeline, PipelineRun, PrReviewer, PrStatus, PullRequest, RunStatus, TeamConfig, WorkItem,
+    WorkItemUpdate,
 };
 
 use crate::{Provider, ProviderError};
@@ -94,6 +95,12 @@ impl StubProvider {
             linked_pr_ids: linked.to_vec(),
             parent_id: None,
             linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            created_by: None,
+            created_by_unique: None,
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
@@ -437,10 +444,18 @@ impl Provider for StubProvider {
             is_draft: draft,
             repository: Some("platform-core".into()),
             author: Some(author.into()),
+            author_unique: None,
             created_at: Some(created),
             source_branch: Some("refs/heads/feature/x".into()),
             target_branch: Some("refs/heads/main".into()),
+            // A finished PR closed a day after it opened; an open one has no close date.
+            closed_at: (status != PrStatus::Active).then(|| created + chrono::Duration::days(1)),
             reviewer_count: 2,
+            reviewers: vec![PrReviewer {
+                name: "Alex Rivera".into(),
+                unique_name: None,
+                vote: 10,
+            }],
             url: format!(
                 "https://stub.example/{}/_git/platform-core/pullrequest/{id}",
                 self.team
@@ -628,6 +643,8 @@ mod tests {
             auth: Default::default(),
             wiql: None,
             pipeline_ids: vec![],
+            board_team: None,
+            members: Vec::new(),
             rules: None,
         }
     }

@@ -98,6 +98,23 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// The tracker's Kanban boards for this team (columns, WIP limits, lanes), so the UI
+    /// can mirror the tracker's own board rather than grouping by state. Each work item
+    /// returned by [`Self::fetch_work_items`] carries the column it sits in
+    /// (`WorkItem::board_column`). Default: none - only Azure DevOps has custom columns
+    /// today, and a provider that can't discover them simply has no board.
+    async fn fetch_boards(&self) -> Result<Vec<poseidon_core::Board>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    /// The people on this team according to the tracker's own roster, so per-person
+    /// reports can be limited to who actually belongs to it. Default: none - a
+    /// provider with no team roster (or that can't read it) returns an empty list and
+    /// the team falls back to its configured `members`, else everyone.
+    async fn fetch_team_members(&self) -> Result<Vec<poseidon_core::TeamMember>, ProviderError> {
+        Ok(Vec::new())
+    }
+
     /// The pipelines this provider monitors - either the configured subset or
     /// all pipelines in the project.
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError>;

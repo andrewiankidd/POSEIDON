@@ -277,7 +277,8 @@ pub async fn get_tickets(state: State<'_, AppState>, team: Option<String>) -> Cm
     let team = scope(&team);
     let items = service.work_items(team).await.map_err(|e| e.to_string())?;
     let flags = service.flags(team).await.map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "items": items, "flags": flags }))
+    let boards = service.boards(team).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "items": items, "flags": flags, "boards": boards }))
 }
 
 #[tauri::command]
@@ -734,6 +735,154 @@ pub async fn recap_summaries(
 }
 
 #[tauri::command]
+pub async fn recap_groupings(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    period: String,
+    area: poseidon_server::RecapAreaInput,
+    guidance: Option<String>,
+) -> CmdResult {
+    let service = state.service()?;
+    let result = service
+        .recap_groupings(
+            team.as_deref().filter(|t| !t.is_empty()),
+            &period,
+            area,
+            guidance.as_deref().unwrap_or(""),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// A safe file name for a user-initiated export: letters, digits, `.`, `-` and `_` only
+/// (spaces become `-`), no leading dots, never empty, never a path.
+fn sanitize_export_name(raw: &str) -> String {
+    let leaf = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = leaf
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') => c,
+            ' ' => '-',
+            _ => '_',
+        })
+        .collect();
+    let cleaned = cleaned.trim_start_matches('.').to_string();
+    if cleaned.is_empty() {
+        "poseidon-export".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Write `bytes` into `dir` as `name`, never overwriting: a name that is taken becomes
+/// `name (2).ext`, `name (3).ext`, ... (the way a browser download behaves).
+fn save_export(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let name = sanitize_export_name(name);
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.clone(), String::new()),
+    };
+    for n in 1..1000 {
+        let candidate = if n == 1 {
+            name.clone()
+        } else {
+            format!("{stem} ({n}){ext}")
+        };
+        let path = dir.join(&candidate);
+        // create_new refuses to clobber, and makes the existence check atomic.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(bytes)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("too many files with that name"))
+}
+
+/// Save a file the user asked to export (the Recap deck, a CSV, a chart PNG) and report
+/// where it went, so the UI can confirm it and offer to open the folder. The webview's own
+/// `<a download>` saves silently - the app never learns the path - so exports come here.
+/// The body is the raw file bytes; the name travels in the `x-filename` header.
+/// Returns `{ path, dir }`. Lands in the OS Downloads folder (portable mode: `.portable/exports`).
+#[tauri::command]
+pub async fn save_download(request: tauri::ipc::Request<'_>) -> CmdResult {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let name = request
+        .headers()
+        .get("x-filename")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let dir = poseidon_paths::Paths::resolve().exports_dir();
+    let path =
+        save_export(&dir, name, bytes).map_err(|e| format!("could not save the file: {e}"))?;
+    Ok(serde_json::json!({ "path": path, "dir": dir }))
+}
+
+/// Show an exported file in the system file manager, selected. Only files POSEIDON itself
+/// saved (directly inside its exports folder) are accepted - this is not a general "open path".
+#[tauri::command]
+pub async fn reveal_in_folder(path: String) -> Result<(), String> {
+    let dir = poseidon_paths::Paths::resolve().exports_dir();
+    let file = std::path::Path::new(&path);
+    let same_dir = file
+        .canonicalize()
+        .ok()
+        .and_then(|f| f.parent().map(|p| p.to_path_buf()))
+        .zip(dir.canonicalize().ok())
+        .is_some_and(|(parent, dir)| parent == dir);
+    if !same_dir || !file.is_file() {
+        return Err("that is not a file POSEIDON exported".into());
+    }
+    reveal(file).map_err(|e| format!("could not open the folder: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn reveal(file: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    // explorer parses `/select,"<path>"` itself; raw_arg stops Rust re-quoting it. (It exits
+    // non-zero even on success, so the status is deliberately not checked.)
+    std::process::Command::new("explorer")
+        .raw_arg(format!("/select,\"{}\"", file.display()))
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(file: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(file)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal(file: &std::path::Path) -> std::io::Result<()> {
+    // No portable "select this file" on Linux: open the folder that holds it.
+    let dir = file.parent().unwrap_or(file);
+    std::process::Command::new("xdg-open")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+}
+
+#[tauri::command]
 pub async fn update_recap_settings(
     state: State<'_, AppState>,
     settings: poseidon_core::RecapSettings,
@@ -842,4 +991,55 @@ pub async fn record_ai_activity(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_names_are_sanitised_to_a_plain_leaf_file_name() {
+        assert_eq!(
+            sanitize_export_name("poseidon-recap-2026-10-08.html"),
+            "poseidon-recap-2026-10-08.html"
+        );
+        assert_eq!(
+            sanitize_export_name("my report (final).csv"),
+            "my-report-_final_.csv"
+        );
+        // a path is reduced to its last segment; traversal and leading dots cannot survive
+        assert_eq!(sanitize_export_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_export_name("C:\\Windows\\evil.exe"), "evil.exe");
+        assert_eq!(sanitize_export_name(".hidden"), "hidden");
+        assert_eq!(sanitize_export_name(""), "poseidon-export");
+        assert_eq!(sanitize_export_name("..."), "poseidon-export");
+    }
+
+    #[test]
+    fn saving_never_overwrites_and_numbers_a_taken_name_like_a_browser() {
+        let dir = std::env::temp_dir().join(format!("poseidon-export-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_export(&dir, "deck.html", b"one").unwrap();
+        let second = save_export(&dir, "deck.html", b"two").unwrap();
+        let third = save_export(&dir, "deck.html", b"three").unwrap();
+        assert_eq!(first.file_name().unwrap(), "deck.html");
+        assert_eq!(second.file_name().unwrap(), "deck (2).html");
+        assert_eq!(third.file_name().unwrap(), "deck (3).html");
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            b"one",
+            "the original is untouched"
+        );
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        // a name with no extension is numbered too
+        save_export(&dir, "notes", b"x").unwrap();
+        assert_eq!(
+            save_export(&dir, "notes", b"y")
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "notes (2)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

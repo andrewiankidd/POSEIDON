@@ -103,6 +103,24 @@ pub struct RecapSummaries {
     pub errors: Vec<String>,
 }
 
+/// One suggested Recap group: a heading and the work item ids under it, in order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RecapGroupOut {
+    pub heading: String,
+    pub ids: Vec<i64>,
+}
+
+/// What [`Service::recap_groupings`] produced. `groups` is empty when there is no model or it
+/// failed; `ai_available` / `error` say which, so the UI can explain instead of guessing.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RecapGroupings {
+    pub groups: Vec<RecapGroupOut>,
+    /// False when the owner has no usable AI backend at all.
+    pub ai_available: bool,
+    /// Why the model could not suggest groups (when `ai_available`).
+    pub error: Option<String>,
+}
+
 /// The result of a whole-item consistency sweep. Like [`DraftOutcome`] but the value
 /// is a SET of field changes: either the server produced them, or the built prompt is
 /// handed back for the browser (WebGPU) to run - the browser then posts the reply to
@@ -1135,6 +1153,28 @@ impl Service {
         since: DateTime<Utc>,
     ) -> anyhow::Result<(usize, usize, usize, usize)> {
         let items = provider.fetch_work_items().await?;
+        // Boards are best-effort: a team whose tracker has none (or whose token can't read
+        // them) keeps whatever it had, and never fails the poll.
+        match provider.fetch_boards().await {
+            Ok(boards) if !boards.is_empty() => {
+                self.store
+                    .replace_team_boards(&self.owner, team_name, &boards)
+                    .await?;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "could not fetch tracker boards"),
+        }
+        // Likewise the team roster (who is on this team): best-effort, keeps the last
+        // good one on an empty read or an error.
+        match provider.fetch_team_members().await {
+            Ok(members) if !members.is_empty() => {
+                self.store
+                    .replace_team_members(&self.owner, team_name, &members)
+                    .await?;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "could not fetch team roster"),
+        }
         let pipelines = provider.fetch_pipelines().await?;
         let runs = provider.fetch_runs(since).await?;
         let pulls = provider.fetch_pull_requests().await?;
@@ -1422,6 +1462,16 @@ impl Service {
 
     /// Stored work items, optionally scoped to one team, with each item's linked
     /// pull requests resolved (id + status + url) from the polled PR set.
+    /// The tracker's Kanban boards (columns, WIP limits) for one team, or for every team
+    /// when `team` is `None`. Lets the UI mirror the tracker's own board instead of
+    /// grouping by state. Empty for teams on a provider without board columns.
+    pub async fn boards(
+        &self,
+        team: Option<&str>,
+    ) -> anyhow::Result<Vec<poseidon_core::TeamBoards>> {
+        Ok(self.store.list_team_boards(&self.owner, team).await?)
+    }
+
     pub async fn work_items(&self, team: Option<&str>) -> anyhow::Result<Vec<WorkItem>> {
         let mut items = self.store.list_work_items(&self.owner, team).await?;
         self.attach_linked_prs(&mut items, team).await?;
@@ -2611,6 +2661,76 @@ impl Service {
         Ok(out)
     }
 
+    /// Ask the configured AI model to propose themed groups for ONE Recap slide's closed
+    /// items (e.g. everything about alerting under "Observability"), optionally steered by
+    /// the user's own `guidance`. Suggestions only: nothing is applied here, and a model that
+    /// is missing, unsupported or returns nonsense yields an empty list plus the reason - the
+    /// slide is never touched by a failure. Every id returned belongs to `area.items` and
+    /// appears once.
+    pub async fn recap_groupings(
+        &self,
+        team: Option<&str>,
+        period: &str,
+        area: RecapAreaInput,
+        guidance: &str,
+    ) -> anyhow::Result<RecapGroupings> {
+        let Some(ai) = self.ai_tagger().await else {
+            return Ok(RecapGroupings::default());
+        };
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        let background = match team {
+            Some(t) => rules_for_team(&cfg, t),
+            None => &cfg.rules,
+        }
+        .team_background
+        .clone()
+        .unwrap_or_default();
+        let ctx = poseidon_ai::RecapGroupContext {
+            area: area.area,
+            period: period.to_string(),
+            background,
+            guidance: guidance.to_string(),
+            items: area
+                .items
+                .into_iter()
+                .map(|i| poseidon_ai::RecapSummaryItem {
+                    id: i.id,
+                    title: i.title,
+                    work_item_type: i.work_item_type,
+                    parent_title: i.parent_title,
+                })
+                .collect(),
+        };
+        let mut out = RecapGroupings {
+            ai_available: true,
+            ..Default::default()
+        };
+        if ctx.items.is_empty() {
+            out.error = Some("this slide has no work items to group".into());
+            return Ok(out);
+        }
+        match ai.suggest_recap_groups(&ctx).await {
+            Ok(groups) => {
+                out.groups = groups
+                    .into_iter()
+                    .map(|g| RecapGroupOut {
+                        heading: g.heading,
+                        ids: g.ids,
+                    })
+                    .collect();
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "recap grouping failed");
+                out.error = Some(e.to_string());
+            }
+        }
+        Ok(out)
+    }
+
     /// Assemble the whole-item consistency context from the item's editable fields with
     /// the editor's UNSAVED working values overlaid - the draftable (rich-text) fields
     /// only, since those are what "Improve all" proposes. Shared by the run + parse paths
@@ -3000,12 +3120,30 @@ impl Service {
         let uses = |src: DataSource| spec.series.iter().any(|s| s.source == src);
         let mut data = poseidon_reports::Datasets::default();
         if uses(DataSource::WorkItems) {
-            data.work_items = self.store.list_work_items(&self.owner, team).await?;
+            data.work_items = dedupe_work_items(
+                self.store.list_work_items(&self.owner, team).await?,
+                team.is_some(),
+            );
         }
         if uses(DataSource::PullRequests) {
             // All stored PRs (active + completed + abandoned) - reports may want
             // the closed ones (e.g. merge rate), unlike the active-only PR screen.
-            data.pull_requests = self.store.list_pull_requests(&self.owner, team).await?;
+            data.pull_requests = dedupe_pull_requests(
+                self.store.list_pull_requests(&self.owner, team).await?,
+                team.is_some(),
+            );
+        }
+        if uses(DataSource::PullRequests) || uses(DataSource::WorkItems) {
+            // Per-person breakdowns are limited, row by row, to the people on that row's
+            // team: an explicit `members` override, else the tracker's roster from the
+            // last poll.
+            let teams = self.config.teams(&self.owner).await.unwrap_or_default();
+            let rosters = self
+                .store
+                .list_team_members(&self.owner)
+                .await
+                .unwrap_or_default();
+            data.rosters = team_rosters(&teams, &rosters);
         }
         if uses(DataSource::Pipelines) {
             data.pipelines = self.pipeline_health(team).await?;
@@ -3044,6 +3182,67 @@ impl Service {
         }
         Ok(self.store.delete_report(&self.owner, name).await?)
     }
+}
+
+/// Two teams can poll the same project, so the same PR is stored once per team.
+/// Across all teams that would count every person's PRs twice; a PR's web URL is
+/// unique per provider, so keep one row per URL. A single-team scope needs no
+/// dedupe (the store keys on team already).
+fn dedupe_pull_requests(prs: Vec<PullRequest>, single_team: bool) -> Vec<PullRequest> {
+    if single_team {
+        return prs;
+    }
+    let mut seen = std::collections::HashSet::new();
+    prs.into_iter()
+        .filter(|p| seen.insert(p.url.clone()))
+        .collect()
+}
+
+/// The same de-duplication for work items: two teams scoped to overlapping areas store
+/// the same item once each, which would double every per-person count in the all-teams
+/// view. An item's web URL is unique per provider.
+fn dedupe_work_items(items: Vec<WorkItem>, single_team: bool) -> Vec<WorkItem> {
+    if single_team {
+        return items;
+    }
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        // An item with no URL can't be told apart; keep it rather than lose it.
+        .filter(|w| w.url.is_empty() || seen.insert(w.url.clone()))
+        .collect()
+}
+
+/// Who counts as on each team, as identity tokens (name, sign-in, sign-in local part),
+/// keyed by team name. A team's people are its explicit `members` override if it lists
+/// any, else the tracker roster read on the last poll. A team with neither is left out,
+/// which means unrestricted: its per-person reports show everyone.
+fn team_rosters(
+    teams: &[TeamConfig],
+    rosters: &[(String, Vec<poseidon_core::TeamMember>)],
+) -> HashMap<String, Vec<String>> {
+    let mut out = HashMap::new();
+    for t in teams {
+        let tokens: Vec<String> = if !t.members.is_empty() {
+            // A hand-typed entry is a name or a sign-in; tokenise it either way.
+            t.members
+                .iter()
+                .flat_map(|m| {
+                    let unique = m.contains('@').then_some(m.as_str());
+                    poseidon_core::identity_tokens(Some(m), unique)
+                })
+                .collect()
+        } else if let Some((_, roster)) = rosters
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&t.name))
+        {
+            roster.iter().flat_map(|p| p.tokens()).collect()
+        } else {
+            continue;
+        };
+        out.insert(t.name.clone(), tokens);
+    }
+    out
 }
 
 /// How far back to load pipeline runs for a report, from its time range. A
@@ -3545,6 +3744,119 @@ mod tests {
         }
     }
 
+    fn pr_at(team: &str, url: &str) -> PullRequest {
+        PullRequest {
+            id: 1,
+            provider: "azure-devops".into(),
+            team: team.into(),
+            title: "t".into(),
+            status: PrStatus::Completed,
+            is_draft: false,
+            repository: None,
+            author: Some("Ana".into()),
+            author_unique: None,
+            created_at: None,
+            source_branch: None,
+            target_branch: None,
+            closed_at: None,
+            reviewer_count: 0,
+            reviewers: Vec::new(),
+            url: url.into(),
+            flags: Vec::new(),
+            linked_work_items: Vec::new(),
+        }
+    }
+
+    fn team_with(name: &str, members: &[&str]) -> TeamConfig {
+        let mut t: TeamConfig = serde_json::from_value(serde_json::json!({
+            "name": name, "organization": "o", "project": "p"
+        }))
+        .unwrap();
+        t.members = members.iter().map(|m| m.to_string()).collect();
+        t
+    }
+
+    fn person(name: &str, unique: &str) -> poseidon_core::TeamMember {
+        poseidon_core::TeamMember {
+            name: name.into(),
+            unique_name: Some(unique.into()),
+        }
+    }
+
+    #[test]
+    fn team_rosters_prefer_the_override_then_the_tracker_roster() {
+        let teams = vec![
+            team_with("A", &["Ana", "ben@x.com"]), // explicit override
+            team_with("B", &[]),                   // falls back to the tracker roster
+            team_with("C", &[]),                   // neither: unrestricted
+        ];
+        let rosters = vec![
+            // A's roster must be ignored: the override wins.
+            ("A".to_string(), vec![person("Zed", "zed@x.com")]),
+            ("b".to_string(), vec![person("Cy Dee", "cy.dee@x.com")]),
+        ];
+        let r = team_rosters(&teams, &rosters);
+        // Override: a name stays a name; an email also yields its local part.
+        assert_eq!(r["A"], vec!["ana", "ben@x.com", "ben"]);
+        // Roster (team names match ignoring case): name, sign-in, local part.
+        assert_eq!(r["B"], vec!["cy dee", "cy.dee@x.com", "cy.dee"]);
+        // A team with neither is simply absent = unrestricted, and doesn't affect others.
+        assert!(!r.contains_key("C"));
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn all_teams_scope_counts_a_shared_work_item_once() {
+        let item = |team: &str, url: &str| WorkItem {
+            id: 1,
+            provider: "azure-devops".into(),
+            team: team.into(),
+            title: "t".into(),
+            work_item_type: "Bug".into(),
+            state: "New".into(),
+            tags: Vec::new(),
+            assigned_to: None,
+            created_by: None,
+            created_by_unique: None,
+            created_at: Utc::now(),
+            changed_at: Utc::now(),
+            closed_at: None,
+            iteration_path: None,
+            story_points: None,
+            description: None,
+            url: url.into(),
+            linked_pr_ids: Vec::new(),
+            parent_id: None,
+            linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            linked_prs: Vec::new(),
+            tag_suggestions: Vec::new(),
+        };
+        let items = vec![
+            item("A", "https://t/1"),
+            item("B", "https://t/1"), // same item seen by a second team
+            item("B", ""),
+            item("B", ""), // url-less items can't be matched: both stay
+        ];
+        assert_eq!(dedupe_work_items(items.clone(), false).len(), 3);
+        assert_eq!(dedupe_work_items(items, true).len(), 4);
+    }
+
+    #[test]
+    fn all_teams_scope_counts_a_shared_project_pr_once() {
+        let prs = vec![
+            pr_at("Platform", "https://example/pr/1"),
+            pr_at("DevOps", "https://example/pr/1"), // same project polled by a second team
+            pr_at("DevOps", "https://example/pr/2"),
+        ];
+        assert_eq!(dedupe_pull_requests(prs.clone(), false).len(), 2);
+        // A single-team scope is already unique per team and is left alone.
+        assert_eq!(dedupe_pull_requests(prs, true).len(), 3);
+    }
+
     #[test]
     fn sanitize_owner_keeps_unreserved_and_collapses_rest() {
         // Emails stay readable; path separators + other chars become `_` so the
@@ -3977,6 +4289,12 @@ mod tests {
             linked_pr_ids: Vec::new(),
             parent_id: None,
             linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            created_by: None,
+            created_by_unique: None,
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
@@ -4178,6 +4496,8 @@ mod tests {
                     auth: Default::default(),
                     wiql: None,
                     pipeline_ids: vec![],
+                    board_team: None,
+                    members: Vec::new(),
                     rules: None,
                 },
                 TeamConfig {
@@ -4191,6 +4511,8 @@ mod tests {
                     auth: Default::default(),
                     wiql: None,
                     pipeline_ids: vec![],
+                    board_team: None,
+                    members: Vec::new(),
                     rules: Some(RuleSet::default()),
                 },
             ],

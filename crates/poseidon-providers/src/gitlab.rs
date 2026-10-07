@@ -178,10 +178,25 @@ impl Provider for GitlabProvider {
         // Active (open) MRs = the in-flight set the PR screen shows.
         let url = self.project_url("merge_requests", "state=opened&per_page=100");
         let raw: Vec<GlMergeRequest> = self.get_json(&url).await?;
-        Ok(raw
+        let mut out: Vec<PullRequest> = raw
             .into_iter()
             .map(|m| normalise_merge_request(m, &self.team))
-            .collect())
+            .collect();
+        // Plus the most recently updated merged / closed MRs (one page each). They
+        // aren't shown on the PR screen; they feed work-item chip colours and the
+        // per-contributor report.
+        for state in ["merged", "closed"] {
+            let url = self.project_url(
+                "merge_requests",
+                &format!("state={state}&order_by=updated_at&sort=desc&per_page=100"),
+            );
+            let raw: Vec<GlMergeRequest> = self.get_json(&url).await?;
+            out.extend(
+                raw.into_iter()
+                    .map(|m| normalise_merge_request(m, &self.team)),
+            );
+        }
+        Ok(out)
     }
 
     async fn fetch_pull_request(&self, id: i64) -> Result<PullRequest, ProviderError> {
@@ -329,6 +344,7 @@ fn credential_token(credential: &Credential) -> &str {
 #[derive(Debug, Deserialize)]
 struct GlUser {
     name: Option<String>,
+    username: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -343,6 +359,8 @@ struct GlIssue {
     assignee: Option<GlUser>,
     #[serde(default)]
     assignees: Vec<GlUser>,
+    /// Who opened the issue.
+    author: Option<GlUser>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
     closed_at: Option<DateTime<Utc>>,
@@ -357,6 +375,8 @@ struct GlMergeRequest {
     draft: Option<bool>,
     author: Option<GlUser>,
     created_at: Option<DateTime<Utc>>,
+    merged_at: Option<DateTime<Utc>>,
+    closed_at: Option<DateTime<Utc>>,
     source_branch: Option<String>,
     target_branch: Option<String>,
     #[serde(default)]
@@ -429,6 +449,12 @@ fn normalise_issue(raw: GlIssue, team: &str) -> WorkItem {
         linked_pr_ids: Vec::new(),
         parent_id: None,
         linked_repos: Vec::new(),
+        board_column: None,
+        board_column_done: None,
+        board_lane: None,
+        backlog_rank: None,
+        created_by_unique: raw.author.as_ref().and_then(|a| a.username.clone()),
+        created_by: raw.author.and_then(|a| a.name),
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }
@@ -454,11 +480,15 @@ fn normalise_merge_request(raw: GlMergeRequest, team: &str) -> PullRequest {
         status: map_mr_status(raw.state.as_deref()),
         is_draft: raw.draft.unwrap_or(false),
         repository: None,
+        author_unique: raw.author.as_ref().and_then(|a| a.username.clone()),
         author: raw.author.and_then(|a| a.name),
         created_at: raw.created_at,
         source_branch: raw.source_branch,
         target_branch: raw.target_branch,
+        closed_at: raw.merged_at.or(raw.closed_at),
         reviewer_count: raw.reviewers.len() as i64,
+        // GitLab approvals are a separate endpoint; not fetched, so no votes.
+        reviewers: Vec::new(),
         url: raw.web_url.unwrap_or_default(),
         flags: Vec::new(),
         linked_work_items: Vec::new(),
@@ -870,6 +900,8 @@ mod tests {
             auth: Default::default(),
             wiql: None,
             pipeline_ids: vec![],
+            board_team: None,
+            members: Vec::new(),
             rules: None,
         };
         // Empty token -> anonymous (public project reads without auth).

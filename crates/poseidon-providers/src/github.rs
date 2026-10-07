@@ -216,10 +216,25 @@ impl Provider for GithubProvider {
         // `Active`; the status mapping is honest for closed/merged too, so this
         // stays correct even if the query later widens.
         let raw: Vec<GhPull> = self.get_paged("pulls", "state=open").await?;
-        Ok(raw
+        let mut out: Vec<PullRequest> = raw
             .into_iter()
             .map(|p| normalise_pull_request(p, &self.team))
-            .collect())
+            .collect();
+        // Plus the most recently updated closed PRs (one page, to keep the request
+        // count - and anonymous rate-limit use - flat). They aren't shown on the PR
+        // screen; they feed work-item chip colours and the per-contributor report.
+        let closed: Vec<GhPull> = self
+            .get_json(&self.repo_url(
+                "pulls",
+                &format!("state=closed&sort=updated&direction=desc&per_page={PAGE_SIZE}"),
+            ))
+            .await?;
+        out.extend(
+            closed
+                .into_iter()
+                .map(|p| normalise_pull_request(p, &self.team)),
+        );
+        Ok(out)
     }
 
     async fn fetch_pull_request(&self, id: i64) -> Result<PullRequest, ProviderError> {
@@ -378,6 +393,8 @@ struct GhIssue {
     assignee: Option<GhUser>,
     #[serde(default)]
     assignees: Vec<GhUser>,
+    /// Who opened the issue.
+    user: Option<GhUser>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
     closed_at: Option<DateTime<Utc>>,
@@ -414,6 +431,7 @@ struct GhPull {
     draft: bool,
     user: Option<GhUser>,
     created_at: Option<DateTime<Utc>>,
+    closed_at: Option<DateTime<Utc>>,
     merged_at: Option<DateTime<Utc>>,
     html_url: Option<String>,
     head: Option<GhRef>,
@@ -534,6 +552,13 @@ fn normalise_issue(raw: GhIssue, team_name: &str) -> WorkItem {
         linked_pr_ids: Vec::new(),
         parent_id: None,
         linked_repos: Vec::new(),
+        board_column: None,
+        board_column_done: None,
+        board_lane: None,
+        backlog_rank: None,
+        // A GitHub login is both the display and the sign-in identity.
+        created_by_unique: raw.user.as_ref().map(|u| u.login.clone()),
+        created_by: raw.user.map(|u| u.login),
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }
@@ -578,11 +603,18 @@ fn normalise_pull_request(raw: GhPull, team_name: &str) -> PullRequest {
         status,
         is_draft: raw.draft,
         repository,
+        // A GitHub login is both the display and the sign-in identity.
+        author_unique: raw.user.as_ref().map(|u| u.login.clone()),
         author: raw.user.map(|u| u.login),
         created_at: raw.created_at,
         source_branch,
         target_branch,
+        // Merged PRs close at merge time; a plain close uses `closed_at`. Still-open
+        // PRs have neither.
+        closed_at: raw.merged_at.or(raw.closed_at),
         reviewer_count: raw.requested_reviewers.len() as i64,
+        // GitHub reviews live behind a per-PR endpoint; not fetched, so no votes.
+        reviewers: Vec::new(),
         url,
         flags: Vec::new(),
         linked_work_items: Vec::new(),
@@ -912,6 +944,8 @@ mod tests {
             auth: Default::default(),
             wiql: None,
             pipeline_ids: vec![],
+            board_team: None,
+            members: Vec::new(),
             rules: None,
         }
     }

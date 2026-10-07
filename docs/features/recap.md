@@ -37,12 +37,39 @@ Open **Recap** from the sidebar (hash route `#recap`), grouped with
     auto-generated highlights with the real narrative, add screenshots for the
     marquee items, and trim to a tight story.
 - **Edit the preview** - the preview is WYSIWYG. Every closed item is listed (no cap),
-  and you tidy the deck by hand: hover a row and click **×** to drop it (an emptied
-  group's heading goes with it), and click a slide's summary to rewrite it (plain
-  text; **Esc** or clicking away saves). Edits live in the deck itself, so **Download
-  deck** exports exactly what you see, and a late AI summary never overwrites wording
-  you've already changed. **Regenerate** (or changing the window) rebuilds the deck and
-  discards all edits.
+  and you shape the deck by hand; edits live in the deck itself, so **Download deck**
+  exports exactly what you see, and a late AI summary never overwrites wording you've
+  already changed. Clicking a slide never turns the page while you edit - use **Prev** /
+  **Next** or the **←** / **→** keys to change slide (the downloaded deck still advances on a
+  click):
+  - **Remove** - hover a row and click **×** to drop it (an emptied group's heading goes
+    with it).
+  - **Reorder and regroup** - drag a row by its **⋮⋮** handle to move it within its group
+    or into another group on the same slide (drop it on a row, on a group's heading, or
+    on an empty group; **Esc** cancels a drag). Drag a group's handle, or use its **↑ ↓** buttons, to reorder
+    groups; **×** on a group's heading removes the group and its items.
+  - **Custom headings and groups** - click a group heading to rename it (**Enter**
+    saves), or click **+ Add group** to make a new one - say *Observability* - then drag
+    the related items under it. Groups you add are not tied to a work-item type or
+    parent, so you can slice the slide any way that tells the story. A group left empty
+    is dropped from the downloaded deck.
+  - **Open a work item** - every item's number (`#917174`) is a link that opens the item
+    in your tracker (in the desktop app, in your system browser). Clicking a link never
+    turns the page, in the preview or in the downloaded deck.
+  - **✨ Suggest groups** - asks your AI model to propose themed groups for the slide on
+    screen (for example everything about alerting under *Observability*, rather than
+    Recap's default grouping by work-item type). A dialog takes optional guidance
+    (*"keep observability together and split out the DR work"*), then shows the proposed
+    groups to review; **Apply to this slide** swaps them in, **Try again** asks again, and
+    nothing changes until you apply. Any item the model leaves out stays in the group it
+    was in, an item never appears twice, and you can keep dragging to fine-tune the
+    result. Needs an online model (Settings → AI); without one the dialog says so.
+  - **Reorder slides** - **← Move** / **Move →** next to the slide counter move the
+    current slide earlier or later.
+  - **Rewrite the summary** - click a slide's summary to edit it (plain text; **Esc** or
+    clicking away saves).
+
+  **Regenerate** (or changing the window) rebuilds the deck and discards all edits.
 - **AI summaries** - the deck renders straight away with placeholder blurbs, then
   POSEIDON sends each area's closed work items (titles, types, parent names, plus the
   team background from Rules) to your configured AI model through the same backend

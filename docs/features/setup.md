@@ -46,8 +46,8 @@ data - every read resolves from a shipped fixture and every write is a harmless
 no-op - so you can click through every screen (including Recap) with **no backend
 and no sign-in**. It's a try-before-you-host tour, not a way to connect real data.
 
-The sample data is entirely fictional (a made-up "Platform" team with ~75 work items
-across nine areas) and **always looks current**: on every load the app slides all
+The sample data is entirely fictional (a made-up "Platform" team with ~90 work items
+across nine areas, laid out on tracker-style Stories / Features / Epics boards) and **always looks current**: on every load the app slides all
 fixture timestamps forward by whole days so the newest data lands on yesterday, which
 keeps windows like Recap's and Reports' "last 30 days" populated no matter when the demo
 is opened. The fixtures under `frontend/web/assets/demo/` are generated - edit and
@@ -81,9 +81,10 @@ provider you pick:
 - **All providers** - an optional **Token env var**: the *name* of an environment
   variable holding an access token. Public GitHub / GitLab repos need none - leave
   it blank to poll anonymously.
+- **All providers** - optional **Team members override**: who counts as on the team for per-person reports such as [contributor activity](reports.md), by name or sign-in (one per line). Normally leave it blank: Azure DevOps teams are read from the tracker's own team roster on every poll.
 
 Team name plus the two provider-specific top fields (owner/org + repo/project) are
-required; area path, tenant, and the token env var are optional.
+required; area path, tenant, the token env var, and the members override are optional.
 
 ### Signing in
 

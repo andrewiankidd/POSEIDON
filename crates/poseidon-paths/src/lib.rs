@@ -148,6 +148,19 @@ impl Paths {
         self.data_root.join("az-sessions")
     }
 
+    /// Where a file the user asked to export (the Recap deck, a CSV, ...) is saved. Normally
+    /// the OS Downloads folder - where any browser download would land. In portable mode it is
+    /// `<root>/exports/`, so a portable install still writes nothing outside its own folder.
+    /// Falls back to `<root>/exports/` when the platform has no Downloads folder.
+    pub fn exports_dir(&self) -> PathBuf {
+        if self.portable {
+            return self.data_root.join("exports");
+        }
+        directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(Path::to_path_buf))
+            .unwrap_or_else(|| self.data_root.join("exports"))
+    }
+
     /// Create the data root + standard subdirectories if they don't exist.
     /// Idempotent. Callers run this once at startup before any write.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
@@ -301,6 +314,17 @@ mod tests {
         // The normal installed name is NOT portable.
         let installed = Paths::resolve_with(&env, Some(&bin), Some("poseidon-app"));
         assert!(!installed.is_portable());
+    }
+
+    #[test]
+    fn portable_exports_stay_inside_the_portable_root() {
+        let bin = PathBuf::from("/opt/poseidon");
+        let paths = Paths::resolve_with(&EnvSnapshot::new(true), Some(&bin), None);
+        assert_eq!(paths.exports_dir(), bin.join(".portable/exports"));
+        // Not portable: the OS Downloads folder (or, with none, a folder under the data root)
+        // - either way never beside the binary.
+        let normal = Paths::resolve_with(&EnvSnapshot::default(), Some(&bin), None);
+        assert!(!normal.exports_dir().starts_with(&bin));
     }
 
     #[test]

@@ -30,6 +30,11 @@ pub enum GroupBy {
     Title,
     Day,
     Week,
+    /// Pull-request author (service identities such as build bots are skipped).
+    Author,
+    /// Pull-request reviewer: a row lands in one bucket per person who voted on it
+    /// (not the author, not service identities).
+    Reviewer,
 }
 
 /// What a series measures per bucket.
@@ -46,6 +51,9 @@ pub enum Metric {
         numerator: Vec<Condition>,
         denominator: Vec<Condition>,
     },
+    /// Median days from creation to close (merge / abandon) over the bucket's
+    /// closed rows; 0 when none have closed. Powers time-to-merge.
+    MedianDaysToClose,
 }
 
 /// Comparison operators for a [`Condition`]. `In` matches any of a comma-
@@ -83,8 +91,10 @@ pub struct Series {
     pub filters: Vec<Condition>,
     /// Which timestamp the report's time window + Day/Week bucketing apply to
     /// (`created` / `closed` / `changed` for work items, `finished` / `started`
-    /// for runs). `None` uses the source's primary timestamp. This is what lets a
-    /// flow report count items *closed* in a window rather than *created*.
+    /// for runs; `created` / `closed` for PRs). `None` uses the source's primary
+    /// timestamp. This is what lets a flow report count items *closed* in a window
+    /// rather than *created*. The special value `any` ignores the window entirely
+    /// (e.g. "open right now", however old).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_field: Option<String>,
 }
@@ -100,6 +110,10 @@ pub enum RenderKind {
     Table,
     Plaintext,
     List,
+    /// One row per matching item (id, type, state, created, creator, assignee, title)
+    /// rather than aggregated numbers. Uses the first series' source (work items),
+    /// filters and time window, and fills [`ReportResult::table`].
+    Items,
 }
 
 /// Time window a report covers, applied to each source's primary timestamp
@@ -153,6 +167,10 @@ pub struct ResultSeries {
     /// render them as percentages rather than raw counts.
     #[serde(default)]
     pub percent: bool,
+    /// True when the points are counts that add up to a meaningful total (e.g.
+    /// PRs per author), so a table can show a totals row.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub summable: bool,
 }
 
 /// The outcome of running a [`ReportSpec`]: echoes name + render so the UI can
@@ -162,4 +180,23 @@ pub struct ReportResult {
     pub name: String,
     pub render: RenderKind,
     pub series: Vec<ResultSeries>,
+    /// Row listing for [`RenderKind::Items`] reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<ReportTable>,
+}
+
+/// A listing of individual items: header plus one row each, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportTable {
+    pub columns: Vec<String>,
+    pub rows: Vec<TableRow>,
+}
+
+/// One row of a [`ReportTable`]: a cell per column, and the item's web URL (the first
+/// cell links to it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableRow {
+    pub cells: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }

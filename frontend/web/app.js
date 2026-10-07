@@ -4,7 +4,7 @@
 
 import {
   api, mode, capabilities, identity, getDevOwner, setDevOwner, getInstanceUrl, setInstanceUrl, getTeamScope, setTeamScope,
-  getPageSize, setPageSize, signIn, isInitialized, initialize, exportConfig, importConfig, windowAction, openExternal,
+  getPageSize, setPageSize, signIn, isInitialized, initialize, exportConfig, importConfig, windowAction, openExternal, saveDownload, revealDownload,
 } from './lib/api.js';
 import { el, clear, esc, ago, shortDate, toast } from './lib/dom.js';
 import { barChart, gauge, pieChart, lineChart } from './lib/charts.js';
@@ -591,7 +591,10 @@ function flagBreakdownCard(d, pending) {
 
 // ── Work Items ──────────────────────────────────────────────────────
 async function renderWorkItems() {
-  const { items, flags } = await api.tickets();
+  const { items, flags, boards: teamBoards } = await api.tickets();
+  // The tracker's own Kanban boards (Azure DevOps: Stories / Features / Epics), so the
+  // board view can mirror the web UI's real columns instead of grouping by state.
+  let boardDefs = mergeBoards(teamBoards);
   // Hydrate any pending "Improve all" drafts from the DB (durable across refresh /
   // machine) into the in-memory cache, so the ✨ badges + editor pre-fill come back
   // after a reload. Merges over the localStorage copy; best-effort.
@@ -619,6 +622,7 @@ async function renderWorkItems() {
       const fresh = await api.tickets();
       // Guard: a malformed/thin response (e.g. under load) must not wipe the view.
       if (!fresh || !Array.isArray(fresh.items)) return;
+      boardDefs = mergeBoards(fresh.boards);
       flagsById.clear();
       for (const f of (fresh.flags || [])) {
         if (!flagsById.has(f.work_item_id)) flagsById.set(f.work_item_id, []);
@@ -679,6 +683,9 @@ async function renderWorkItems() {
   // dashboard tile / Health-check row.
   const flagCode = routeParams().get('flag');
   const state = listState('work-items', flagCode);
+  if (String(state.view || '').startsWith('col:') && !boardDefs.some((b) => 'col:' + b.name === state.view)) {
+    state.view = 'table';
+  }
 
   // "Rule Breaks" toggle - a switch in the table toolbar that flips a predicate
   // the table re-reads (only items with hygiene-rule violations).
@@ -1459,6 +1466,7 @@ async function renderWorkItems() {
       .filter(Boolean))].sort();
     const opts = [
       { v: 'table', label: '▤ Table' },
+      ...boardDefs.map((b) => ({ v: 'col:' + b.name, label: `▦ ${b.name} board (tracker columns)` })),
       { v: 'state', label: '▦ Board · State' },
       ...prefixes.map((p) => ({ v: p, label: `▦ Board · ${p[0].toUpperCase()}${p.slice(1)}` })),
     ];
@@ -1492,7 +1500,10 @@ async function renderWorkItems() {
     const shown = items.filter((it) =>
       passesFlagFilter(state, flagsOf(it).map((f) => f.code)) && matchesKeyword(it, state.keyword) && passesFacets(state, it));
     const cols = el('div', { class: 'board-cols' });
-    const groups = groupForBoard(shown, axis, rules.board_state_order);
+    const trackerBoard = String(axis).startsWith('col:') ? boardDefs.find((b) => 'col:' + b.name === axis) : null;
+    const groups = trackerBoard
+      ? groupForColumns(shown, trackerBoard)
+      : groupForBoard(shown, axis, rules.board_state_order);
     for (const g of groups) {
       const colIds = g.items.map((it) => it.id);
       const headCb = el('input', {
@@ -1504,8 +1515,24 @@ async function renderWorkItems() {
         el('div', { class: 'board-col-head' }, [
           headCb,
           el('span', { class: 'board-col-name', title: g.key }, g.key),
-          el('span', { class: 'board-col-count' }, String(g.items.length)),
-        ]),
+          g.hint ? el('span', { class: 'board-col-hint' }, g.hint) : null,
+          el('button', {
+            class: 'board-col-copy', type: 'button',
+            title: `Copy this column (${g.items.length} item${g.items.length === 1 ? '' : 's'}) as a bullet list`,
+            'aria-label': `Copy ${g.key} as bullet points`,
+            onclick: async (e) => {
+              e.stopPropagation();
+              const ok = await copyText(columnBullets(g.items));
+              toast(ok ? `Copied ${g.items.length} item${g.items.length === 1 ? '' : 's'} from "${g.key}" as bullets`
+                : 'Could not copy to the clipboard', !ok);
+            },
+          }, '⧉'),
+          // Work-in-progress count: `n/limit`, red once the tracker's limit is exceeded.
+          el('span', {
+            class: 'board-col-count' + (g.limit != null && g.items.length > g.limit ? ' over' : ''),
+            title: g.limit != null ? `Work-in-progress limit ${g.limit}` : '',
+          }, g.limit != null ? `${g.items.length}/${g.limit}` : String(g.items.length)),
+        ].filter(Boolean)),
         el('div', { class: 'board-col-cards' }, g.items.map(boardCard)),
       ]));
     }
@@ -1552,6 +1579,98 @@ async function renderWorkItems() {
           }, flagShort(f))))
         : null,
     ].filter(Boolean));
+  }
+}
+
+// ── Tracker board columns (Azure DevOps) ──────────────────────────────
+// A tracker's columns are not work-item states: a team can add "To prioritize" beside
+// "New" and map both to State=New. So the board view mirrors the tracker's own columns,
+// using the column each item reports (`board_column`) rather than its state.
+
+// The outgoing (finished) column would hold the whole history, so - like the tracker -
+// it shows only recent work.
+const OUTGOING_DAYS = 14;
+
+// Merge each team's boards into one list by board name. Columns keep the first team's
+// order; with several teams the per-team WIP limits no longer mean anything, so drop them.
+function mergeBoards(teamBoards) {
+  const list = teamBoards || [];
+  const byName = new Map();
+  for (const tb of list) {
+    for (const b of tb.boards || []) {
+      const cur = byName.get(b.name) || { name: b.name, columns: [], work_item_types: [] };
+      for (const c of b.columns || []) {
+        if (!cur.columns.some((x) => x.name.toLowerCase() === c.name.toLowerCase())) cur.columns.push({ ...c });
+      }
+      for (const t of b.work_item_types || []) {
+        if (!cur.work_item_types.some((x) => x.toLowerCase() === t.toLowerCase())) cur.work_item_types.push(t);
+      }
+      byName.set(b.name, cur);
+    }
+  }
+  const boards = [...byName.values()];
+  if (list.length > 1) boards.forEach((b) => b.columns.forEach((c) => { c.wip_limit = null; }));
+  return boards;
+}
+
+// Order within a column follows the tracker's manual order (lower rank = nearer the top);
+// unranked items sort after ranked ones, then by id.
+function byBacklogRank(a, b) {
+  const ra = a.backlog_rank, rb = b.backlog_rank;
+  if (ra != null && rb != null && ra !== rb) return ra - rb;
+  if ((ra != null) !== (rb != null)) return ra != null ? -1 : 1;
+  return a.id - b.id;
+}
+
+// Bucket the items that live on `board` into its columns, in the tracker's order. An
+// item with no column isn't on this team's board (it belongs to another team or area) so
+// it's left out, as the tracker does; one whose column no longer exists lands in
+// "(other column)" rather than vanishing.
+function groupForColumns(items, board, now = Date.now()) {
+  const covers = (t) => (board.work_item_types || []).some((x) => x.toLowerCase() === String(t || '').toLowerCase());
+  const cols = (board.columns || []).map((c) => ({
+    key: c.name, limit: c.wip_limit ?? null, kind: c.kind || 'in_progress', items: [],
+    hint: c.kind === 'outgoing' ? `last ${OUTGOING_DAYS} days` : '',
+  }));
+  const byName = new Map(cols.map((c) => [c.key.toLowerCase(), c]));
+  const other = { key: '(other column)', limit: null, kind: 'in_progress', items: [], hint: '' };
+  const cutoff = now - OUTGOING_DAYS * 86400000;
+  for (const it of items) {
+    if (!covers(it.work_item_type) || !it.board_column) continue;
+    const col = byName.get(String(it.board_column).toLowerCase());
+    if (!col) { other.items.push(it); continue; }
+    if (col.kind === 'outgoing') {
+      const t = Date.parse(it.closed_at || it.changed_at || '');
+      if (!(t >= cutoff)) continue;
+    }
+    col.items.push(it);
+  }
+  const out = other.items.length ? [...cols, other] : cols;
+  out.forEach((c) => c.items.sort(byBacklogRank));
+  return out;
+}
+
+// One markdown bullet per item - id (linked to the tracker when we have its URL), type,
+// title - in the column's order. For pasting a column into a doc, chat or status update.
+function columnBullets(items) {
+  return items.map((it) => {
+    const ref = it.url ? `[#${it.id}](${it.url})` : `#${it.id}`;
+    return `- ${ref} ${it.work_item_type ? it.work_item_type + ': ' : ''}${it.title || ''}`;
+  }).join('\n');
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    try {
+      const ta = el('textarea', { style: 'position:fixed;left:-9999px;top:0' });
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch { return false; }
   }
 }
 
@@ -2761,15 +2880,29 @@ function reportEditorPanel(spec, { onSaved }) {
   drawSeries();
 
   const daysInputEl = el('input', { class: 'inp', type: 'number', min: '1', style: 'width:80px', value: draft.time_range.days || 30, oninput: (e) => { if (draft.time_range.kind === 'last_days') { draft.time_range.days = parseInt(e.target.value, 10) || 30; onChange(); } } });
+  const isoDay = (d) => d.toISOString().slice(0, 10);
+  const fromInputEl = el('input', { class: 'inp', type: 'date', style: 'width:150px', value: draft.time_range.from || '', oninput: (e) => { if (draft.time_range.kind === 'between') { draft.time_range.from = e.target.value; onChange(); } } });
+  const toInputEl = el('input', { class: 'inp', type: 'date', style: 'width:150px', value: draft.time_range.to || '', oninput: (e) => { if (draft.time_range.kind === 'between') { draft.time_range.to = e.target.value; onChange(); } } });
+  const showRangeInputs = () => {
+    const k = draft.time_range.kind;
+    daysInputEl.style.display = k === 'last_days' ? '' : 'none';
+    fromInputEl.style.display = toInputEl.style.display = k === 'between' ? '' : 'none';
+  };
   const rangeRow = el('div', { class: 'row' }, [
-    selectEl([['all_time', 'All time'], ['last_days', 'Last N days']], draft.time_range.kind, (v) => {
-      draft.time_range = v === 'last_days' ? { kind: 'last_days', days: parseInt(daysInputEl.value, 10) || 30 } : { kind: 'all_time' };
-      daysInputEl.style.display = v === 'last_days' ? '' : 'none';
+    selectEl([['all_time', 'All time'], ['last_days', 'Last N days'], ['between', 'Between dates']], draft.time_range.kind, (v) => {
+      if (v === 'last_days') draft.time_range = { kind: 'last_days', days: parseInt(daysInputEl.value, 10) || 30 };
+      else if (v === 'between') {
+        // Default to the last 30 days so the preview shows something straight away.
+        const to = new Date(); const from = new Date(Date.now() - 30 * 86400000);
+        draft.time_range = { kind: 'between', from: fromInputEl.value || isoDay(from), to: toInputEl.value || isoDay(to) };
+        fromInputEl.value = draft.time_range.from; toInputEl.value = draft.time_range.to;
+      } else draft.time_range = { kind: 'all_time' };
+      showRangeInputs();
       onChange();
     }),
-    daysInputEl,
+    daysInputEl, fromInputEl, toInputEl,
   ]);
-  daysInputEl.style.display = draft.time_range.kind === 'last_days' ? '' : 'none';
+  showRangeInputs();
 
   let editorGrid;
   const builderToggle = el('button', { class: 'btn btn-xs', title: 'Hide editor',
@@ -2815,11 +2948,31 @@ function reportEditorPanel(spec, { onSaved }) {
 const fmtValue = (v, percent) => percent ? `${Math.round(v * 100)}%` : (Number.isInteger(v) ? String(v) : v.toFixed(2));
 
 // ── Report export: PDF (native print), PNG (rasterise the SVG), CSV (raw data) ──
-function downloadBlob(blob, filename) {
+// Exports go through the desktop shell when there is one: it saves to the Downloads folder
+// (`.portable/exports` in portable mode), tells us the real path, and the toast can open the
+// folder. A browser has no such hook, so it gets the normal download plus a confirmation.
+// Resolves true once the file is saved, false if it could not be.
+async function downloadBlob(blob, filename) {
+  try {
+    const saved = await saveDownload(filename, new Uint8Array(await blob.arrayBuffer()));
+    if (saved && saved.path) {
+      const name = String(saved.path).split(/[\\/]/).pop();
+      toast(`Saved ${name} to ${saved.dir}`, false, {
+        label: 'Show in folder',
+        onClick: () => revealDownload(saved.path).catch((e) => toast('Could not open the folder: ' + (e?.message || e), true)),
+      });
+      return true;
+    }
+  } catch (e) {
+    toast('Could not save ' + filename + ': ' + (e?.message || e), true);
+    return false;
+  }
   const url = URL.createObjectURL(blob);
   const a = el('a', { href: url, download: filename });
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Downloaded ${filename} - see your browser's downloads.`);
+  return true;
 }
 
 // Print just `node` (theme + vector intact) by isolating it with `@media print`, rather
@@ -2873,6 +3026,12 @@ async function svgToPng(svg, scale = 2) {
 }
 
 function seriesToCsv(result) {
+  if (result.table) {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = result.visibleRows || result.table.rows;
+    return [[...result.table.columns, 'URL'].map(esc).join(','),
+      ...rows.map((r) => [...r.cells, r.url || ''].map(esc).join(','))].join('\r\n');
+  }
   const series = result.series || [];
   const labels = [];
   series.forEach((s) => s.points.forEach((p) => { if (!labels.includes(p.label)) labels.push(p.label); }));
@@ -2904,6 +3063,7 @@ function reportExportBar(getNode, getResult, getName) {
 }
 
 function renderReportResult(result) {
+  if (result.render === 'items' || result.table) return itemsReportTable(result);
   const series = result.series || [];
   if (!series.length || series.every((s) => !s.points.length)) {
     return el('div', { class: 'empty' }, 'No data for this report.');
@@ -2939,6 +3099,45 @@ function renderReportResult(result) {
   }
 }
 
+// The person last picked in an item-list report, per report name, so a re-run (a changed
+// date range, a refresh) keeps the same person selected.
+const itemsReportPerson = {};
+
+// An item-list report: one row per work item, newest first, narrowed to one creator with a
+// picker built from who actually appears in the rows. `result.visibleRows` tracks what is
+// on screen so the CSV export matches it.
+function itemsReportTable(result) {
+  const table = result.table || { columns: [], rows: [] };
+  const people = [...new Set(table.rows.map((r) => r.cells[4]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const host = el('div', {});
+  const count = el('span', { class: 'muted' });
+  const body = el('div', {});
+  const picker = el('select', { class: 'inp', style: 'width:auto', title: 'Show only items created by this person',
+    onchange: (e) => { itemsReportPerson[result.name] = e.target.value; draw(); } },
+    [el('option', { value: '' }, `All people (${people.length})`), ...people.map((p) => el('option', { value: p }, p))]);
+  if (people.includes(itemsReportPerson[result.name])) picker.value = itemsReportPerson[result.name];
+
+  function draw() {
+    const who = picker.value;
+    const rows = who ? table.rows.filter((r) => r.cells[4] === who) : table.rows;
+    result.visibleRows = rows;
+    count.textContent = `${rows.length} work item${rows.length === 1 ? '' : 's'}`;
+    clear(body);
+    if (!rows.length) { body.appendChild(el('div', { class: 'empty' }, 'No work items created in this window.')); return; }
+    const head = el('tr', {}, table.columns.map((c) => el('th', {}, c)));
+    const trs = rows.map((r) => el('tr', {}, r.cells.map((cell, i) => {
+      if (i === 0 && r.url) return el('td', {}, el('a', { class: 'link', href: r.url, title: 'Open in the tracker', onclick: (e) => { e.preventDefault(); openExternal(r.url); } }, '#' + cell));
+      return el('td', i === 6 ? { style: 'white-space:normal' } : {}, i === 0 ? '#' + cell : cell);
+    })));
+    body.appendChild(el('div', { class: 'table-wrap' }, el('table', {}, [el('thead', {}, head), el('tbody', {}, trs)])));
+  }
+  host.appendChild(el('div', { class: 'row', style: 'margin-bottom:8px;align-items:center;gap:10px' }, [
+    el('span', {}, 'Created by'), picker, count]));
+  host.appendChild(body);
+  draw();
+  return host;
+}
+
 function reportTable(series) {
   // Union of point labels across series -> rows; one value column per series.
   const labels = [];
@@ -2951,7 +3150,17 @@ function reportTable(series) {
       return el('td', { style: 'text-align:right;font-weight:600' }, pt ? fmtValue(pt.value, s.percent) : '-');
     }),
   ]));
-  return el('div', { class: 'table-wrap' }, el('table', {}, [el('thead', {}, head), el('tbody', {}, rows)]));
+  // A totals row, only when some column is a plain per-person count (rates and medians
+  // can't be summed, so they show a dash).
+  let foot = null;
+  if (series.some((s) => s.summable) && labels.length > 1) {
+    foot = el('tfoot', {}, el('tr', { class: 'report-total' }, [
+      el('td', {}, 'Total'),
+      ...series.map((s) => el('td', { style: 'text-align:right;font-weight:700' },
+        s.summable ? fmtValue(s.points.reduce((n, p) => n + p.value, 0), false) : '-')),
+    ]));
+  }
+  return el('div', { class: 'table-wrap' }, el('table', {}, [el('thead', {}, head), el('tbody', {}, rows), foot].filter(Boolean)));
 }
 
 // ── Report builder ──────────────────────────────────────────────────
@@ -2969,9 +3178,11 @@ const REPORT_SOURCES = [
 const REPORT_GROUPBYS = [
   ['', 'None (single total)'], ['tag', 'Tag'], ['state', 'State'], ['status', 'Status'],
   ['team', 'Team'], ['work_item_type', 'Work item type'], ['title', 'Title'], ['day', 'Day'], ['week', 'Week'],
+  ['author', 'Author / creator (people)'], ['reviewer', 'Reviewer (pull requests)'],
 ];
 const REPORT_RENDERS = [
   ['stat', 'Stat'], ['bar', 'Bar'], ['pie', 'Pie'], ['line', 'Line'], ['table', 'Table'], ['plaintext', 'Plain text'], ['list', 'List'],
+  ['items', 'Item list (work items)'],
 ];
 const REPORT_OPS = [['eq', '='], ['ne', '≠'], ['in', 'in'], ['contains', 'contains']];
 
@@ -3029,14 +3240,14 @@ function seriesBlock(s, onRemove, canRemove, onChange = () => {}) {
   drawMetricExtra();
   body.append(
     rfield('Source', 'which entity to query', selectEl(REPORT_SOURCES, s.source, (v) => { s.source = v; onChange(); })),
-    rfield('Metric', 'count rows, or a ratio of two subsets', selectEl([['count', 'Count'], ['ratio', 'Ratio (rate)']], s.metric.kind, (v) => {
-      s.metric = v === 'ratio' ? { kind: 'ratio', numerator: [], denominator: [] } : { kind: 'count' };
+    rfield('Metric', 'count rows, a ratio of two subsets, or median days to close', selectEl([['count', 'Count'], ['ratio', 'Ratio (rate)'], ['median_days_to_close', 'Median days to close']], s.metric.kind, (v) => {
+      s.metric = v === 'ratio' ? { kind: 'ratio', numerator: [], denominator: [] } : { kind: v };
       drawMetricExtra();
       onChange();
     })),
     metricExtra,
     rfield('Group by', 'bucket the results', selectEl(REPORT_GROUPBYS, s.group_by || '', (v) => { s.group_by = v || null; onChange(); })),
-    rfield('Time field', 'timestamp the window applies to (blank = default)', el('input', { class: 'inp', placeholder: 'created / closed / finished', value: s.time_field || '', oninput: (e) => { s.time_field = e.target.value || null; onChange(); } })),
+    rfield('Time field', 'timestamp the window applies to (blank = default; "any" = ignore the window)', el('input', { class: 'inp', placeholder: 'created / closed / finished / any', value: s.time_field || '', oninput: (e) => { s.time_field = e.target.value || null; onChange(); } })),
     rfield('Filters', 'only rows matching all of these', conditionEditor(s.filters, onChange)),
   );
   const head = el('div', { class: 'series-head' }, [
@@ -3060,7 +3271,7 @@ function buildSpec(draft) {
       source: s.source,
       metric: s.metric.kind === 'ratio'
         ? { kind: 'ratio', numerator: s.metric.numerator || [], denominator: s.metric.denominator || [] }
-        : { kind: 'count' },
+        : { kind: s.metric.kind || 'count' },
       ...(s.group_by ? { group_by: s.group_by } : {}),
       filters: (s.filters || []).filter((c) => c.field && c.value),
       ...(s.time_field ? { time_field: s.time_field } : {}),
@@ -3126,7 +3337,13 @@ async function renderRecap() {
   const dlBtn = el('button', {
     class: 'btn', disabled: true,
     title: 'Download this deck as a single self-contained HTML file - opens and presents in any browser, no POSEIDON needed',
-    onclick: () => { if (lastDeck) downloadRecapHtml(lastDeck, theme); },
+    onclick: async () => {
+      if (!lastDeck || dlBtn.disabled) return;
+      dlBtn.disabled = true; dlBtn.textContent = '⬇ Saving…';
+      const ok = await downloadRecapHtml(lastDeck, theme);
+      dlBtn.textContent = ok ? '✓ Saved' : '⬇ Download deck';
+      setTimeout(() => { dlBtn.textContent = '⬇ Download deck'; dlBtn.disabled = !lastDeck; }, ok ? 2500 : 0);
+    },
   }, '⬇ Download deck');
 
   const aiNote = el('span', { class: 'muted' });
@@ -3138,11 +3355,13 @@ async function renderRecap() {
   const editor = {
     editable: true,
     onEdit: (slide, kind) => { if (kind === 'description') editedSlides.add(slide); },
+    // Work item numbers are links; the desktop shell must open them in the system browser.
+    onOpen: (url) => openExternal(url),
   };
 
   async function build() {
     const seq = ++buildSeq;
-    lastDeck = null; dlBtn.disabled = true; aiNote.textContent = '';
+    lastDeck = null; dlBtn.disabled = true; aiGroupBtn.disabled = true; aiNote.textContent = '';
     clear(deckHost).appendChild(el('div', { class: 'loading' }, 'Generating deck…'));
     let items = [];
     try { ({ items } = await api.tickets()); }
@@ -3158,7 +3377,7 @@ async function renderRecap() {
       deckHost.appendChild(el('div', { class: 'empty' }, 'No closed work items in this window to recap yet.'));
       return;
     }
-    lastDeck = deck; dlBtn.disabled = false;
+    lastDeck = deck; dlBtn.disabled = false; aiGroupBtn.disabled = false;
     renderDeck(deck, deckHost, editor);
 
     // Progressive enhancement: show the deterministic deck now, then swap each area
@@ -3189,20 +3408,132 @@ async function renderRecap() {
       const why = !res.ai_available
         ? 'no AI model is active - enable one in Settings → AI.'
         : (res.errors || []).join('; ') || 'the model returned nothing.';
-      aiNote.textContent = patched === deck.summaryInputs.length ? ''
+      // Only count areas whose slide is still in the deck (the user may have deleted some).
+      const expected = deck.summaryInputs.filter((i) => deck.slides.some((s) => s.area === i.area)).length;
+      aiNote.textContent = patched === expected ? ''
         : patched ? `AI summaries partly failed: ${why}` : `AI summaries unavailable: ${why}`;
     } catch (e) {
       if (seq === buildSeq) aiNote.textContent = 'AI summaries failed: ' + (e?.message || e);
     }
   }
+  // ✨ Suggest groups: ask the AI model to propose themed groups for the slide on screen,
+  // review them, then apply. Nothing changes until "Apply", and anything the model leaves
+  // out stays in the group it was in.
+  const itemIdOf = (h) => (h && typeof h === 'object') ? Number(h.id) : Number((String(h).match(/^#(\d+)/) || [])[1]);
+  const itemTitleOf = (h) => (h && typeof h === 'object') ? (h.title || '') : String(h).replace(/^#\d+\s*/, '');
+  function openGroupingDialog() {
+    const idx = deckHost._recapIndex ? deckHost._recapIndex() : 0;
+    const slide = lastDeck && lastDeck.slides[idx];
+    const flat = slide && slide.groups ? slide.groups.flatMap((g) => g.items || []) : [];
+    if (!flat.length) { toast('Open an area slide that lists work items first.', true); return; }
+    const guidance = el('textarea', {
+      class: 'inp', rows: 3, style: 'width:100%',
+      placeholder: 'Optional guidance, e.g. "Keep everything about observability together and split out the DR work".',
+    });
+    const body = el('div', {});
+    let seq = 0; // a reply for a dialog that was closed or re-asked is ignored
+    const overlay = el('div', { class: 'dc-overlay', onclick: (e) => { if (e.target === overlay) close(); } });
+    const close = () => { seq++; overlay.remove(); };
+    const title = slide.area || slide.title || 'this slide';
+
+    function showAsk() {
+      clear(body).append(
+        el('p', { class: 'muted', style: 'margin:0 0 8px' },
+          `The model proposes themed groups for the ${flat.length} item${flat.length === 1 ? '' : 's'} on this slide. You review them before anything changes.`),
+        guidance,
+        el('div', { class: 'row', style: 'margin-top:14px;justify-content:flex-end' }, [
+          el('button', { class: 'btn', onclick: close }, 'Cancel'),
+          el('button', { class: 'btn btn-primary', onclick: ask }, '✨ Suggest groups'),
+        ]));
+      setTimeout(() => guidance.focus(), 0);
+    }
+
+    function showMessage(text) {
+      clear(body).append(
+        el('p', { style: 'margin:0 0 14px' }, text),
+        el('div', { class: 'row', style: 'justify-content:flex-end' }, [
+          el('button', { class: 'btn', onclick: close }, 'Close'),
+          el('button', { class: 'btn', onclick: showAsk }, 'Back'),
+        ]));
+    }
+
+    function ask() {
+      const mine = ++seq;
+      clear(body).appendChild(el('div', { class: 'loading' }, '✨ Asking the model… this can take a little while.'));
+      api.recapGroupings({
+        team: getTeamScope(), period: `the last ${periodSel.value} days`, guidance: guidance.value.trim(),
+        area: {
+          area: title,
+          items: flat.map((h) => ({
+            id: itemIdOf(h), title: itemTitleOf(h),
+            work_item_type: (h && h.type) || '', parent_title: (h && h.parent) || null,
+          })),
+        },
+      }).then((res) => {
+        if (mine !== seq) return;
+        if (!res.ai_available) { showMessage('No AI model is active - enable one in Settings → AI.'); return; }
+        if (res.error || !(res.groups || []).length) {
+          showMessage('The model could not suggest groups: ' + (res.error || 'it returned nothing usable.')); return;
+        }
+        showResult(res.groups);
+      }).catch((e) => { if (mine === seq) showMessage('Could not ask the model: ' + (e?.message || e)); });
+    }
+
+    function showResult(groups) {
+      const byId = new Map(flat.map((h) => [itemIdOf(h), h]));
+      const placed = new Set(groups.flatMap((g) => g.ids));
+      const left = flat.filter((h) => !placed.has(itemIdOf(h))).length;
+      clear(body).append(
+        el('p', { class: 'muted', style: 'margin:0 0 8px' },
+          `${groups.length} suggested group${groups.length === 1 ? '' : 's'}${left ? ` · ${left} item${left === 1 ? ' not placed keeps its' : 's not placed keep their'} current group` : ''}.`),
+        el('div', { class: 'recap-ai-preview' }, groups.map((g) => el('div', { class: 'recap-ai-group' }, [
+          el('div', { class: 'recap-ai-heading' }, `${g.heading} (${g.ids.length})`),
+          ...g.ids.map((id) => el('div', { class: 'recap-ai-item' }, byId.has(id) ? `#${id} ${itemTitleOf(byId.get(id))}` : `#${id}`)),
+        ]))),
+        el('div', { class: 'row', style: 'margin-top:14px;justify-content:flex-end' }, [
+          el('button', { class: 'btn', onclick: close }, 'Cancel'),
+          el('button', { class: 'btn', onclick: showAsk }, 'Try again'),
+          el('button', { class: 'btn btn-primary', onclick: () => { apply(groups); close(); } }, 'Apply to this slide'),
+        ]));
+    }
+
+    // Suggested groups first (their rows keep the original objects, so links survive), then
+    // whatever was not placed under the heading it already had.
+    function apply(groups) {
+      const byId = new Map(flat.map((h) => [itemIdOf(h), h]));
+      const placed = new Set();
+      const next = groups.map((g) => ({
+        heading: g.heading,
+        items: g.ids.filter((id) => byId.has(id) && !placed.has(id)).map((id) => { placed.add(id); return byId.get(id); }),
+      })).filter((g) => g.items.length);
+      for (const g of slide.groups) {
+        const rest = (g.items || []).filter((h) => !placed.has(itemIdOf(h)));
+        if (rest.length) next.push({ heading: g.heading, items: rest });
+      }
+      slide.groups = next;
+      renderDeck(lastDeck, deckHost, { ...editor, startIndex: idx });
+      toast(`Grouped "${title}" into ${next.length} group${next.length === 1 ? '' : 's'}. Drag to fine-tune.`);
+    }
+
+    overlay.appendChild(el('div', { class: 'dc-modal', style: 'text-align:left;min-width:420px;width:560px;max-width:92vw' }, [
+      el('h3', {}, `✨ Suggest groups - ${title}`), body]));
+    document.body.appendChild(overlay);
+    showAsk();
+  }
+  const aiGroupBtn = el('button', {
+    class: 'btn', disabled: true,
+    title: 'Ask the AI model to suggest themed groups for the slide on screen (you review them before anything changes)',
+    onclick: openGroupingDialog,
+  }, '✨ Suggest groups');
+
   periodSel.onchange = build;
   wrap.appendChild(el('div', { class: 'row', style: 'gap:8px;align-items:center;margin-bottom:10px' }, [
     el('span', { class: 'muted' }, 'Window:'), periodSel,
     el('button', { class: 'btn', onclick: build }, '↻ Regenerate'),
-    themeControl, brandingControl, dlBtn, aiNote,
+    themeControl, brandingControl, aiGroupBtn, dlBtn, aiNote,
   ]));
   wrap.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin:-4px 0 10px' },
-    'Click a summary to edit it · × removes an item · Regenerate resets all edits.'));
+    'Click a summary or group heading to edit it · drag ⋮⋮ to reorder or regroup · ✨ suggests groups · × removes · Regenerate resets all edits.'));
   wrap.appendChild(deckHost);
   build();
   return wrap;
@@ -3475,7 +3806,12 @@ function buildRecapDeck(items, days) {
       if (parent) addTo(parentGroups, parent.id, it);
       else addTo(typeGroups, (it.work_item_type || '').trim() || 'Work item', it);
     }
-    const row = (it) => `#${it.id} ${it.title || ''}`.trim();
+    // A row is the work item itself (not a pre-joined string): the number renders as a link
+    // to the tracker, and the type + parent ride along for the AI grouping suggester.
+    const row = (it) => ({
+      id: it.id, title: it.title || '', url: it.url || '', type: (it.work_item_type || '').trim(),
+      parent: (it.parent_id != null ? itemById.get(it.parent_id)?.title : '') || '',
+    });
     const rankOf = (type) => TYPE_RANK[(type || '').toLowerCase()] ?? 99;
     const slideGroups = [
       ...[...parentGroups.entries()].map(([parentId, children]) => {
@@ -3539,7 +3875,7 @@ async function downloadRecapHtml(deck, theme = {}) {
       fetch(new URL('./lib/recap-slides.js', import.meta.url)).then((r) => r.text()),
       fetch(new URL('./styles.css', import.meta.url)).then((r) => r.text()),
     ]);
-  } catch (e) { toast('Could not build the download: ' + (e?.message || e), true); return; }
+  } catch (e) { toast('Could not build the download: ' + (e?.message || e), true); return false; }
   // Stop any stray closing-script tag in the fetched module from breaking out of
   // the inline <script>; escape `<` in the JSON so a title can't either.
   js = js.replace(/<\/script>/gi, '<\\/script>');
@@ -3567,7 +3903,7 @@ renderDeck(${deckLiteral}, document.getElementById('recap-deck'));
 </scr${''}ipt>
 </body></html>`;
   const stamp = new Date().toISOString().slice(0, 10);
-  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `poseidon-recap-${stamp}.html`);
+  return downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `poseidon-recap-${stamp}.html`);
 }
 
 // ── Rules (team-scoped hygiene policy) ──────────────────────────────
@@ -4901,6 +5237,14 @@ function renderTeamForm(panel, existing) {
   // exact-path only. Only meaningful when an area path is set (Azure only).
   const includeChildren = el('input', { type: 'checkbox' });
   includeChildren.checked = !(existing && existing.area_path_strict);
+  // Optional roster OVERRIDE for per-person reports (e.g. PR activity). Azure DevOps teams
+  // are read from the tracker automatically; list names or sign-ins here (one per line) only
+  // to override that, or for a tracker with no roster. Blank = use the tracker's roster.
+  const members = el('textarea', {
+    rows: 3, placeholder: 'optional - leave blank to use the tracker\'s own team roster',
+    title: 'Overrides who counts as on this team in per-person reports (author / reviewer breakdowns). Names or sign-ins, one per line. Leave blank to use the tracker\'s roster (Azure DevOps teams are detected automatically).',
+  });
+  members.value = ((existing && existing.members) || []).join('\n');
   const field = (labelText, input) => el('label', { class: 'field' }, [el('span', {}, labelText), input]);
 
   const providerSel = el('select', {
@@ -4923,6 +5267,7 @@ function renderTeamForm(panel, existing) {
       fieldsHost.append(field('Entra tenant (for sign-in)', tenant));
     }
     fieldsHost.append(field('Token env var (optional)', patEnv));
+    fieldsHost.append(field('Team members override (optional)', members));
   }
 
   const save = el('button', {
@@ -4932,15 +5277,20 @@ function renderTeamForm(panel, existing) {
         toast(`Name, ${p.orgLabel.toLowerCase()}, and ${p.projLabel.toLowerCase()} are required`, true); return;
       }
       const b = e.currentTarget; b.disabled = true; b.textContent = 'Saving…';
+      // Start from the stored team so fields this form doesn't edit (rules override,
+      // pipeline ids, board team, ...) survive an edit - the server replaces the whole team.
       const team = {
+        ...(existing || {}),
         name: name.value.trim(), provider: providerId,
         organization: org.value.trim(), project: project.value.trim(),
         area_path: p.azure ? (area.value.trim() || null) : null,
         tenant: p.azure ? (tenant.value.trim() || null) : null,
         area_path_strict: p.azure ? !includeChildren.checked : false,
+        members: members.value.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean),
       };
+      if (!team.members.length) delete team.members;
       const patEnvVal = patEnv.value.trim();
-      if (patEnvVal) team.auth = { pat_env: patEnvVal };
+      if (patEnvVal) team.auth = { pat_env: patEnvVal }; else delete team.auth;
       try {
         // Adding/editing NEVER prompts a login - it only writes the definition;
         // the Doctor registers/refreshes its access check, and the auth check

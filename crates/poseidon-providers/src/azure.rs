@@ -10,10 +10,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use poseidon_core::{
-    EditableField, FieldChange, FieldKind, Pipeline, PipelineRun, PrStatus, PullRequest, RunStatus,
-    TeamConfig, WorkItem, WorkItemUpdate,
+    Board, BoardColumn, ColumnKind, EditableField, FieldChange, FieldKind, Pipeline, PipelineRun,
+    PrReviewer, PrStatus, PullRequest, RunStatus, TeamConfig, TeamMember, WorkItem, WorkItemUpdate,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::{Credential, Provider, ProviderError};
 
@@ -38,11 +39,15 @@ const BATCH_LIMIT: usize = 200;
 /// continuation token, so we page with `$skip` until a short page ends the walk.
 const PR_PAGE: u32 = 100;
 
-/// Cap on how many recently-closed PRs (completed / abandoned) we pull. These
-/// are never shown on the PR screen - they exist only to colour a work item's
-/// linked-PR chips (merged = green, abandoned = red). Older links beyond this
-/// window fall back to "unknown" rather than driving an unbounded history pull.
-const PR_CLOSED_CAP: u32 = 200;
+/// How far back we pull closed PRs (completed / abandoned), by CLOSE date. They
+/// are never listed on the PR screen: they colour a work item's linked-PR chips
+/// (merged = green, abandoned = red) and feed the per-contributor report. Older
+/// links fall back to "unknown" rather than driving an unbounded history pull.
+const PR_HISTORY_DAYS: i64 = 90;
+
+/// Safety bound on pages walked per closed status (`PR_PAGE` each), so a huge
+/// project can't spin an unbounded fetch every poll.
+const PR_CLOSED_MAX_PAGES: u32 = 30;
 
 /// Characters to percent-encode in a URL path segment. Azure DevOps project
 /// names routinely contain spaces (`"Platform Engineering"`), which must be
@@ -311,6 +316,30 @@ pub struct AzureDevOpsProvider {
     wiql_is_custom: bool,
     /// Configured pipeline subset; empty = all pipelines in the project.
     pipeline_ids: Vec<i64>,
+    /// Explicit Azure DevOps team whose boards to mirror (`TeamConfig::board_team`).
+    board_team: Option<String>,
+    /// The team's boards + the per-type field names that hold a card's column,
+    /// discovered once per provider (a provider lives for one poll).
+    boards: tokio::sync::OnceCell<BoardInfo>,
+}
+
+/// What board discovery found: the provider-agnostic boards for the UI, plus the
+/// Azure-specific field names needed to read a work item's column.
+#[derive(Debug, Default)]
+struct BoardInfo {
+    boards: Vec<Board>,
+    fields: Vec<BoardFields>,
+}
+
+/// Which work-item fields carry a card's position for one board. Every board (Stories,
+/// Features, Epics) has its own column field - `WEF_<guid>_Kanban.Column` - so an item is
+/// read through the board whose types include its own.
+#[derive(Debug, Clone)]
+struct BoardFields {
+    types: Vec<String>,
+    column: String,
+    done: Option<String>,
+    lane: Option<String>,
 }
 
 impl AzureDevOpsProvider {
@@ -342,7 +371,81 @@ impl AzureDevOpsProvider {
             area_path_strict: cfg.area_path_strict,
             wiql_is_custom: cfg.wiql.is_some(),
             pipeline_ids: cfg.pipeline_ids.clone(),
+            board_team: cfg
+                .board_team
+                .clone()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+            boards: tokio::sync::OnceCell::new(),
         })
+    }
+
+    /// `{org}/{project}/{team}/_apis/{tail}` - the team-scoped API surface (boards).
+    fn team_url(&self, team: &str, tail: &str) -> String {
+        format!(
+            "{}/{}/{}/_apis/{}?api-version={}",
+            self.organization,
+            enc(&self.ado_project),
+            enc(team),
+            tail,
+            API_VERSION
+        )
+    }
+
+    /// Azure DevOps teams to try, most likely first. The board URL needs the ADO team
+    /// name, which POSEIDON's own team name often isn't (`Payments` is served
+    /// by `Payments Team`), so an explicit `board_team` wins and the rest are
+    /// the naming conventions Azure DevOps itself uses.
+    fn board_team_candidates(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |t: String| {
+            if !t.trim().is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                out.push(t);
+            }
+        };
+        if let Some(t) = &self.board_team {
+            push(t.clone());
+        }
+        push(self.team_name.clone());
+        push(format!("{} Team", self.team_name));
+        push(format!("{} Team", self.ado_project));
+        push(self.ado_project.clone());
+        out
+    }
+
+    /// Find the team's boards and read their columns + field names. Best-effort: a team
+    /// with no accessible boards (or a token without that scope) just has none, and the
+    /// UI falls back to its state-based board - this must never fail a poll.
+    async fn discover_boards(&self) -> BoardInfo {
+        for team in self.board_team_candidates() {
+            let list: BoardListResponse =
+                match self.get_json(&self.team_url(&team, "work/boards")).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::debug!(team = %team, error = %e, "no boards for this team name");
+                        continue;
+                    }
+                };
+            let mut info = BoardInfo::default();
+            for r in list.value {
+                let url = self.team_url(&team, &format!("work/boards/{}", enc(&r.id)));
+                match self.get_json::<AdoBoard>(&url).await {
+                    Ok(b) => info.push(b),
+                    Err(e) => tracing::warn!(board = %r.name, error = %e, "could not read board"),
+                }
+            }
+            if !info.boards.is_empty() {
+                tracing::info!(ado_team = %team, boards = info.boards.len(), "mirroring Azure DevOps boards");
+                return info;
+            }
+        }
+        tracing::debug!(team = %self.team_name, "no Azure DevOps boards found");
+        BoardInfo::default()
+    }
+
+    /// The (cached) board discovery for this poll.
+    async fn board_info(&self) -> &BoardInfo {
+        self.boards.get_or_init(|| self.discover_boards()).await
     }
 
     /// `{org}/{project}/_apis/{tail}` with the api-version appended. The project
@@ -488,7 +591,38 @@ impl AzureDevOpsProvider {
         skip: u32,
     ) -> Result<Vec<PullRequest>, ProviderError> {
         let query = format!("searchCriteria.status={status}&$top={top}&$skip={skip}");
-        let url = self.project_url("git/pullrequests", &query);
+        self.fetch_pr_query(&query).await
+    }
+
+    /// Every PR at `status` (`completed` / `abandoned`) CLOSED within the last
+    /// [`PR_HISTORY_DAYS`], paged until a short page. Windowing on the close date
+    /// (not creation) is what makes "merged in the last N days" complete however
+    /// old the PR itself is.
+    async fn fetch_closed_pr_window(
+        &self,
+        status: &str,
+    ) -> Result<Vec<PullRequest>, ProviderError> {
+        let since = (Utc::now() - chrono::Duration::days(PR_HISTORY_DAYS))
+            .format("%Y-%m-%dT%H%%3A%M%%3A%SZ");
+        let mut out = Vec::new();
+        for page in 0..PR_CLOSED_MAX_PAGES {
+            let query = format!(
+                "searchCriteria.status={status}&searchCriteria.minTime={since}\
+                 &searchCriteria.queryTimeRangeType=closed&$top={PR_PAGE}&$skip={}",
+                page * PR_PAGE
+            );
+            let batch = self.fetch_pr_query(&query).await?;
+            let full = batch.len() as u32 == PR_PAGE;
+            out.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn fetch_pr_query(&self, query: &str) -> Result<Vec<PullRequest>, ProviderError> {
+        let url = self.project_url("git/pullrequests", query);
         let parsed: PullRequestsResponse = self.get_json(&url).await?;
         Ok(parsed
             .value
@@ -525,11 +659,12 @@ impl AzureDevOpsProvider {
             .send()
             .await?;
         let raw: AdoWorkItem = self.decode(resp, &url).await?;
-        Ok(normalise_work_item(
+        Ok(normalise_work_item_on_boards(
             raw,
             &self.team_name,
             &self.organization,
             &self.ado_project,
+            &self.board_info().await.fields,
         ))
     }
 
@@ -572,11 +707,18 @@ impl AzureDevOpsProvider {
             .send()
             .await?;
         let parsed: BatchResponse = self.decode(resp, &url).await?;
+        let board_fields = &self.board_info().await.fields;
         Ok(parsed
             .value
             .into_iter()
             .map(|raw| {
-                normalise_work_item(raw, &self.team_name, &self.organization, &self.ado_project)
+                normalise_work_item_on_boards(
+                    raw,
+                    &self.team_name,
+                    &self.organization,
+                    &self.ado_project,
+                    board_fields,
+                )
             })
             .collect())
     }
@@ -590,6 +732,34 @@ impl Provider for AzureDevOpsProvider {
 
     fn team_name(&self) -> &str {
         &self.team_name
+    }
+
+    async fn fetch_boards(&self) -> Result<Vec<Board>, ProviderError> {
+        Ok(self.board_info().await.boards.clone())
+    }
+
+    async fn fetch_team_members(&self) -> Result<Vec<TeamMember>, ProviderError> {
+        // Same team-name guessing as the boards (the ADO team is often `<name> Team`),
+        // but the roster lives in the project-scoped Core API, not the team-scoped one.
+        for team in self.board_team_candidates() {
+            let url = self.org_url(&format!(
+                "projects/{}/teams/{}/members",
+                enc(&self.ado_project),
+                enc(&team)
+            ));
+            let url = format!("{url}&$top=500");
+            match self.get_json::<TeamMembersResponse>(&url).await {
+                Ok(r) => {
+                    let members = normalise_team_members(r);
+                    if !members.is_empty() {
+                        tracing::info!(ado_team = %team, members = members.len(), "read team roster");
+                        return Ok(members);
+                    }
+                }
+                Err(e) => tracing::debug!(team = %team, error = %e, "no roster for this team name"),
+            }
+        }
+        Ok(Vec::new())
     }
 
     async fn fetch_work_items(&self) -> Result<Vec<WorkItem>, ProviderError> {
@@ -667,11 +837,11 @@ impl Provider for AzureDevOpsProvider {
             }
             skip += PR_PAGE;
         }
-        // Recently completed + abandoned PRs, bounded. These are NOT listed on
-        // the PR screen (the service filters them out); they exist only to give
-        // a work item's linked-PR chips a real colour. Most-recent first.
-        out.extend(self.fetch_pr_page("completed", PR_CLOSED_CAP, 0).await?);
-        out.extend(self.fetch_pr_page("abandoned", PR_CLOSED_CAP, 0).await?);
+        // Completed + abandoned PRs closed in the history window. These are NOT
+        // listed on the PR screen (the service filters them out); they colour a
+        // work item's linked-PR chips and feed the per-contributor report.
+        out.extend(self.fetch_closed_pr_window("completed").await?);
+        out.extend(self.fetch_closed_pr_window("abandoned").await?);
         Ok(out)
     }
 
@@ -1098,6 +1268,8 @@ struct AdoFields {
     tags: Option<String>,
     #[serde(rename = "System.AssignedTo")]
     assigned_to: Option<AdoIdentity>,
+    #[serde(rename = "System.CreatedBy")]
+    created_by: Option<AdoIdentity>,
     #[serde(rename = "System.CreatedDate")]
     created_date: Option<DateTime<Utc>>,
     #[serde(rename = "System.ChangedDate")]
@@ -1117,12 +1289,199 @@ struct AdoFields {
     /// empty-bodied by the tagger / underspecified check.
     #[serde(rename = "Microsoft.VSTS.TCM.ReproSteps")]
     repro_steps: Option<String>,
+    /// The manual board / backlog order. Process templates differ on which they fill
+    /// (Scrum/CMMI use `BacklogPriority`, Agile/Basic `StackRank`), so keep both.
+    #[serde(rename = "Microsoft.VSTS.Common.StackRank")]
+    stack_rank: Option<f64>,
+    #[serde(rename = "Microsoft.VSTS.Common.BacklogPriority")]
+    backlog_priority: Option<f64>,
+    /// The `WEF_<guid>_Kanban.*` fields (column / done / lane). Only these are kept out
+    /// of the dozens of other fields on every item.
+    #[serde(flatten, deserialize_with = "wef_fields_only")]
+    wef: HashMap<String, serde_json::Value>,
+}
+
+/// Deserialize the leftover fields of a work item, keeping only the Kanban `WEF_` ones.
+fn wef_fields_only<'de, D>(d: D) -> Result<HashMap<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut all = HashMap::<String, serde_json::Value>::deserialize(d)?;
+    all.retain(|k, _| k.starts_with("WEF_"));
+    Ok(all)
+}
+
+// ── Boards API ──
+
+#[derive(Debug, Deserialize)]
+struct BoardListResponse {
+    #[serde(default)]
+    value: Vec<BoardRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoardRef {
+    id: String,
+    name: String,
+}
+
+/// `work/boards/{id}` - one board's columns, lanes and field names.
+#[derive(Debug, Deserialize)]
+struct AdoBoard {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    columns: Vec<AdoColumn>,
+    #[serde(default)]
+    rows: Vec<AdoRow>,
+    #[serde(default)]
+    fields: AdoBoardFields,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoColumn {
+    name: String,
+    #[serde(rename = "itemLimit", default)]
+    item_limit: Option<u32>,
+    #[serde(rename = "columnType", default)]
+    column_type: Option<String>,
+    #[serde(rename = "isSplit", default)]
+    is_split: Option<bool>,
+    /// work-item type -> state this column maps it to. The keys are the types the board
+    /// holds.
+    #[serde(rename = "stateMappings", default)]
+    state_mappings: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoRow {
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AdoBoardFields {
+    #[serde(rename = "columnField", default)]
+    column_field: Option<AdoFieldRef>,
+    #[serde(rename = "doneField", default)]
+    done_field: Option<AdoFieldRef>,
+    #[serde(rename = "rowField", default)]
+    row_field: Option<AdoFieldRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoFieldRef {
+    #[serde(rename = "referenceName", default)]
+    reference_name: Option<String>,
+}
+
+impl BoardInfo {
+    /// Fold one Azure board into the provider-agnostic [`Board`] plus the field names
+    /// needed to read cards off it. A board with no column field can't place a card, so
+    /// it is skipped.
+    fn push(&mut self, b: AdoBoard) {
+        let Some(column_field) = b
+            .fields
+            .column_field
+            .and_then(|f| f.reference_name)
+            .filter(|f| !f.is_empty())
+        else {
+            return;
+        };
+        let name_of =
+            |f: Option<AdoFieldRef>| f.and_then(|f| f.reference_name).filter(|f| !f.is_empty());
+        let mut types: Vec<String> = Vec::new();
+        for c in &b.columns {
+            for t in c.state_mappings.keys() {
+                if !types.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    types.push(t.clone());
+                }
+            }
+        }
+        types.sort();
+        let columns = b
+            .columns
+            .iter()
+            .map(|c| BoardColumn {
+                name: c.name.clone(),
+                // Azure reports "no limit" as 0.
+                wip_limit: c.item_limit.filter(|n| *n > 0),
+                kind: match c
+                    .column_type
+                    .as_deref()
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("incoming") => ColumnKind::Incoming,
+                    Some("outgoing") => ColumnKind::Outgoing,
+                    _ => ColumnKind::InProgress,
+                },
+                split: c.is_split.unwrap_or(false),
+            })
+            .collect();
+        self.fields.push(BoardFields {
+            types: types.clone(),
+            column: column_field,
+            done: name_of(b.fields.done_field),
+            lane: name_of(b.fields.row_field),
+        });
+        self.boards.push(Board {
+            name: b.name,
+            columns,
+            lanes: b
+                .rows
+                .into_iter()
+                .filter_map(|r| r.name)
+                .filter(|n| !n.trim().is_empty())
+                .collect(),
+            work_item_types: types,
+        });
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct AdoIdentity {
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    /// Sign-in identity (an email-style address for Entra users).
+    #[serde(rename = "uniqueName", default)]
+    unique_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamMembersResponse {
+    #[serde(default)]
+    value: Vec<AdoTeamMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoTeamMember {
+    identity: Option<AdoTeamIdentity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoTeamIdentity {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(rename = "uniqueName", default)]
+    unique_name: Option<String>,
+    /// True for a group rather than a person; its own members aren't expanded here.
+    #[serde(rename = "isContainer", default)]
+    is_container: bool,
+}
+
+/// The people on a team roster: named, non-group identities only.
+fn normalise_team_members(raw: TeamMembersResponse) -> Vec<TeamMember> {
+    raw.value
+        .into_iter()
+        .filter_map(|m| m.identity)
+        .filter(|i| !i.is_container)
+        .filter_map(|i| {
+            Some(TeamMember {
+                name: i.display_name.filter(|n| !n.trim().is_empty())?,
+                unique_name: i.unique_name.filter(|u| !u.trim().is_empty()),
+            })
+        })
+        .collect()
 }
 
 /// Minimal shape of the work-item revisions response - just the area path of each
@@ -1219,13 +1578,59 @@ fn split_tags(raw: Option<&str>) -> Vec<String> {
     .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn normalise_work_item(
     raw: AdoWorkItem,
     team_name: &str,
     organization: &str,
     ado_project: &str,
 ) -> WorkItem {
+    normalise_work_item_on_boards(raw, team_name, organization, ado_project, &[])
+}
+
+/// Read an item's board position through the board that holds its type.
+fn board_position(
+    wef: &HashMap<String, serde_json::Value>,
+    work_item_type: &str,
+    boards: &[BoardFields],
+) -> (Option<String>, Option<bool>, Option<String>) {
+    let Some(b) = boards.iter().find(|b| {
+        b.types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(work_item_type))
+    }) else {
+        return (None, None, None);
+    };
+    let text = |field: &str| {
+        wef.get(field)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    (
+        text(&b.column),
+        b.done
+            .as_deref()
+            .and_then(|d| wef.get(d))
+            .and_then(|v| v.as_bool()),
+        b.lane.as_deref().and_then(text),
+    )
+}
+
+fn normalise_work_item_on_boards(
+    raw: AdoWorkItem,
+    team_name: &str,
+    organization: &str,
+    ado_project: &str,
+    boards: &[BoardFields],
+) -> WorkItem {
     let f = raw.fields;
+    let (board_column, board_column_done, board_lane) = board_position(
+        &f.wef,
+        f.work_item_type.as_deref().unwrap_or_default(),
+        boards,
+    );
     // Timestamps: prefer changed, fall back to created (and vice versa) so a
     // sparse payload never leaves staleness anchored on the Unix epoch.
     let changed = f.changed_date.or(f.created_date).unwrap_or_default();
@@ -1272,6 +1677,8 @@ fn normalise_work_item(
         state: f.state.unwrap_or_default(),
         tags: split_tags(f.tags.as_deref()),
         assigned_to: f.assigned_to.and_then(|a| a.display_name),
+        created_by_unique: f.created_by.as_ref().and_then(|c| c.unique_name.clone()),
+        created_by: f.created_by.and_then(|c| c.display_name),
         created_at: created,
         changed_at: changed,
         closed_at: f.closed_date.or(f.state_change_date),
@@ -1303,6 +1710,10 @@ fn normalise_work_item(
         linked_pr_ids,
         parent_id,
         linked_repos,
+        board_column,
+        board_column_done,
+        board_lane,
+        backlog_rank: f.stack_rank.or(f.backlog_priority),
         linked_prs: Vec::new(),
         tag_suggestions: Vec::new(),
     }
@@ -1438,13 +1849,30 @@ struct AdoPullRequest {
     created_by: Option<AdoIdentity>,
     #[serde(rename = "creationDate")]
     creation_date: Option<DateTime<Utc>>,
+    /// Set when the PR was completed or abandoned.
+    #[serde(rename = "closedDate")]
+    closed_date: Option<DateTime<Utc>>,
     repository: Option<AdoRepository>,
     #[serde(rename = "sourceRefName")]
     source_ref: Option<String>,
     #[serde(rename = "targetRefName")]
     target_ref: Option<String>,
     #[serde(default)]
-    reviewers: Vec<serde_json::Value>,
+    reviewers: Vec<AdoReviewer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoReviewer {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    #[serde(rename = "uniqueName", default)]
+    unique_name: Option<String>,
+    /// 10 approved, 5 approved with suggestions, 0 no vote, -5 waiting, -10 rejected.
+    #[serde(default)]
+    vote: i32,
+    /// True for a group / team reviewer rather than a person.
+    #[serde(rename = "isContainer", default)]
+    is_container: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1513,11 +1941,25 @@ fn normalise_pull_request(
             .unwrap_or(PrStatus::Unknown),
         is_draft: raw.is_draft.unwrap_or(false),
         repository,
+        author_unique: raw.created_by.as_ref().and_then(|c| c.unique_name.clone()),
         author: raw.created_by.and_then(|c| c.display_name),
         created_at: raw.creation_date,
         source_branch: short_branch(raw.source_ref),
         target_branch: short_branch(raw.target_ref),
+        closed_at: raw.closed_date,
         reviewer_count: raw.reviewers.len() as i64,
+        reviewers: raw
+            .reviewers
+            .iter()
+            .filter(|r| !r.is_container)
+            .filter_map(|r| {
+                Some(PrReviewer {
+                    name: r.display_name.clone()?,
+                    unique_name: r.unique_name.clone(),
+                    vote: r.vote,
+                })
+            })
+            .collect(),
         url,
         flags: Vec::new(),
         linked_work_items: Vec::new(),
@@ -1676,6 +2118,152 @@ mod tests {
         assert_eq!(map_run_status(Some("notStarted"), None), RunStatus::Running);
         assert_eq!(map_run_status(None, None), RunStatus::Unknown);
         assert_eq!(map_run_status(Some("completed"), None), RunStatus::Unknown);
+    }
+
+    // A trimmed `work/boards/{id}` response in the shape Azure DevOps returns for a team's
+    // Stories board: a custom "To prioritize" column that maps to the SAME state as "New".
+    const STORIES_BOARD: &str = r#"{
+        "id": "b1", "name": "Stories",
+        "columns": [
+            { "name": "New", "itemLimit": 0, "columnType": "incoming", "isSplit": false,
+              "stateMappings": { "Bug": "New", "User Story": "New", "Improvement": "New" } },
+            { "name": "To prioritize", "itemLimit": 25, "columnType": "inProgress", "isSplit": false,
+              "stateMappings": { "Bug": "New", "User Story": "New", "Improvement": "New" } },
+            { "name": "In Progress", "itemLimit": 10, "columnType": "inProgress", "isSplit": true,
+              "stateMappings": { "Bug": "Active", "User Story": "Active", "Improvement": "Active" } },
+            { "name": "Closed", "itemLimit": 0, "columnType": "outgoing", "isSplit": false,
+              "stateMappings": { "Bug": "Closed", "User Story": "Closed", "Improvement": "Closed" } }
+        ],
+        "rows": [ { "id": "00000000-0000-0000-0000-000000000000", "name": null }, { "id": "x", "name": "Expedite" } ],
+        "fields": {
+            "columnField": { "referenceName": "WEF_AAA_Kanban.Column" },
+            "doneField": { "referenceName": "WEF_AAA_Kanban.Column.Done" },
+            "rowField": { "referenceName": "WEF_AAA_Kanban.Lane" }
+        }
+    }"#;
+
+    fn stories_board_info() -> BoardInfo {
+        let mut info = BoardInfo::default();
+        info.push(serde_json::from_str::<AdoBoard>(STORIES_BOARD).unwrap());
+        info
+    }
+
+    #[test]
+    fn a_board_keeps_custom_columns_wip_limits_kinds_and_the_types_it_holds() {
+        let info = stories_board_info();
+        let b = &info.boards[0];
+        assert_eq!(b.name, "Stories");
+        // "To prioritize" and "New" are DIFFERENT columns even though both map to State=New:
+        // that is the whole reason a state-based board can't mirror the web UI.
+        let names: Vec<_> = b.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["New", "To prioritize", "In Progress", "Closed"]);
+        assert_eq!(b.columns[0].wip_limit, None, "Azure's 0 means no limit");
+        assert_eq!(b.columns[1].wip_limit, Some(25));
+        assert_eq!(b.columns[0].kind, ColumnKind::Incoming);
+        assert_eq!(b.columns[3].kind, ColumnKind::Outgoing);
+        assert!(b.columns[2].split);
+        assert_eq!(b.work_item_types, ["Bug", "Improvement", "User Story"]);
+        assert_eq!(
+            b.lanes,
+            ["Expedite"],
+            "the unnamed default lane is not listed"
+        );
+        assert_eq!(info.fields[0].column, "WEF_AAA_Kanban.Column");
+    }
+
+    #[test]
+    fn a_board_without_a_column_field_is_skipped() {
+        let mut info = BoardInfo::default();
+        info.push(serde_json::from_str::<AdoBoard>(r#"{"name":"Odd","columns":[]}"#).unwrap());
+        assert!(info.boards.is_empty() && info.fields.is_empty());
+    }
+
+    #[test]
+    fn a_card_is_placed_by_the_board_that_holds_its_type() {
+        let info = stories_board_info();
+        let json = r#"{
+            "id": 915915,
+            "fields": {
+                "System.Title": "Create Environment AI pre-validation fails",
+                "System.WorkItemType": "Bug",
+                "System.State": "New",
+                "Microsoft.VSTS.Common.StackRank": 1999912345.5,
+                "WEF_AAA_Kanban.Column": "To prioritize",
+                "WEF_AAA_Kanban.Column.Done": false,
+                "WEF_AAA_Kanban.Lane": "Expedite",
+                "WEF_ZZZ_Kanban.Column": "Some other team's column"
+            }
+        }"#;
+        let raw: AdoWorkItem = serde_json::from_str(json).unwrap();
+        let wi = normalise_work_item_on_boards(
+            raw,
+            "PE",
+            "https://dev.azure.com/acme",
+            "P",
+            &info.fields,
+        );
+        assert_eq!(wi.state, "New");
+        assert_eq!(wi.board_column.as_deref(), Some("To prioritize"));
+        assert_eq!(wi.board_column_done, Some(false));
+        assert_eq!(wi.board_lane.as_deref(), Some("Expedite"));
+        assert_eq!(wi.backlog_rank, Some(1999912345.5));
+    }
+
+    #[test]
+    fn an_item_on_no_known_board_has_no_column_and_rank_falls_back_to_backlog_priority() {
+        let info = stories_board_info();
+        // An Epic isn't on the Stories board (no Epics board discovered), so it has no column.
+        let raw: AdoWorkItem = serde_json::from_str(
+            r#"{"id":1,"fields":{"System.WorkItemType":"Epic","WEF_AAA_Kanban.Column":"New",
+                "Microsoft.VSTS.Common.BacklogPriority": 42.0}}"#,
+        )
+        .unwrap();
+        let wi = normalise_work_item_on_boards(
+            raw,
+            "PE",
+            "https://dev.azure.com/acme",
+            "P",
+            &info.fields,
+        );
+        assert_eq!(wi.board_column, None);
+        assert_eq!(
+            wi.backlog_rank,
+            Some(42.0),
+            "BacklogPriority is used when StackRank is absent"
+        );
+        // And with no boards discovered at all, items simply carry no column.
+        let raw: AdoWorkItem =
+            serde_json::from_str(r#"{"id":2,"fields":{"System.WorkItemType":"Bug"}}"#).unwrap();
+        let wi = normalise_work_item_on_boards(raw, "PE", "https://dev.azure.com/acme", "P", &[]);
+        assert_eq!(
+            (wi.board_column, wi.board_lane, wi.backlog_rank),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn board_team_candidates_cover_azure_naming_conventions_without_duplicates() {
+        let cfg = TeamConfig {
+            name: "Payments".into(),
+            provider: Default::default(),
+            organization: "https://dev.azure.com/acme".into(),
+            project: "Payments".into(),
+            area_path: None,
+            area_path_strict: false,
+            tenant: None,
+            auth: Default::default(),
+            wiql: None,
+            pipeline_ids: vec![],
+            board_team: Some("Custom Squad".into()),
+            members: vec![],
+            rules: None,
+        };
+        let p = AzureDevOpsProvider::new(&cfg, Credential::Pat("t".into())).unwrap();
+        assert_eq!(
+            p.board_team_candidates(),
+            ["Custom Squad", "Payments", "Payments Team"],
+            "explicit first, then the ADO naming conventions; the project name equals the team name here"
+        );
     }
 
     #[test]
@@ -1954,6 +2542,8 @@ mod tests {
             auth: Default::default(),
             wiql: None,
             pipeline_ids: vec![],
+            board_team: None,
+            members: vec![],
             rules: None,
         };
         // Both a PAT (→ Basic) and an OAuth token (→ Bearer) construct cleanly.
@@ -2056,6 +2646,84 @@ mod tests {
         // ...while 865173's two links use lower-case %2f - both must be captured,
         // and the sibling commit/hierarchy relations must NOT leak in as PR ids.
         assert_eq!(by_id(865173).linked_pr_ids, vec![248657, 248674]);
+    }
+
+    #[test]
+    fn team_roster_keeps_named_people_and_drops_groups() {
+        // Shape of GET _apis/projects/{p}/teams/{t}/members (names are fictional).
+        let raw: TeamMembersResponse = serde_json::from_value(serde_json::json!({
+            "value": [
+                { "identity": { "displayName": "Ana Example", "uniqueName": "ana@example.com", "id": "1" },
+                  "isTeamAdmin": true },
+                { "identity": { "displayName": "Jon Reyes", "uniqueName": "Jonathan.Reyes@example.com" } },
+                { "identity": { "displayName": "[Example]\\Contributors", "isContainer": true } },
+                { "identity": { "displayName": "  " } },
+                { "isTeamAdmin": false }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            normalise_team_members(raw),
+            vec![
+                TeamMember {
+                    name: "Ana Example".into(),
+                    unique_name: Some("ana@example.com".into())
+                },
+                TeamMember {
+                    name: "Jon Reyes".into(),
+                    unique_name: Some("Jonathan.Reyes@example.com".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn completed_pr_carries_close_date_and_person_reviewer_votes() {
+        let raw: AdoPullRequest = serde_json::from_value(serde_json::json!({
+            "pullRequestId": 42,
+            "title": "Tidy the poller",
+            "status": "completed",
+            "createdBy": { "displayName": "Ana Example" },
+            "creationDate": "2026-09-01T09:00:00Z",
+            "closedDate": "2026-09-03T15:30:00Z",
+            "repository": { "name": "core", "project": { "name": "Example Project" } },
+            "reviewers": [
+                { "displayName": "Ben Example", "uniqueName": "ben@example.com", "vote": 10, "isContainer": false },
+                { "displayName": "[Example Project]\\Team", "vote": 0, "isContainer": true },
+                { "displayName": "Cy Example", "vote": -5 },
+                { "vote": 10 }
+            ]
+        }))
+        .unwrap();
+        let pr = normalise_pull_request(
+            raw,
+            "Example",
+            "https://dev.azure.com/contoso",
+            "Example Project",
+        );
+        assert_eq!(pr.status, PrStatus::Completed);
+        assert_eq!(
+            pr.closed_at.unwrap().to_rfc3339(),
+            "2026-09-03T15:30:00+00:00"
+        );
+        // Four reviewer entries were assigned, but only the two named people are kept
+        // (the team group and the nameless identity are dropped).
+        assert_eq!(pr.reviewer_count, 4);
+        assert_eq!(
+            pr.reviewers,
+            vec![
+                PrReviewer {
+                    name: "Ben Example".into(),
+                    unique_name: Some("ben@example.com".into()),
+                    vote: 10
+                },
+                PrReviewer {
+                    name: "Cy Example".into(),
+                    unique_name: None,
+                    vote: -5
+                },
+            ]
+        );
     }
 
     #[test]

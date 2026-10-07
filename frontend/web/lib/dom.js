@@ -63,13 +63,22 @@ export function shortDate(iso) {
 }
 
 let toastTimer = null;
-/** Flash a transient message. `isError` styles it red. */
-export function toast(message, isError = false) {
+/** Flash a transient message. `isError` styles it red. `action` ({ label, onClick }) adds a
+ *  button to it (e.g. "Show in folder") and keeps the toast up longer so it can be clicked. */
+export function toast(message, isError = false, action = null) {
   const node = document.getElementById('toast');
   if (!node) return;
   node.textContent = message;
   node.className = 'toast' + (isError ? ' err' : '');
+  if (action && action.label) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => { node.hidden = true; action.onClick(); });
+    node.append(' ', btn);
+  }
   node.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { node.hidden = true; }, 3200);
+  toastTimer = setTimeout(() => { node.hidden = true; }, action ? 9000 : 3200);
 }

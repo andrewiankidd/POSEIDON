@@ -152,6 +152,19 @@ pub trait AiTagger: Send + Sync {
             "AI summaries need an online model (Settings → AI)".into(),
         ))
     }
+
+    /// Propose themed groupings for ONE Recap slide's closed work items (e.g. everything about
+    /// alerting under "Observability"). The returned groups only ever reference items from
+    /// `ctx` and never repeat one. Default: unsupported - like the blurbs, only the online
+    /// chat / Claude Code backends can do this.
+    async fn suggest_recap_groups(
+        &self,
+        _ctx: &RecapGroupContext,
+    ) -> Result<Vec<RecapGroup>, AiError> {
+        Err(AiError::Unsupported(
+            "AI grouping needs an online model (Settings → AI)".into(),
+        ))
+    }
 }
 
 /// One closed work item as the Recap summariser sees it.
@@ -241,6 +254,144 @@ fn clean_recap_summary(s: &str) -> String {
     flat.trim_matches(|c| c == '"' || c == '\u{201c}' || c == '\u{201d}')
         .trim()
         .to_string()
+}
+
+/// What the Recap grouping suggester is asked to organise: one slide's closed items, plus
+/// any steer the user typed ("keep observability together").
+#[derive(Debug, Clone)]
+pub struct RecapGroupContext {
+    pub area: String,
+    pub period: String,
+    pub items: Vec<RecapSummaryItem>,
+    pub background: String,
+    /// Free-text guidance from the user. May be empty.
+    pub guidance: String,
+}
+
+/// One suggested group: a short heading and the work item ids under it, in display order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecapGroup {
+    pub heading: String,
+    pub ids: Vec<i64>,
+}
+
+/// Max items sent for grouping. A slide lists every closed item (no cap), so this is a
+/// context-window guard; items beyond it simply keep the grouping they already have.
+pub const MAX_GROUP_ITEMS: usize = 150;
+
+/// System prompt for Recap grouping: themes, not work-item types, strict JSON out.
+pub const RECAP_GROUPING_SYSTEM_PROMPT: &str = "You organise the completed work on one slide \
+of a stakeholder update into a few themed groups. You are given numbered work items. Group \
+them by THEME - what the work is about, such as \"Observability\", \"Cluster upgrades\" or \
+\"Developer self-service\" - not by ticket type. Rules: use between 2 and 8 groups; every item \
+belongs to exactly one group; headings are short (1 to 4 words), in Title Case, with no \
+trailing punctuation and no ticket numbers; order the groups most important first, and the \
+items within a group most important first; keep truly unrelated one-offs together under a \
+fitting heading rather than inventing a vague \"Other\". If the user gives guidance, follow it \
+over your own judgement. Reply with ONLY a JSON object of this exact shape and nothing else - \
+no markdown, no commentary: {\"groups\":[{\"heading\":\"Observability\",\"items\":[3,7,12]}]} \
+where items are the item NUMBERS you were given.";
+
+/// Build the user prompt for grouping one slide. Items are numbered 1..n (and the model
+/// answers with those numbers) because long ticket ids are easily mangled by a model.
+pub fn build_recap_grouping_prompt(ctx: &RecapGroupContext) -> String {
+    let mut p = String::new();
+    if !ctx.background.trim().is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(ctx.background.trim());
+        p.push_str("\n\n");
+    }
+    if !ctx.guidance.trim().is_empty() {
+        p.push_str("USER GUIDANCE (follow this):\n");
+        p.push_str(ctx.guidance.trim());
+        p.push_str("\n\n");
+    }
+    p.push_str(&format!(
+        "SLIDE: {}\nPERIOD: {}\nCOMPLETED WORK ({} item{}):\n",
+        ctx.area.trim(),
+        ctx.period.trim(),
+        ctx.items.len().min(MAX_GROUP_ITEMS),
+        if ctx.items.len().min(MAX_GROUP_ITEMS) == 1 {
+            ""
+        } else {
+            "s"
+        },
+    ));
+    for (i, it) in ctx.items.iter().take(MAX_GROUP_ITEMS).enumerate() {
+        let kind = it.work_item_type.trim();
+        let kind = if kind.is_empty() { "Item" } else { kind };
+        match it
+            .parent_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            Some(parent) => p.push_str(&format!(
+                "{}. [{kind}] {} (part of: {parent})\n",
+                i + 1,
+                it.title.trim()
+            )),
+            None => p.push_str(&format!("{}. [{kind}] {}\n", i + 1, it.title.trim())),
+        }
+    }
+    p.push_str("\nGroup these items. Reply with the JSON object only.");
+    p
+}
+
+/// Turn a model's reply into groups, strictly: the JSON object may be wrapped in a code fence
+/// or chatter, but every number must be a real item, each item is placed at most once (first
+/// mention wins), headings are tidied, and empty groups are dropped. Anything the model left
+/// out is simply not in the result - the caller keeps those items where they were.
+pub fn parse_recap_groups(raw: &str, ctx: &RecapGroupContext) -> Result<Vec<RecapGroup>, AiError> {
+    let text = strip_code_fence(raw);
+    let (start, end) = match (text.find('{'), text.rfind('}')) {
+        (Some(a), Some(b)) if b > a => (a, b),
+        _ => {
+            return Err(AiError::Http(
+                "the model did not return a JSON grouping".into(),
+            ))
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&text[start..=end])
+        .map_err(|e| AiError::Http(format!("the model's grouping was not valid JSON: {e}")))?;
+    let groups = v["groups"]
+        .as_array()
+        .ok_or_else(|| AiError::Http("the model's reply had no \"groups\" list".into()))?;
+    let limit = ctx.items.len().min(MAX_GROUP_ITEMS);
+    let mut placed = vec![false; limit];
+    let mut out: Vec<RecapGroup> = Vec::new();
+    for g in groups {
+        let heading = g["heading"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\u{201c}' || c == '\u{201d}')
+            .trim()
+            .chars()
+            .take(60)
+            .collect::<String>();
+        let numbers = g["items"].as_array().or_else(|| g["ids"].as_array());
+        let mut ids = Vec::new();
+        for n in numbers.into_iter().flatten() {
+            // 1-based item number; tolerate a number sent as a string ("3").
+            let n = n
+                .as_u64()
+                .or_else(|| n.as_str().and_then(|s| s.trim().parse().ok()));
+            if let Some(i) = n.and_then(|n| (n as usize).checked_sub(1)) {
+                if i < limit && !placed[i] {
+                    placed[i] = true;
+                    ids.push(ctx.items[i].id);
+                }
+            }
+        }
+        if !heading.is_empty() && !ids.is_empty() {
+            out.push(RecapGroup { heading, ids });
+        }
+    }
+    if out.is_empty() {
+        return Err(AiError::Http("the model returned no usable groups".into()));
+    }
+    Ok(out)
 }
 
 /// Whether to write a field from scratch or refine what's already there.
@@ -1758,6 +1909,40 @@ impl AiTagger for ChatTagger {
         ))
     }
 
+    async fn suggest_recap_groups(
+        &self,
+        ctx: &RecapGroupContext,
+    ) -> Result<Vec<RecapGroup>, AiError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            // A classification, not prose: keep it steady.
+            "temperature": 0.2,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": RECAP_GROUPING_SYSTEM_PROMPT },
+                { "role": "user", "content": build_recap_grouping_prompt(ctx) },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        parse_recap_groups(
+            v["choices"][0]["message"]["content"].as_str().unwrap_or(""),
+            ctx,
+        )
+    }
+
     async fn audit_item(
         &self,
         input: &AuditInput,
@@ -1996,6 +2181,20 @@ impl AiTagger for ClaudeCodeTagger {
         Ok(clean_recap_summary(&content))
     }
 
+    async fn suggest_recap_groups(
+        &self,
+        ctx: &RecapGroupContext,
+    ) -> Result<Vec<RecapGroup>, AiError> {
+        let prompt = Self::make_prompt(
+            RECAP_GROUPING_SYSTEM_PROMPT,
+            &build_recap_grouping_prompt(ctx),
+        );
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        parse_recap_groups(&content, ctx)
+    }
+
     async fn audit_item(
         &self,
         input: &AuditInput,
@@ -2151,6 +2350,80 @@ mod tests {
         assert!(p.contains(&format!("Item {}", MAX_RECAP_ITEMS - 1)));
         assert!(!p.contains(&format!("Item {}\n", MAX_RECAP_ITEMS)));
         assert!(p.contains("…and 5 more similar items"));
+    }
+
+    fn group_ctx(n: usize, guidance: &str) -> RecapGroupContext {
+        let c = recap_ctx(n);
+        RecapGroupContext {
+            area: c.area,
+            period: c.period,
+            items: c
+                .items
+                .into_iter()
+                .map(|mut i| {
+                    i.id += 1000; // ids differ from the 1-based numbers the model sees
+                    i
+                })
+                .collect(),
+            background: c.background,
+            guidance: guidance.into(),
+        }
+    }
+
+    #[test]
+    fn grouping_prompt_numbers_items_hides_ids_and_carries_guidance() {
+        let p = build_recap_grouping_prompt(&group_ctx(3, "keep observability together"));
+        assert!(p.contains("USER GUIDANCE"));
+        assert!(p.contains("keep observability together"));
+        assert!(p.contains("1. [Feature] Item 0"));
+        assert!(p.contains("3. [Item] Item 2"));
+        assert!(p.contains("(part of: QA DR proof-of-concept)"));
+        assert!(
+            !p.contains("1000") && !p.contains("1002"),
+            "real ids stay out"
+        );
+        assert!(!build_recap_grouping_prompt(&group_ctx(2, "")).contains("USER GUIDANCE"));
+    }
+
+    #[test]
+    fn grouping_reply_maps_numbers_to_ids_and_places_each_item_once() {
+        let ctx = group_ctx(5, "");
+        let reply = "Sure! ```json\n{\"groups\":[\
+            {\"heading\":\"\\\"Observability\\\"\",\"items\":[2,\"4\",2,99,0]},\
+            {\"heading\":\"Upgrades\",\"ids\":[4,1,3]},\
+            {\"heading\":\"Empty\",\"items\":[]},\
+            {\"heading\":\"\",\"items\":[5]}]}\n```";
+        let groups = parse_recap_groups(reply, &ctx).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                // numbers 2 and "4" -> items 2 and 4 -> ids 1001 and 1003 (dupe 2, bad 99 and 0 dropped)
+                RecapGroup {
+                    heading: "Observability".into(),
+                    ids: vec![1001, 1003]
+                },
+                // 4 was already placed; 1 and 3 remain
+                RecapGroup {
+                    heading: "Upgrades".into(),
+                    ids: vec![1000, 1002]
+                },
+            ],
+            "empty and unnamed groups are dropped; item 5 (unnamed group) is left for the caller"
+        );
+    }
+
+    #[test]
+    fn grouping_reply_that_is_not_usable_is_an_error_not_a_panic() {
+        let ctx = group_ctx(3, "");
+        for bad in [
+            "I could not do that.",
+            "{\"groups\": 3}",
+            "{\"groups\":[]}",
+            "{\"groups\":[{\"heading\":\"X\",\"items\":[9]}]}",
+            "{not json}",
+        ] {
+            assert!(parse_recap_groups(bad, &ctx).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -2738,6 +3011,12 @@ mod tests {
             linked_pr_ids: Vec::new(),
             parent_id: None,
             linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            created_by: None,
+            created_by_unique: None,
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }

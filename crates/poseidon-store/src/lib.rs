@@ -641,6 +641,91 @@ impl Store {
     }
 
     /// Pipelines for `owner`, optionally scoped to one team.
+    /// Replace one team's stored boards (called after a poll that discovered them).
+    pub async fn replace_team_boards(
+        &self,
+        owner: &str,
+        team: &str,
+        boards: &[poseidon_core::Board],
+    ) -> Result<()> {
+        let json = serde_json::to_string(boards).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO team_boards (owner, team, boards) VALUES (?,?,?)
+             ON CONFLICT(owner, team) DO UPDATE SET boards=excluded.boards",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The stored boards of one team, or of every team when `team` is `None`, in team
+    /// order. Teams that have no boards are omitted.
+    pub async fn list_team_boards(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<Vec<poseidon_core::TeamBoards>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT team, boards FROM team_boards
+             WHERE owner = ? AND (? IS NULL OR team = ?) ORDER BY team",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(team, json)| {
+                let boards: Vec<poseidon_core::Board> = serde_json::from_str(&json).ok()?;
+                (!boards.is_empty()).then_some(poseidon_core::TeamBoards { team, boards })
+            })
+            .collect())
+    }
+
+    /// Replace one team's stored roster (called after a poll that read one).
+    pub async fn replace_team_members(
+        &self,
+        owner: &str,
+        team: &str,
+        members: &[poseidon_core::TeamMember],
+    ) -> Result<()> {
+        let json = serde_json::to_string(members).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO team_members (owner, team, members) VALUES (?,?,?)
+             ON CONFLICT(owner, team) DO UPDATE SET members=excluded.members",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Every team's stored roster for `owner`, as `(team, members)`. Teams with no
+    /// roster are omitted.
+    pub async fn list_team_members(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<(String, Vec<poseidon_core::TeamMember>)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT team, members FROM team_members WHERE owner = ? ORDER BY team")
+                .bind(owner)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(team, json)| {
+                let members: Vec<poseidon_core::TeamMember> = serde_json::from_str(&json).ok()?;
+                (!members.is_empty()).then_some((team, members))
+            })
+            .collect())
+    }
+
     pub async fn list_pipelines(&self, owner: &str, team: Option<&str>) -> Result<Vec<Pipeline>> {
         let rows = sqlx::query_as::<_, PipelineRow>(
             "SELECT * FROM pipelines
@@ -1002,8 +1087,10 @@ async fn insert_work_items(
             "INSERT INTO work_items
                 (owner, provider, team, id, title, work_item_type, state, tags,
                  assigned_to, created_at, changed_at, closed_at, iteration_path,
-                 story_points, url, linked_pr_ids, description, parent_id, linked_repos)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 story_points, url, linked_pr_ids, description, parent_id, linked_repos,
+                 board_column, board_column_done, board_lane, backlog_rank,
+                 created_by, created_by_unique)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(owner, provider, team, id) DO UPDATE SET
                 title=excluded.title, work_item_type=excluded.work_item_type,
                 state=excluded.state, tags=excluded.tags,
@@ -1012,7 +1099,12 @@ async fn insert_work_items(
                 iteration_path=excluded.iteration_path,
                 story_points=excluded.story_points, url=excluded.url,
                 linked_pr_ids=excluded.linked_pr_ids, description=excluded.description,
-                parent_id=excluded.parent_id, linked_repos=excluded.linked_repos",
+                parent_id=excluded.parent_id, linked_repos=excluded.linked_repos,
+                board_column=excluded.board_column,
+                board_column_done=excluded.board_column_done,
+                board_lane=excluded.board_lane, backlog_rank=excluded.backlog_rank,
+                created_by=excluded.created_by,
+                created_by_unique=excluded.created_by_unique",
         )
         .bind(owner)
         .bind(&wi.provider)
@@ -1033,6 +1125,12 @@ async fn insert_work_items(
         .bind(&wi.description)
         .bind(wi.parent_id)
         .bind(repos)
+        .bind(&wi.board_column)
+        .bind(wi.board_column_done)
+        .bind(&wi.board_lane)
+        .bind(wi.backlog_rank)
+        .bind(&wi.created_by)
+        .bind(&wi.created_by_unique)
         .execute(&mut **tx)
         .await?;
     }
@@ -1083,14 +1181,16 @@ async fn insert_pull_requests(
         sqlx::query(
             "INSERT INTO pull_requests
                 (owner, provider, team, id, title, status, is_draft, repository, author,
-                 created_at, source_branch, target_branch, reviewer_count, url)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 created_at, source_branch, target_branch, reviewer_count, url,
+                 closed_at, reviewers, author_unique)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(owner, provider, team, id) DO UPDATE SET
                 title=excluded.title, status=excluded.status, is_draft=excluded.is_draft,
                 repository=excluded.repository, author=excluded.author,
                 created_at=excluded.created_at, source_branch=excluded.source_branch,
                 target_branch=excluded.target_branch, reviewer_count=excluded.reviewer_count,
-                url=excluded.url",
+                url=excluded.url, closed_at=excluded.closed_at, reviewers=excluded.reviewers,
+                author_unique=excluded.author_unique",
         )
         .bind(owner)
         .bind(&pr.provider)
@@ -1106,6 +1206,9 @@ async fn insert_pull_requests(
         .bind(&pr.target_branch)
         .bind(pr.reviewer_count)
         .bind(&pr.url)
+        .bind(pr.closed_at.map(|d| d.to_rfc3339()))
+        .bind(serde_json::to_string(&pr.reviewers).unwrap_or_else(|_| "[]".into()))
+        .bind(&pr.author_unique)
         .execute(&mut **tx)
         .await?;
     }
@@ -1196,6 +1299,12 @@ struct WorkItemRow {
     description: Option<String>,
     parent_id: Option<i64>,
     linked_repos: Option<String>,
+    board_column: Option<String>,
+    board_column_done: Option<bool>,
+    board_lane: Option<String>,
+    backlog_rank: Option<f64>,
+    created_by: Option<String>,
+    created_by_unique: Option<String>,
 }
 
 impl WorkItemRow {
@@ -1222,6 +1331,12 @@ impl WorkItemRow {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default(),
+            board_column: self.board_column,
+            board_column_done: self.board_column_done,
+            board_lane: self.board_lane,
+            backlog_rank: self.backlog_rank,
+            created_by: self.created_by,
+            created_by_unique: self.created_by_unique,
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
             description: self.description,
@@ -1273,6 +1388,9 @@ struct PullRequestRow {
     target_branch: Option<String>,
     reviewer_count: i64,
     url: String,
+    closed_at: Option<String>,
+    reviewers: String,
+    author_unique: Option<String>,
 }
 
 impl PullRequestRow {
@@ -1286,10 +1404,13 @@ impl PullRequestRow {
             is_draft: self.is_draft != 0,
             repository: self.repository,
             author: self.author,
+            author_unique: self.author_unique,
             created_at: parse_dt_opt(self.created_at),
             source_branch: self.source_branch,
             target_branch: self.target_branch,
+            closed_at: parse_dt_opt(self.closed_at),
             reviewer_count: self.reviewer_count,
+            reviewers: serde_json::from_str(&self.reviewers).unwrap_or_default(),
             url: self.url,
             flags: Vec::new(),
             linked_work_items: Vec::new(),
@@ -1440,9 +1561,48 @@ mod tests {
             linked_pr_ids: Vec::new(),
             parent_id: None,
             linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            created_by: None,
+            created_by_unique: None,
             linked_prs: Vec::new(),
             tag_suggestions: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn work_item_creator_survives_a_round_trip() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let mut a = wi(
+            1,
+            &["x"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            None,
+        );
+        a.created_by = Some("Ana Example".into());
+        a.created_by_unique = Some("ana@example.com".into());
+        let b = wi(
+            2,
+            &["y"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            None,
+        );
+        store
+            .upsert_work_items(DEFAULT_OWNER, &[a, b])
+            .await
+            .unwrap();
+        let mut back = store.list_work_items(DEFAULT_OWNER, None).await.unwrap();
+        back.sort_by_key(|w| w.id);
+        assert_eq!(back[0].created_by.as_deref(), Some("Ana Example"));
+        assert_eq!(
+            back[0].created_by_unique.as_deref(),
+            Some("ana@example.com")
+        );
+        assert_eq!(back[1].created_by, None, "unknown creator stays empty");
     }
 
     #[tokio::test]
@@ -1653,10 +1813,13 @@ mod tests {
             is_draft: false,
             repository: Some("repo".into()),
             author: Some("a".into()),
+            author_unique: None,
             created_at: None,
             source_branch: None,
             target_branch: None,
+            closed_at: None,
             reviewer_count: 0,
+            reviewers: Vec::new(),
             url: format!("https://example/pr/{id}"),
             flags: Vec::new(),
             linked_work_items: Vec::new(),
@@ -1684,6 +1847,89 @@ mod tests {
         assert!(ids.contains(&1)); // kept in scope
         assert!(ids.contains(&3)); // other team untouched
         assert!(!ids.contains(&2)); // pruned
+    }
+
+    #[tokio::test]
+    async fn pull_request_close_date_and_reviewers_survive_a_round_trip() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let closed = DateTime::parse_from_rfc3339("2026-09-20T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let pr = PullRequest {
+            id: 7,
+            provider: "azure-devops".into(),
+            team: "Platform".into(),
+            title: "Merged".into(),
+            status: PrStatus::Completed,
+            is_draft: false,
+            repository: Some("repo".into()),
+            author: Some("Ana".into()),
+            author_unique: Some("ana@example.com".into()),
+            created_at: Some(closed - chrono::Duration::days(2)),
+            source_branch: None,
+            target_branch: None,
+            closed_at: Some(closed),
+            reviewer_count: 2,
+            reviewers: vec![
+                poseidon_core::PrReviewer {
+                    name: "Ben".into(),
+                    unique_name: Some("ben@example.com".into()),
+                    vote: 10,
+                },
+                poseidon_core::PrReviewer {
+                    name: "Cy".into(),
+                    unique_name: None,
+                    vote: 0,
+                },
+            ],
+            url: "https://example/pr/7".into(),
+            flags: Vec::new(),
+            linked_work_items: Vec::new(),
+        };
+        store
+            .upsert_pull_requests(DEFAULT_OWNER, std::slice::from_ref(&pr))
+            .await
+            .unwrap();
+        let back = store.list_pull_requests(DEFAULT_OWNER, None).await.unwrap();
+        assert_eq!(back, vec![pr]);
+    }
+
+    #[tokio::test]
+    async fn team_rosters_are_replaced_and_scoped_per_owner() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let person = |n: &str, u: &str| poseidon_core::TeamMember {
+            name: n.into(),
+            unique_name: Some(u.into()),
+        };
+        store
+            .replace_team_members(
+                DEFAULT_OWNER,
+                "Platform",
+                &[person("Ana", "ana@x.com"), person("Ben", "ben@x.com")],
+            )
+            .await
+            .unwrap();
+        store
+            .replace_team_members(DEFAULT_OWNER, "Empty", &[])
+            .await
+            .unwrap();
+        store
+            .replace_team_members("other@x.com", "Platform", &[person("Zed", "zed@x.com")])
+            .await
+            .unwrap();
+        // A later poll replaces, not appends.
+        store
+            .replace_team_members(DEFAULT_OWNER, "Platform", &[person("Ana", "ana@x.com")])
+            .await
+            .unwrap();
+        let rosters = store.list_team_members(DEFAULT_OWNER).await.unwrap();
+        assert_eq!(
+            rosters.len(),
+            1,
+            "empty roster omitted, other owner excluded"
+        );
+        assert_eq!(rosters[0].0, "Platform");
+        assert_eq!(rosters[0].1, vec![person("Ana", "ana@x.com")]);
     }
 
     #[tokio::test]
@@ -1930,6 +2176,105 @@ mod tests {
         let back = store.list_work_items(DEFAULT_OWNER, None).await.unwrap();
         assert_eq!(back.len(), 1, "same id updates, no duplicate");
         assert_eq!(back[0].description.as_deref(), Some("Edited body"));
+    }
+
+    #[tokio::test]
+    async fn board_column_lane_and_rank_survive_a_round_trip() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let mut a = wi(
+            1,
+            &["x"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            None,
+        );
+        a.board_column = Some("To prioritize".into());
+        a.board_column_done = Some(true);
+        a.board_lane = Some("Expedite".into());
+        a.backlog_rank = Some(1999912345.5);
+        let plain = wi(
+            2,
+            &["y"],
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T00:00:00Z",
+            None,
+        );
+        store
+            .upsert_work_items(DEFAULT_OWNER, &[a, plain])
+            .await
+            .unwrap();
+        let mut back = store.list_work_items(DEFAULT_OWNER, None).await.unwrap();
+        back.sort_by_key(|w| w.id);
+        assert_eq!(back[0].board_column.as_deref(), Some("To prioritize"));
+        assert_eq!(back[0].board_column_done, Some(true));
+        assert_eq!(back[0].board_lane.as_deref(), Some("Expedite"));
+        assert_eq!(back[0].backlog_rank, Some(1999912345.5));
+        // An item from a provider without boards keeps all four empty.
+        assert_eq!(back[1].board_column, None);
+        assert_eq!(back[1].backlog_rank, None);
+    }
+
+    #[tokio::test]
+    async fn team_boards_are_replaced_scoped_and_empty_teams_omitted() {
+        use poseidon_core::{Board, BoardColumn, ColumnKind};
+        let store = Store::connect_in_memory().await.unwrap();
+        let board = |name: &str, cols: &[&str]| Board {
+            name: name.into(),
+            columns: cols
+                .iter()
+                .map(|c| BoardColumn {
+                    name: (*c).into(),
+                    wip_limit: None,
+                    kind: ColumnKind::InProgress,
+                    split: false,
+                })
+                .collect(),
+            lanes: vec![],
+            work_item_types: vec!["Bug".into()],
+        };
+        store
+            .replace_team_boards(
+                DEFAULT_OWNER,
+                "Platform",
+                &[board("Stories", &["New", "Done"])],
+            )
+            .await
+            .unwrap();
+        store
+            .replace_team_boards(DEFAULT_OWNER, "Data", &[board("Stories", &["Backlog"])])
+            .await
+            .unwrap();
+        store
+            .replace_team_boards(DEFAULT_OWNER, "Empty", &[])
+            .await
+            .unwrap();
+        store
+            .replace_team_boards("someone@else.com", "Platform", &[board("Other", &["X"])])
+            .await
+            .unwrap();
+
+        let all = store.list_team_boards(DEFAULT_OWNER, None).await.unwrap();
+        let names: Vec<_> = all.iter().map(|t| t.team.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Data", "Platform"],
+            "ordered by team; the empty team is omitted"
+        );
+        // A later poll REPLACES a team's boards (a column removed upstream disappears).
+        store
+            .replace_team_boards(DEFAULT_OWNER, "Platform", &[board("Stories", &["New"])])
+            .await
+            .unwrap();
+        let one = store
+            .list_team_boards(DEFAULT_OWNER, Some("Platform"))
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].boards[0].columns.len(), 1);
+        // Owner-scoped: the other owner's boards are not visible here.
+        assert!(!one
+            .iter()
+            .any(|t| t.boards.iter().any(|b| b.name == "Other")));
     }
 
     #[tokio::test]

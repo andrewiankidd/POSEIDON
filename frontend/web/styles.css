@@ -740,6 +740,11 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   box-shadow: var(--shadow); z-index: 400; font-weight: 500; max-width: 80vw;
 }
 .toast.err { background: var(--err); color: #fff; }
+.toast-action {
+  margin-left: 6px; font: inherit; font-weight: 600; cursor: pointer; padding: 2px 10px; border-radius: 6px;
+  background: transparent; color: inherit; border: 1px solid currentColor; opacity: 0.9;
+}
+.toast-action:hover { opacity: 1; background: color-mix(in srgb, currentColor 18%, transparent); }
 
 /* Redeploy nudge: a long-open tab noticed a newer build stamp on the server. The
    whole banner is clickable (reload); the ✕ dismisses. */
@@ -798,6 +803,7 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
 .report-view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .report-view-head h2 { margin: 0; }
 .report-series-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
+.report-total td { border-top: 2px solid var(--border); }
 .report-plaintext { background: var(--panel-2); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; }
 .report-item-list { margin: 0; padding: 0 0 0 20px; font-size: 13px; line-height: 1.7; }
 .report-item-list li { color: var(--ink); }
@@ -1017,8 +1023,9 @@ label.field span { display: block; font-size: 12px; color: var(--ink-soft); marg
   margin-bottom: 2rem;
 }
 .recap-highlights { display: flex; flex-direction: column; gap: 0.65rem; }
-.recap-hl-group-heading { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-top: 0.8rem; margin-bottom: 0.2rem; }
-.recap-hl-group-heading:first-child { margin-top: 0; }
+.recap-hl-group { display: flex; flex-direction: column; gap: 0.65rem; }
+.recap-hl-group + .recap-hl-group { margin-top: 0.8rem; }
+.recap-hl-group-heading { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 0.2rem; }
 .recap-hl-item {
   display: flex;
   gap: 0.85rem;
@@ -1451,6 +1458,65 @@ body.ai-bar-visible .content { padding-bottom: 108px; }
 .recap-hl-item:hover .recap-hl-remove, .recap-hl-remove:focus-visible {
   opacity: 1; color: var(--err); border-color: var(--err);
 }
+/* Reordering: a drag handle on every row and group heading, click-to-rename headings, group
+   move / remove buttons, and drop markers. Preview only - none of it reaches the exported deck. */
+.recap-grip {
+  margin-left: auto; flex-shrink: 0; cursor: grab; user-select: none;
+  color: var(--ink-soft); opacity: 0.3; letter-spacing: -2px; padding: 0 4px; line-height: 1.5;
+}
+.recap-grip:active { cursor: grabbing; }
+.recap-grip { touch-action: none; }
+/* The floating copy that follows the pointer while dragging, and a global grabbing cursor +
+   no text selection for the duration so the drag feels the same over every element. */
+.recap-drag-ghost {
+  opacity: 0.92; background: var(--panel); border: 1px solid var(--accent); border-radius: 8px;
+  box-shadow: var(--shadow); padding: 4px 8px; cursor: grabbing;
+}
+body.recap-is-dragging, body.recap-is-dragging * { cursor: grabbing !important; user-select: none !important; }
+.recap-hl-item:hover .recap-grip, .recap-hl-heading-edit:hover .recap-grip { opacity: 1; color: var(--accent); }
+.recap-grip + .recap-hl-remove { margin-left: 0; }
+.recap-hl-heading-edit { display: flex; align-items: center; gap: 0.5rem; }
+.recap-hl-heading-text {
+  cursor: text; min-width: 6ch; border-radius: 4px; outline: 1px dashed transparent; outline-offset: 3px;
+}
+.recap-hl-heading-text:hover { outline-color: var(--border); }
+.recap-hl-heading-text:focus { outline: 1px solid var(--accent); }
+.recap-hl-heading-text:empty::before { content: attr(data-placeholder); opacity: 0.5; text-transform: none; letter-spacing: 0; }
+.recap-hl-group-btns { display: flex; gap: 2px; margin-left: auto; opacity: 0.3; }
+.recap-hl-heading-edit:hover .recap-hl-group-btns, .recap-group-btn:focus-visible { opacity: 1; }
+.recap-hl-group-btns + .recap-grip { margin-left: 0; }
+.recap-group-btn {
+  width: 22px; height: 22px; line-height: 1; padding: 0; cursor: pointer; font-size: 13px;
+  background: none; border: 1px solid transparent; border-radius: 6px; color: var(--ink-soft);
+}
+.recap-group-btn:hover { color: var(--accent); border-color: var(--accent); }
+.recap-group-btn[data-group-act="remove"]:hover { color: var(--err); border-color: var(--err); }
+.recap-hl-empty {
+  border: 1px dashed var(--border); border-radius: 6px; padding: 0.45rem 0.8rem;
+  font-size: 0.75rem; color: var(--ink-soft);
+}
+.recap-add-group {
+  align-self: flex-start; margin-top: 0.8rem; cursor: pointer; font-family: inherit; font-size: 0.75rem;
+  background: none; color: var(--ink-soft); border: 1px dashed var(--border); border-radius: 6px; padding: 0.3rem 0.8rem;
+}
+.recap-add-group:hover { color: var(--accent); border-color: var(--accent); }
+.recap-dragging { opacity: 0.4; }
+.recap-drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.recap-drop-after { box-shadow: 0 2px 0 var(--accent); }
+.recap-drop-into { background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 6px; }
+.recap-nav-reorder { display: flex; gap: 0.4rem; }
+.recap-nav-del:hover:not(:disabled) { color: var(--err); border-color: var(--err); }
+.recap-credit { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+.recap-credit:hover { color: var(--accent); text-decoration: underline; }
+.recap-hl-link { color: var(--accent); text-decoration: none; font-variant-numeric: tabular-nums; }
+.recap-hl-link:hover { text-decoration: underline; }
+/* ✨ Suggest groups: the proposed groups, listed for review before they are applied. */
+.recap-ai-preview {
+  max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--panel-2);
+}
+.recap-ai-heading { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin-bottom: 3px; }
+.recap-ai-item { font-size: 12.5px; color: var(--ink-soft); padding: 1px 0 1px 10px; }
 
 /* The Recap page fills the window (see .view-fill): the deck takes the space under the
    toolbar and follows the window as it resizes, instead of a fixed height. */
@@ -1484,3 +1550,14 @@ body.ai-bar-visible .content { padding-bottom: 108px; }
 .recap-brand-slider input[type="range"] { flex: 1; }
 .recap-brand-slider .recap-brand-val { flex: 0 0 38px; text-align: right; font-size: 12px; color: var(--ink-soft); }
 .recap-brand-slider select { flex: 1; }
+
+/* Tracker-column board: WIP count turns red past the tracker's limit, a muted note on the
+   outgoing column, and the per-column copy-as-bullets button. */
+.board-col-count.over { color: var(--err); border-color: var(--err); font-weight: 600; }
+.board-col-hint { flex: 0 0 auto; font-size: 10px; color: var(--ink-soft); }
+.board-col-copy {
+  flex: 0 0 auto; margin-left: auto; padding: 0 6px; line-height: 20px; font-size: 13px;
+  background: none; border: 1px solid transparent; border-radius: 6px; color: var(--ink-soft);
+  cursor: pointer; opacity: 0.55;
+}
+.board-col-head:hover .board-col-copy, .board-col-copy:focus-visible { opacity: 1; border-color: var(--border); color: var(--ink); }

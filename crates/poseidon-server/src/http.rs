@@ -143,6 +143,7 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/poll", post(poll))
         .route("/api/ai/status", get(ai_status))
         .route("/api/recap/summaries", post(recap_summaries))
+        .route("/api/recap/groupings", post(recap_groupings))
         .route("/api/recap/settings", put(update_recap_settings))
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
@@ -567,6 +568,31 @@ async fn recap_summaries(svc: Scoped, Json(body): Json<RecapSummariesBody>) -> A
     Ok(Json(serde_json::to_value(result).map_err(err500)?))
 }
 
+#[derive(serde::Deserialize)]
+struct RecapGroupingsBody {
+    #[serde(default)]
+    team: Option<String>,
+    #[serde(default)]
+    period: String,
+    /// The slide to organise: its area name and every closed item on it.
+    area: crate::service::RecapAreaInput,
+    /// Optional steer typed by the user ("keep observability together").
+    #[serde(default)]
+    guidance: String,
+}
+
+/// AI-suggested groupings for ONE Recap slide →
+/// `{ groups: [{ heading, ids: [..] }], ai_available, error }`. Suggestions only - the UI
+/// shows them for review and applies them to the deck itself.
+async fn recap_groupings(svc: Scoped, Json(body): Json<RecapGroupingsBody>) -> ApiResult {
+    let team = body.team.as_deref().filter(|t| !t.is_empty());
+    let result = svc
+        .recap_groupings(team, &body.period, body.area, &body.guidance)
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(result).map_err(err500)?))
+}
+
 /// Save the Recap deck look (theme + logo). Validated server-side; the response is the
 /// settings as stored (so the UI can show what survived validation).
 async fn update_recap_settings(
@@ -747,7 +773,10 @@ async fn tickets(svc: Scoped, Query(q): Query<ScopeQuery>) -> ApiResult {
     let team = scope(&q.team);
     let items = svc.work_items(team).await.map_err(err500)?;
     let flags = svc.flags(team).await.map_err(err500)?;
-    Ok(Json(serde_json::json!({ "items": items, "flags": flags })))
+    let boards = svc.boards(team).await.map_err(err500)?;
+    Ok(Json(
+        serde_json::json!({ "items": items, "flags": flags, "boards": boards }),
+    ))
 }
 
 async fn pipelines(svc: Scoped, Query(q): Query<ScopeQuery>) -> ApiResult {

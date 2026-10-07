@@ -60,6 +60,35 @@ Cards carry the item's type, assignee, tags, and flag chips; the selection
 checkboxes and every toolbar action (filters, Suggest tags, healthcheck) work the
 same in both views. Clicking a card opens the field editor (below).
 
+### Tracker board columns (Azure DevOps)
+
+A board's columns are **not** work-item states: a team can add a custom column such as
+"To prioritize" next to "New", both mapping to State = New, so grouping by State can
+never reproduce the tracker's own board. For Azure DevOps teams POSEIDON therefore
+**discovers the team's boards automatically** - no configuration - and adds one entry to
+the View dropdown per board (**Stories**, **Features**, **Epics**, each with its own
+columns):
+
+- **Real columns, in the tracker's order**, with each item in the column the web UI shows
+  it in. Items are ordered by the tracker's own manual ranking, so a column reads
+  top-to-bottom exactly like the web board.
+- **WIP counts**: a column header shows `28/25` against the tracker's limit and turns red
+  once it is exceeded. (With several teams in scope the per-team limits are dropped.)
+- **Recent work only in the outgoing column**: the finished ("Closed") column shows the
+  last 14 days, as the tracker does, rather than the whole history.
+- **Copy as bullets**: each column header has a **⧉** button that copies the column as a
+  markdown bullet list - `- [#915915](url) Bug: Title`, linked to the tracker, in column
+  order - ready to paste into a doc, chat or status update. It works on every board view,
+  not just tracker columns. Your toolbar filters (type, assignee, keyword, rule breaks)
+  apply to what is copied.
+
+How it finds the board: the board URL needs the Azure DevOps *team* name, which is often
+not the POSEIDON team's name (`Payments` is served by `Payments Team`), so the provider tries the team's name, `<name> Team` and `<project> Team`. If your
+board belongs to a team named something else, set `board_team` (also used to find the team's member roster for [per-person reports](reports.md)) on the team in the config
+YAML. Boards refresh on every poll; if a team has none (or the token can't read them) the
+state-based boards remain and polling is unaffected. GitHub and GitLab have no custom
+columns, so they keep the State / tag boards.
+
 ## Tag suggestions
 
 A **Suggested** column sits between Tags and PRs, carrying advisory tag hints for

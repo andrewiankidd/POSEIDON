@@ -28,6 +28,14 @@ pub struct WorkItem {
     pub tags: Vec<String>,
     /// Display name of the assignee, or `None` if unassigned.
     pub assigned_to: Option<String>,
+    /// Display name of whoever created the item, when the provider says. Powers the
+    /// per-person "work items created" reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// The creator's sign-in identity (email-style), when known - what team-roster
+    /// matching keys on, since display names can differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_unique: Option<String>,
     pub created_at: DateTime<Utc>,
     /// Last-modified timestamp - the anchor for staleness checks.
     pub changed_at: DateTime<Utc>,
@@ -61,6 +69,22 @@ pub struct WorkItem {
     /// than any keyword. Provider-normalised; empty when none are linked.
     #[serde(default)]
     pub linked_repos: Vec<String>,
+    /// The Kanban column the tracker's board shows this item in (Azure DevOps: the value
+    /// of the team board's column field - a custom column such as "To prioritize", which
+    /// is NOT the same as `state`). `None` for providers without board columns, or an
+    /// item that is not on a board. See `Board`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_column: Option<String>,
+    /// For a split column, whether the item is in its "Done" half.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_column_done: Option<bool>,
+    /// The board swimlane the item is in, if the board has lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_lane: Option<String>,
+    /// The tracker's manual backlog / board order (Azure DevOps: StackRank, falling back
+    /// to BacklogPriority). Lower sorts nearer the top. `None` when unranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog_rank: Option<f64>,
     /// The linked PRs resolved to display shape (id + status + url), filled on
     /// read by joining `linked_pr_ids` with the polled PR set. Runtime-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -132,6 +156,12 @@ mod tests {
             linked_pr_ids: vec![],
             parent_id: None,
             linked_repos: Vec::new(),
+            board_column: None,
+            board_column_done: None,
+            board_lane: None,
+            backlog_rank: None,
+            created_by: None,
+            created_by_unique: None,
             linked_prs: vec![],
             tag_suggestions: vec![],
         }
