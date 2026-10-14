@@ -82,6 +82,9 @@ columns):
   not just tracker columns. Your toolbar filters (type, assignee, keyword, rule breaks)
   apply to what is copied.
 
+- **Drag a card to move it** - on an Azure DevOps board, drag a card by its body (the checkbox and the id link still click as before) to another column, or to a new place in its own column. The move is written back to the tracker: Poseidon sets the state that column maps the item's type to and the board's column field (the state alone would land the card in the first column that shares it, so "New" and "To prioritize" need both), and drops the card between its new neighbours by setting its manual rank. The board updates at once and rolls back with a message if the tracker refuses. **Esc** cancels a drag; the board scrolls if you hold near an edge. Click a card without moving and the field editor opens as before.
+- **Where dragging works** - tracker-column boards and the **State** board, for Azure DevOps items only (GitHub and GitLab are read-focused, and a tag board has no single "move"). Boards polled before this feature existed carry no write details, so the board says *Refresh to enable dragging cards between columns* until the next poll. Dropping on a column past its work-in-progress limit is allowed, as in the tracker; the count just turns red.
+
 How it finds the board: the board URL needs the Azure DevOps *team* name, which is often
 not the POSEIDON team's name (`Payments` is served by `Payments Team`), so the provider tries the team's name, `<name> Team` and `<project> Team`. If your
 board belongs to a team named something else, set `board_team` (also used to find the team's member roster for [per-person reports](reports.md)) on the team in the config

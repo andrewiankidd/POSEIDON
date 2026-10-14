@@ -70,9 +70,16 @@ pub async fn update_work_item(
     id: i64,
     state: Option<String>,
     tags: Option<Vec<String>>,
+    board_move: Option<poseidon_core::BoardMove>,
+    backlog_rank: Option<f64>,
 ) -> CmdResult {
     let service = app_state.service()?;
-    let update = poseidon_core::WorkItemUpdate { state, tags };
+    let update = poseidon_core::WorkItemUpdate {
+        state,
+        tags,
+        board_move,
+        backlog_rank,
+    };
     let (item, flags) = service
         .update_work_item(&team, id, update)
         .await
@@ -880,6 +887,75 @@ fn reveal(file: &std::path::Path) -> std::io::Result<()> {
         .arg(dir)
         .spawn()
         .map(|_| ())
+}
+
+/// Save people's timezones and leave.
+#[tauri::command]
+pub async fn update_people(
+    state: State<'_, AppState>,
+    people: Vec<poseidon_core::PersonProfile>,
+) -> CmdResult {
+    let service = state.service()?;
+    let stored = service
+        .update_people(people)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(stored).map_err(|e| e.to_string())
+}
+
+/// The Capacity report for the current scope.
+#[tauri::command]
+pub async fn get_capacity(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    weeks: Option<u32>,
+    tz_offset_minutes: Option<i32>,
+) -> CmdResult {
+    let service = state.service()?;
+    let report = service
+        .capacity(
+            scope(&team),
+            weeks.unwrap_or(13),
+            tz_offset_minutes.unwrap_or(0),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(report).map_err(|e| e.to_string())
+}
+
+/// Ask the AI to classify untagged demand.
+#[tauri::command]
+pub async fn classify_demand(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    weeks: Option<u32>,
+) -> CmdResult {
+    let service = state.service()?;
+    let r = service
+        .classify_demand(scope(&team), weeks.unwrap_or(13))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
+}
+
+/// An AI-written capacity summary.
+#[tauri::command]
+pub async fn capacity_summary(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    weeks: Option<u32>,
+    tz_offset_minutes: Option<i32>,
+) -> CmdResult {
+    let service = state.service()?;
+    let r = service
+        .capacity_summary(
+            scope(&team),
+            weeks.unwrap_or(13),
+            tz_offset_minutes.unwrap_or(0),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

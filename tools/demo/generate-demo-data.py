@@ -53,25 +53,40 @@ items = []
 # The fictional team's Kanban boards, in the shape the app serves (see poseidon_core::Board).
 # Note "New" and "To prioritize" are separate columns that both sit on State=New - the reason
 # the board view mirrors tracker columns instead of grouping by state.
-def _col(name, wip=None, kind="in_progress", split=False):
+def _col(name, wip=None, kind="in_progress", split=False, state=None, types=()):
+    """One board column. `state` is the workflow state it puts each of `types` in - what lets the
+    app write a dragged card back (see poseidon_core::BoardColumn::states)."""
     c = {"name": name, "kind": kind, "split": split}
     if wip:
         c["wip_limit"] = wip
+    if state:
+        c["states"] = {t: state for t in types}
     return c
 
 
+_STORY = ("Bug", "Spike", "Task", "User Story")
 BOARDS = [
-    {"name": "Stories",
-     "columns": [_col("New", kind="incoming"), _col("To prioritize", 25), _col("This week", 25),
-                 _col("Blocked"), _col("In Progress", 10), _col("Done", 20), _col("Closed", kind="outgoing")],
+    {"name": "Stories", "column_field": "WEF_DEMO_Kanban.Column", "done_field": "WEF_DEMO_Kanban.Column.Done",
+     "columns": [_col("New", kind="incoming", state="New", types=_STORY),
+                 _col("To prioritize", 25, state="New", types=_STORY),
+                 _col("This week", 25, state="Ready", types=_STORY),
+                 _col("Blocked", state="Blocked", types=_STORY),
+                 _col("In Progress", 10, state="Active", types=_STORY),
+                 _col("Done", 20, state="Resolved", types=_STORY),
+                 _col("Closed", kind="outgoing", state="Closed", types=_STORY)],
      "work_item_types": ["Bug", "Spike", "Task", "User Story"]},
-    {"name": "Features",
-     "columns": [_col("New", kind="incoming"), _col("Planned", 8), _col("In Progress", 6),
-                 _col("Done"), _col("Closed", kind="outgoing")],
+    {"name": "Features", "column_field": "WEF_DEMO2_Kanban.Column", "done_field": "WEF_DEMO2_Kanban.Column.Done",
+     "columns": [_col("New", kind="incoming", state="New", types=("Feature",)),
+                 _col("Planned", 8, state="Active", types=("Feature",)),
+                 _col("In Progress", 6, state="Active", types=("Feature",)),
+                 _col("Done", state="Resolved", types=("Feature",)),
+                 _col("Closed", kind="outgoing", state="Closed", types=("Feature",))],
      "work_item_types": ["Feature"]},
-    {"name": "Epics",
-     "columns": [_col("New", kind="incoming"), _col("In Progress", 5), _col("Done"),
-                 _col("Closed", kind="outgoing")],
+    {"name": "Epics", "column_field": "WEF_DEMO3_Kanban.Column", "done_field": "WEF_DEMO3_Kanban.Column.Done",
+     "columns": [_col("New", kind="incoming", state="New", types=("Epic",)),
+                 _col("In Progress", 5, state="Active", types=("Epic",)),
+                 _col("Done", state="Resolved", types=("Epic",)),
+                 _col("Closed", kind="outgoing", state="Closed", types=("Epic",))],
      "work_item_types": ["Epic"]},
 ]
 
@@ -518,3 +533,111 @@ areas = Counter(t[5:] for i in closed_in_range for t in i["tags"] if t.startswit
 print(f"{len(items)} work items | {len(closed_in_range)} closed in the 30-day window "
       f"| {len(opened_in_range)} opened | closed 7d={closed_7d} created 7d={created_7d}")
 print("closed by area (30d):", dict(areas.most_common()))
+
+
+# ── capacity (a plausible 13-week picture; the real report is computed server-side) ──────────
+def monday_of(d):
+    return d - dt.timedelta(days=d.weekday())
+
+
+cap_rng = random.Random(11)
+first_week = monday_of(ANCHOR) - dt.timedelta(weeks=12)
+weekly = []
+for w in range(13):
+    arrived = cap_rng.randint(11, 19)
+    closed = cap_rng.randint(7, 13)
+    bulk = w == 5
+    if bulk:
+        closed = 38
+    weekly.append({"week_start": (first_week + dt.timedelta(weeks=w)).isoformat(),
+                   "arrived": arrived, "closed": closed, "bulk": bulk})
+arrived_total = sum(x["arrived"] for x in weekly)
+closed_total = sum(x["closed"] for x in weekly)
+typical = sorted(x["closed"] for x in weekly if not x["bulk"])[len(weekly) // 2 - 1]
+open_backlog = 64
+
+heat = [[0] * 24 for _ in range(7)]
+people_hours = {}
+for p in PEOPLE[:4]:
+    people_hours[p] = [0] * 24
+for p, hours in people_hours.items():
+    for _ in range(cap_rng.randint(120, 220)):
+        weekday = cap_rng.choices(range(7), weights=[5, 5, 5, 5, 4, 1, 1])[0]
+        if cap_rng.random() < (0.5 if p == PEOPLE[0] else 0.12):
+            hour = cap_rng.choice([6, 7, 8, 18, 19, 20, 21, 22, 23, 0, 1])
+        else:
+            hour = cap_rng.randint(9, 17)
+        hours[hour] += 1
+        heat[weekday][hour] += 1
+
+
+def after_share(hours):
+    n = sum(hours)
+    return round(sum(v for h, v in enumerate(hours) if h < 9 or h >= 18) / n, 3)
+
+
+people = []
+for i, (p, hours) in enumerate(people_hours.items()):
+    lead = i == 0
+    zone = ["Europe/London", "Europe/Dublin", "Asia/Manila", "Europe/Copenhagen"][i]
+    leave = [0, 5, 10, 0][i]
+    people.append({"name": p, "unique_name": None, "timezone": zone, "available_days": 63 - leave, "leave_days": leave,
+                   "worked_on_leave_days": 1 if i == 2 else 0,
+                   "commits": sum(hours), "active_days": cap_rng.randint(38, 56),
+                   "after_hours_share": after_share(hours), "weekend_days": 14 if lead else cap_rng.randint(1, 4),
+                   "late_nights": 21 if lead else cap_rng.randint(0, 3), "longest_streak": 17 if lead else cap_rng.randint(5, 9),
+                   "longest_span_hours": 15.5 if lead else round(cap_rng.uniform(8, 10.5), 1), "hours": hours})
+total_commits = sum(p["commits"] for p in people)
+total_hours = [sum(h[i] for h in people_hours.values()) for i in range(24)]
+
+write("capacity", {
+    "generated_at": z(ts(0, 12)), "weeks": 13,
+    "window_start": (first_week).isoformat(), "window_end": ANCHOR.isoformat(),
+    "flow": {"arrived": arrived_total, "closed": closed_total, "ratio": round(arrived_total / closed_total, 2),
+             "backlog_growth_per_week": round((arrived_total - closed_total) / 13, 1),
+             "typical_weekly_throughput": float(typical), "bulk_weeks": 1, "bulk_closed": 38 - typical,
+             "open_backlog": open_backlog, "weeks_to_clear": round(open_backlog / typical, 1)},
+    "weekly": weekly,
+    "cycle": {"n": 142, "median_days": 9.0, "p85_days": 41.0, "p95_days": 96.0},
+    "wip": {"in_progress": 14, "stalled_30": 4, "stalled_90": 2, "unassigned_open": 21,
+            "per_person": [{"name": PEOPLE[0], "in_progress": 6, "open_assigned": 17},
+                           {"name": PEOPLE[1], "in_progress": 3, "open_assigned": 9},
+                           {"name": PEOPLE[2], "in_progress": 3, "open_assigned": 8},
+                           {"name": PEOPLE[3], "in_progress": 2, "open_assigned": 5}]},
+    "demand": {"total": arrived_total, "reactive": 71, "planned": 52, "maintenance": 24, "unknown": arrived_total - 147,
+               "tagged": 118, "inferred": 29, "reactive_share": round(71 / 147, 2),
+               "by_source": [{"source": "support", "count": 38, "inferred": 6}, {"source": "request", "count": 21, "inferred": 9},
+                             {"source": "incident", "count": 12, "inferred": 2}, {"source": "roadmap", "count": 52, "inferred": 0},
+                             {"source": "technical-debt", "count": 24, "inferred": 12}]},
+    "standing": [{"id": 1004, "title": "Running list: misc platform asks", "url": "https://example.invalid/wi/1004",
+                  "age_days": 212, "reason": "title"}],
+    "concentration": {"merged_prs": 198, "people_for_half": 2, "top_author": PEOPLE[0], "top_share": 0.46,
+                      "repos": [{"repo": "cluster-bootstrap", "prs": 41, "authors": 2, "top_author": PEOPLE[0], "top_share": 0.88, "single_point": True},
+                                {"repo": "platform-iac", "prs": 63, "authors": 4, "top_author": PEOPLE[0], "top_share": 0.71, "single_point": False},
+                                {"repo": "pipeline-templates", "prs": 29, "authors": 4, "top_author": PEOPLE[2], "top_share": 0.41, "single_point": False}]},
+    "effort": {"available": True, "commits": total_commits, "after_hours_share": after_share(total_hours),
+               "hours": total_hours, "heat": heat, "people": people},
+    "facts": [
+        f"{arrived_total} items arrived and {closed_total} finished in 13 weeks ({arrived_total / closed_total:.2f} in per 1 out), and one clean-up week ({38} finished) flatters the finish count.",
+        f"A typical week finishes about {typical} items. At that pace the {open_backlog} open items would take roughly {round(open_backlog / typical)} weeks with nothing new arriving.",
+        "Half of finished items took 9 days or less; 85% took 41 days or less.",
+        "Of the 147 arrivals that could be classified, 48% were reactive (support, requests, incidents).",
+        f"{PEOPLE[0]} wrote 46% of merged pull requests, and alone wrote 88% of cluster-bootstrap.",
+        f"{round(after_share(total_hours) * 100)}% of commits fall outside 09:00-18:00 Monday-Friday; {people[0]['name']} has 21 late nights and a 17-day run.",
+    ],
+    "notes": [
+        "Demo data: a made-up team, so the numbers only illustrate how the screen reads.",
+        "Throughput counts items, not effort: a one-line fix and a month-long migration each count as one. Read it as a trend.",
+        "Commits miss meetings, escalations, reviews and chat, so working hours understate the load.",
+    ],
+})
+print("capacity: ", arrived_total, "in", closed_total, "out; commits", total_commits)
+
+write("capacity-classify", {"ai_available": True, "classified": 0, "remaining": 0, "errors": []})
+write("capacity-summary", {"ai_available": True, "error": None, "text": (
+    "Demand is outrunning delivery: about 1.3 items arrive for every one that finishes, and a single clean-up week "
+    "makes the finish count look healthier than a typical week (around 10) really is. Nearly half of the demand that "
+    "could be classified is reactive, so planned work is being squeezed by support and requests. Knowledge is "
+    "concentrated: one person wrote most of the merged pull requests and nearly all of cluster-bootstrap, and the "
+    "commit timestamps show that person working late nights and long runs far more than anyone else. Delegating "
+    "this work would first need time to bring others up to speed.")})

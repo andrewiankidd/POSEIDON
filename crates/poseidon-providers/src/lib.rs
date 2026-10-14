@@ -115,6 +115,18 @@ pub trait Provider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Commit timestamps (author, repository, time - never the content) authored at or after
+    /// `since`, across the repositories this provider covers. They feed the Capacity screen's
+    /// working-hours picture. Default: none - a provider that can't list commits simply has no
+    /// such panel. Heavy (one request per repository), so the caller collects it on a slow
+    /// cadence rather than every poll.
+    async fn fetch_commits(
+        &self,
+        _since: DateTime<Utc>,
+    ) -> Result<Vec<poseidon_core::CommitActivity>, ProviderError> {
+        Ok(Vec::new())
+    }
+
     /// The pipelines this provider monitors - either the configured subset or
     /// all pipelines in the project.
     async fn fetch_pipelines(&self) -> Result<Vec<Pipeline>, ProviderError>;

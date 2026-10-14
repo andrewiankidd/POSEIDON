@@ -119,13 +119,45 @@ pub struct WorkItemUpdate {
     /// Full replacement tag list. `None` = leave unchanged; `Some(vec![])`
     /// clears all tags.
     pub tags: Option<Vec<String>>,
+    /// Move the card to a board column (tracker boards). The service turns this into the
+    /// state the column maps the item's type to, plus the column field to write.
+    #[serde(default)]
+    pub board_move: Option<BoardMove>,
+    /// A new position in the tracker's manual order (lower = nearer the top). Lets a
+    /// drag land a card between two others.
+    #[serde(default)]
+    pub backlog_rank: Option<f64>,
 }
 
 impl WorkItemUpdate {
     /// Whether this update actually changes anything.
     pub fn is_empty(&self) -> bool {
-        self.state.is_none() && self.tags.is_none()
+        self.state.is_none()
+            && self.tags.is_none()
+            && self.board_move.is_none()
+            && self.backlog_rank.is_none()
     }
+}
+
+/// A request to move a card to a board column. A client names only the board and column;
+/// the fields below them are filled in by the service from the stored board, never taken from
+/// a client (`serde(skip)`), so a request can't choose which tracker field gets written.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BoardMove {
+    /// The board, e.g. `Stories`.
+    pub board: String,
+    /// The target column on that board.
+    pub column: String,
+    /// The tracker field that holds the column. Set by the service.
+    #[serde(skip)]
+    pub column_field: Option<String>,
+    /// The field holding the Doing / Done half, when the target column is split. Set by the
+    /// service.
+    #[serde(skip)]
+    pub done_field: Option<String>,
+    /// Put the card in the "Doing" half of a split target column. Set by the service.
+    #[serde(skip)]
+    pub reset_done: bool,
 }
 
 #[cfg(test)]
@@ -220,14 +252,39 @@ mod tests {
         assert!(WorkItemUpdate::default().is_empty());
         assert!(!WorkItemUpdate {
             state: Some("Resolved".into()),
-            tags: None
+            ..Default::default()
         }
         .is_empty());
         // Clearing all tags (Some(empty vec)) is still a change.
         assert!(!WorkItemUpdate {
-            state: None,
-            tags: Some(vec![])
+            tags: Some(vec![]),
+            ..Default::default()
         }
         .is_empty());
+        // A card move, or only a new rank, is a change too.
+        assert!(!WorkItemUpdate {
+            board_move: Some(BoardMove::default()),
+            ..Default::default()
+        }
+        .is_empty());
+        assert!(!WorkItemUpdate {
+            backlog_rank: Some(1.5),
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn a_client_cannot_choose_which_tracker_field_a_move_writes() {
+        // The field names are filled in by the service; whatever a request body carries for
+        // them is ignored, so a client can only name a board and a column.
+        let mv: BoardMove = serde_json::from_str(
+            r#"{"board":"Stories","column":"New","column_field":"System.Title","done_field":"System.State","reset_done":true}"#,
+        )
+        .unwrap();
+        assert_eq!((mv.board.as_str(), mv.column.as_str()), ("Stories", "New"));
+        assert_eq!(mv.column_field, None);
+        assert_eq!(mv.done_field, None);
+        assert!(!mv.reset_done);
     }
 }

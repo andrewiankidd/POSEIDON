@@ -72,6 +72,34 @@ pub enum DraftOutcome {
     Prompt { system: String, user: String },
 }
 
+/// How often (at most) commit activity is collected: it costs a request per repository.
+const COMMIT_COLLECT_EVERY_HOURS: i64 = 6;
+/// How far back commit activity is kept and collected.
+const COMMIT_WINDOW_DAYS: i64 = 120;
+/// Work items sent to the AI per classify run (in batches of `poseidon_ai::MAX_DEMAND_BATCH`).
+const CLASSIFY_PER_RUN: usize = 150;
+
+/// What a "classify demand" run did.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DemandClassification {
+    /// False when the owner has no usable AI backend at all.
+    pub ai_available: bool,
+    /// Verdicts stored by this run.
+    pub classified: usize,
+    /// Items still without a verdict (over this run's cap, skipped by the model, or after a
+    /// failure) - run it again to continue.
+    pub remaining: usize,
+    pub errors: Vec<String>,
+}
+
+/// The AI-written capacity summary, or why there isn't one.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CapacityNarrative {
+    pub ai_available: bool,
+    pub text: Option<String>,
+    pub error: Option<String>,
+}
+
 /// One closed work item the Recap deck wants summarised.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecapItemInput {
@@ -724,7 +752,17 @@ impl Service {
             "rules": uc.rules,
             "poll_all_teams": uc.poll_all_teams,
             "recap": uc.recap,
+            "people": uc.people,
         }))
+    }
+
+    /// Save people's timezones and leave (see [`poseidon_core::PersonProfile`]). Validated
+    /// server-side; returns the profiles as stored.
+    pub async fn update_people(
+        &self,
+        people: Vec<poseidon_core::PersonProfile>,
+    ) -> anyhow::Result<Vec<poseidon_core::PersonProfile>> {
+        self.config.set_people(&self.owner, people).await
     }
 
     /// Save the Recap deck look (theme colours + branding logo) for this owner. Validated
@@ -790,6 +828,16 @@ impl Service {
             // this owner hasn't set one.
             if current.recap.is_empty() {
                 current.recap = bundle.config.recap.clone().sanitized();
+            }
+            // People are added by name; anyone already profiled keeps their own settings.
+            for p in bundle.config.people {
+                if !current
+                    .people
+                    .iter()
+                    .any(|x| x.name.eq_ignore_ascii_case(&p.name))
+                {
+                    current.people.push(p);
+                }
             }
             let mut teams = 0;
             for t in bundle.config.teams {
@@ -1202,8 +1250,256 @@ impl Service {
         self.store
             .replace_team_pull_requests(&self.owner, team_name, &pulls)
             .await?;
+        self.collect_commits(team_name, provider).await;
 
         Ok((items.len(), pipelines.len(), runs.len(), pulls.len()))
+    }
+
+    /// Collect commit timestamps for the Capacity screen's working-hours picture. One request per
+    /// repository, so it runs at most every few hours (a poll in between does nothing), and a
+    /// failure only logs - it must never fail a poll.
+    async fn collect_commits(&self, team: &str, provider: &dyn poseidon_providers::Provider) {
+        let key = format!("commits_collected_at:{team}");
+        let now = Utc::now();
+        if let Ok(Some(last)) = self.store.get_meta(&self.owner, &key).await {
+            if let Ok(t) = DateTime::parse_from_rfc3339(&last) {
+                if now - t.with_timezone(&Utc) < chrono::Duration::hours(COMMIT_COLLECT_EVERY_HOURS)
+                {
+                    return;
+                }
+            }
+        }
+        let since = now - chrono::Duration::days(COMMIT_WINDOW_DAYS);
+        match provider.fetch_commits(since).await {
+            Ok(commits) => {
+                let stored = async {
+                    if !commits.is_empty() {
+                        self.store.upsert_commits(&self.owner, &commits).await?;
+                    }
+                    self.store
+                        .prune_commits(
+                            &self.owner,
+                            now - chrono::Duration::days(COMMIT_WINDOW_DAYS + 10),
+                        )
+                        .await?;
+                    self.store
+                        .set_meta(&self.owner, &key, &now.to_rfc3339())
+                        .await
+                }
+                .await;
+                match stored {
+                    Ok(()) => {
+                        tracing::info!(team, commits = commits.len(), "collected commit activity")
+                    }
+                    Err(e) => tracing::warn!(team, error = %e, "could not store commit activity"),
+                }
+            }
+            Err(e) => tracing::warn!(team, error = %e, "could not collect commit activity"),
+        }
+    }
+
+    // ─────────────────────────── Capacity ───────────────────────────
+
+    /// The identity tokens of the people on each team (explicit `members` override, else the
+    /// tracker roster), keyed by team name - what per-person panels are limited to.
+    async fn rosters_map(&self) -> HashMap<String, Vec<String>> {
+        let teams = self.config.teams(&self.owner).await.unwrap_or_default();
+        let rosters = self
+            .store
+            .list_team_members(&self.owner)
+            .await
+            .unwrap_or_default();
+        team_rosters(&teams, &rosters)
+    }
+
+    /// The Capacity report: demand against delivery, flow, work in progress, where demand comes
+    /// from, knowledge concentration and the working-hours picture. Computed from the stored
+    /// work items, pull requests and commit activity - nothing is fetched or written, and it
+    /// needs no tagging. `tz_offset_minutes` is the viewer's offset east of UTC, so "evening"
+    /// means theirs.
+    pub async fn capacity(
+        &self,
+        team: Option<&str>,
+        weeks: u32,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<poseidon_core::CapacityReport> {
+        let weeks = weeks.clamp(4, 52);
+        let now = Utc::now();
+        let single = team.is_some();
+        let items = dedupe_work_items(self.store.list_work_items(&self.owner, team).await?, single);
+        let prs = dedupe_pull_requests(
+            self.store.list_pull_requests(&self.owner, team).await?,
+            single,
+        );
+        let since = now - chrono::Duration::days(i64::from(weeks) * 7 + 7);
+        let commits = dedupe_commits(
+            self.store.list_commits(&self.owner, team, since).await?,
+            single,
+        );
+        let demand: HashMap<i64, poseidon_core::DemandVerdictRecord> = self
+            .store
+            .list_demand(&self.owner, team)
+            .await?
+            .into_iter()
+            .map(|v| (v.work_item_id, v))
+            .collect();
+        let rosters = self.rosters_map().await;
+        let people = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .map(|c| c.people)
+            .unwrap_or_default();
+        Ok(poseidon_reports::capacity::capacity(
+            &poseidon_reports::capacity::CapacityInput {
+                work_items: &items,
+                pull_requests: &prs,
+                commits: &commits,
+                demand: &demand,
+                rosters: &rosters,
+                now,
+                weeks,
+                tz_offset_minutes,
+                people: &people,
+            },
+        ))
+    }
+
+    /// The team background text used to ground AI prompts (empty when none is set).
+    async fn team_background(&self, team: Option<&str>) -> String {
+        let cfg = self
+            .config
+            .user_config(&self.owner)
+            .await
+            .unwrap_or_default();
+        match team {
+            Some(t) => rules_for_team(&cfg, t),
+            None => &cfg.rules,
+        }
+        .team_background
+        .clone()
+        .unwrap_or_default()
+    }
+
+    /// Ask the AI model what kind of demand the untagged work items are (reactive, planned,
+    /// maintenance, or a running list), so the reactive/planned split doesn't depend on tagging.
+    /// Verdicts are advisory and stored locally only - nothing is written to the tracker. Works
+    /// through up to [`CLASSIFY_PER_RUN`] items in batches, saving each batch as it lands, so a
+    /// failure part-way keeps the progress; `remaining` says what a further run would still do.
+    pub async fn classify_demand(
+        &self,
+        team: Option<&str>,
+        weeks: u32,
+    ) -> anyhow::Result<DemandClassification> {
+        let Some(ai) = self.ai_tagger().await else {
+            return Ok(DemandClassification::default());
+        };
+        let now = Utc::now();
+        let items = dedupe_work_items(
+            self.store.list_work_items(&self.owner, team).await?,
+            team.is_some(),
+        );
+        let known: HashMap<i64, String> = self
+            .store
+            .list_demand(&self.owner, team)
+            .await?
+            .into_iter()
+            .map(|v| (v.work_item_id, v.title_hash))
+            .collect();
+        let candidates = poseidon_reports::capacity::demand_candidates(&items, &known, now, weeks);
+        let background = self.team_background(team).await;
+        let mut out = DemandClassification {
+            ai_available: true,
+            remaining: candidates.len().saturating_sub(CLASSIFY_PER_RUN),
+            ..Default::default()
+        };
+        let picked: Vec<&WorkItem> = candidates.iter().take(CLASSIFY_PER_RUN).copied().collect();
+        for chunk in picked.chunks(poseidon_ai::MAX_DEMAND_BATCH) {
+            let ctx = poseidon_ai::DemandContext {
+                background: background.clone(),
+                items: chunk
+                    .iter()
+                    .map(|it| poseidon_ai::DemandItem {
+                        id: it.id,
+                        title: it.title.clone(),
+                        work_item_type: it.work_item_type.clone(),
+                        tags: it.tags.clone(),
+                        excerpt: it
+                            .description
+                            .as_deref()
+                            .map(|d| d.chars().take(300).collect::<String>()),
+                    })
+                    .collect(),
+            };
+            match ai.classify_demand(&ctx).await {
+                Ok(verdicts) => {
+                    let by_id: HashMap<i64, &WorkItem> =
+                        chunk.iter().map(|it| (it.id, *it)).collect();
+                    let records: Vec<poseidon_core::DemandVerdictRecord> = verdicts
+                        .into_iter()
+                        .filter_map(|v| {
+                            let it = by_id.get(&v.id)?;
+                            Some(poseidon_core::DemandVerdictRecord {
+                                work_item_id: v.id,
+                                team: it.team.clone(),
+                                class: v.class,
+                                source: v.source,
+                                title_hash: poseidon_reports::capacity::demand_title_hash(
+                                    &it.title,
+                                ),
+                            })
+                        })
+                        .collect();
+                    out.classified += records.len();
+                    // the items the model skipped stay pending for the next run
+                    out.remaining += chunk.len().saturating_sub(records.len());
+                    self.store.upsert_demand(&self.owner, &records).await?;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "demand classification failed");
+                    out.remaining += chunk.len();
+                    let msg = e.to_string();
+                    if !out.errors.contains(&msg) {
+                        out.errors.push(msg);
+                    }
+                    // a failing model is unlikely to recover mid-run; stop and keep what landed
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// An AI-written plain-language explanation of the team's capacity, grounded ONLY in the
+    /// report's computed facts and caveats (the prompt forbids new numbers or causes). Without a
+    /// usable model the caller shows the deterministic facts instead.
+    pub async fn capacity_summary(
+        &self,
+        team: Option<&str>,
+        weeks: u32,
+        tz_offset_minutes: i32,
+    ) -> anyhow::Result<CapacityNarrative> {
+        let Some(ai) = self.ai_tagger().await else {
+            return Ok(CapacityNarrative::default());
+        };
+        let report = self.capacity(team, weeks, tz_offset_minutes).await?;
+        let ctx = poseidon_ai::CapacitySummaryContext {
+            facts: poseidon_reports::capacity::summary_facts(&report),
+            background: self.team_background(team).await,
+        };
+        let mut out = CapacityNarrative {
+            ai_available: true,
+            ..Default::default()
+        };
+        match ai.summarize_capacity(&ctx).await {
+            Ok(text) if !text.trim().is_empty() => out.text = Some(text),
+            Ok(_) => out.error = Some("the model returned an empty summary".into()),
+            Err(e) => {
+                tracing::warn!(error = %e, "capacity summary failed");
+                out.error = Some(e.to_string());
+            }
+        }
+        Ok(out)
     }
 
     /// Resolve how a team authenticates, in priority order:
@@ -2438,6 +2734,30 @@ impl Service {
         if update.is_empty() {
             anyhow::bail!("no fields to update");
         }
+        let mut update = update;
+        // A card move names only a board + column. Work out the state that column puts this
+        // item's type in, and which tracker field holds the column, from the stored board - the
+        // client never chooses what gets written.
+        if let Some(mv) = update.board_move.take() {
+            let item = self
+                .store
+                .get_work_item(&self.owner, team, id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("work item #{id} is not in the store; Refresh first")
+                })?;
+            let boards: Vec<poseidon_core::Board> = self
+                .store
+                .list_team_boards(&self.owner, Some(team))
+                .await?
+                .into_iter()
+                .flat_map(|tb| tb.boards)
+                .collect();
+            let (state, resolved) = resolve_board_move(&boards, &item.work_item_type, &mv)
+                .map_err(anyhow::Error::msg)?;
+            update.state = Some(state);
+            update.board_move = Some(resolved);
+        }
         let provider = self.provider_for(team).await?;
         let updated = provider.update_work_item(id, &update).await?;
         self.store
@@ -3198,6 +3518,72 @@ fn dedupe_pull_requests(prs: Vec<PullRequest>, single_team: bool) -> Vec<PullReq
         .collect()
 }
 
+/// Turn "move this card to `board` / `column`" into what the tracker needs: the state that column
+/// puts the item's type in, and the move with the board's column field filled in. Errors say why
+/// a move isn't possible (unknown board or column, a type the board doesn't hold, boards stored
+/// before moves existed) so the UI can show it.
+fn resolve_board_move(
+    boards: &[poseidon_core::Board],
+    work_item_type: &str,
+    mv: &poseidon_core::BoardMove,
+) -> Result<(String, poseidon_core::BoardMove), String> {
+    let board = boards
+        .iter()
+        .find(|b| b.name.eq_ignore_ascii_case(mv.board.trim()))
+        .ok_or_else(|| format!("unknown board \"{}\"", mv.board))?;
+    if !board.covers(work_item_type) {
+        return Err(format!(
+            "the {} board does not hold {work_item_type} items",
+            board.name
+        ));
+    }
+    let column = board
+        .columns
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(mv.column.trim()))
+        .ok_or_else(|| format!("the {} board has no column \"{}\"", board.name, mv.column))?;
+    let state = column.state_for(work_item_type).ok_or_else(|| {
+        format!(
+            "column \"{}\" has no state for {work_item_type} items - Refresh to re-read the boards",
+            column.name
+        )
+    })?;
+    let column_field = board
+        .column_field
+        .clone()
+        .filter(|f| !f.trim().is_empty())
+        .ok_or_else(|| {
+            "this board's column field isn't known yet - Refresh to re-read the boards".to_string()
+        })?;
+    Ok((
+        state.to_string(),
+        poseidon_core::BoardMove {
+            board: board.name.clone(),
+            column: column.name.clone(),
+            column_field: Some(column_field),
+            done_field: board.done_field.clone(),
+            // A split column has a Doing and a Done half; a moved card starts in Doing.
+            reset_done: column.split,
+        },
+    ))
+}
+
+/// A repository's commit is collected once per team that polls its project; across all teams that
+/// would count it again. A commit id is unique within its repository.
+fn dedupe_commits(
+    commits: Vec<poseidon_core::CommitActivity>,
+    single_team: bool,
+) -> Vec<poseidon_core::CommitActivity> {
+    if single_team {
+        return commits;
+    }
+    let mut seen = std::collections::HashSet::new();
+    commits
+        .into_iter()
+        .filter(|c| seen.insert((c.repo.clone(), c.id.clone())))
+        .collect()
+}
+
 /// The same de-duplication for work items: two teams scoped to overlapping areas store
 /// the same item once each, which would double every per-person count in the all-teams
 /// view. An item's web URL is unique per provider.
@@ -3803,6 +4189,119 @@ mod tests {
         // A team with neither is simply absent = unrestricted, and doesn't affect others.
         assert!(!r.contains_key("C"));
         assert_eq!(r.len(), 2);
+    }
+
+    fn stories_board() -> poseidon_core::Board {
+        use poseidon_core::{Board, BoardColumn, ColumnKind};
+        let col = |name: &str, kind, split, states: &[(&str, &str)]| BoardColumn {
+            name: name.into(),
+            wip_limit: None,
+            kind,
+            split,
+            states: states
+                .iter()
+                .map(|(t, s)| (t.to_string(), s.to_string()))
+                .collect(),
+        };
+        Board {
+            name: "Stories".into(),
+            columns: vec![
+                col(
+                    "New",
+                    ColumnKind::Incoming,
+                    false,
+                    &[("Bug", "New"), ("Ticket", "New")],
+                ),
+                col(
+                    "This week",
+                    ColumnKind::InProgress,
+                    false,
+                    &[("Bug", "Ready"), ("Ticket", "Accepted")],
+                ),
+                col(
+                    "Doing",
+                    ColumnKind::InProgress,
+                    true,
+                    &[("Bug", "Active"), ("Ticket", "Active")],
+                ),
+                col("Old", ColumnKind::InProgress, false, &[]),
+            ],
+            lanes: Vec::new(),
+            work_item_types: vec!["Bug".into(), "Ticket".into()],
+            column_field: Some("WEF_ABC_Kanban.Column".into()),
+            done_field: Some("WEF_ABC_Kanban.Column.Done".into()),
+        }
+    }
+
+    fn move_to(column: &str) -> poseidon_core::BoardMove {
+        poseidon_core::BoardMove {
+            board: "stories".into(), // case-insensitive
+            column: column.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_board_move_resolves_to_the_columns_state_for_that_type() {
+        let boards = [stories_board()];
+        // the same column sets a different state per type
+        let (state, mv) = resolve_board_move(&boards, "Ticket", &move_to("this week")).unwrap();
+        assert_eq!(state, "Accepted");
+        let (state, _) = resolve_board_move(&boards, "Bug", &move_to("This week")).unwrap();
+        assert_eq!(state, "Ready");
+        // the service, not the client, supplies the field that gets written
+        assert_eq!(mv.column_field.as_deref(), Some("WEF_ABC_Kanban.Column"));
+        assert_eq!(
+            mv.column, "This week",
+            "the stored spelling, not the request's"
+        );
+        assert!(!mv.reset_done);
+        // a split column starts the card in its Doing half
+        let (_, split) = resolve_board_move(&boards, "Bug", &move_to("Doing")).unwrap();
+        assert!(split.reset_done);
+        assert_eq!(
+            split.done_field.as_deref(),
+            Some("WEF_ABC_Kanban.Column.Done")
+        );
+    }
+
+    #[test]
+    fn a_board_move_that_cannot_be_written_says_why() {
+        let boards = [stories_board()];
+        let err = |t: &str, c: &str| resolve_board_move(&boards, t, &move_to(c)).unwrap_err();
+        assert!(err("Epic", "New").contains("does not hold Epic"));
+        assert!(err("Bug", "Nope").contains("no column"));
+        assert!(err("Bug", "Old").contains("no state for Bug"));
+        let mut bad = move_to("New");
+        bad.board = "Features".into();
+        assert!(resolve_board_move(&boards, "Bug", &bad)
+            .unwrap_err()
+            .contains("unknown board"));
+        // boards stored before moves existed have no column field
+        let mut old = stories_board();
+        old.column_field = None;
+        assert!(resolve_board_move(&[old], "Bug", &move_to("New"))
+            .unwrap_err()
+            .contains("Refresh"));
+    }
+
+    #[test]
+    fn all_teams_scope_counts_a_shared_commit_once() {
+        let commit = |team: &str, repo: &str, id: &str| poseidon_core::CommitActivity {
+            id: id.into(),
+            team: team.into(),
+            repo: repo.into(),
+            author: "Ana".into(),
+            author_email: None,
+            authored_at: Utc::now(),
+        };
+        let all = vec![
+            commit("A", "iac", "1"),
+            commit("B", "iac", "1"), // the same commit, seen by a second team
+            commit("B", "tools", "1"), // same id, different repo: a different commit
+        ];
+        assert_eq!(dedupe_commits(all.clone(), false).len(), 2);
+        assert_eq!(dedupe_commits(all, true).len(), 3);
     }
 
     #[test]

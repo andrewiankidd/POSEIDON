@@ -22,12 +22,14 @@
 
 mod ai_activity;
 mod board;
+mod capacity;
 mod catalog;
 mod config;
 mod config_bundle;
 mod editable_field;
 mod flag;
 mod member;
+mod people;
 mod pipeline;
 mod pull_request;
 mod report;
@@ -36,6 +38,11 @@ mod work_item;
 
 pub use ai_activity::{AiActivityRecord, AiFieldDraft};
 pub use board::{Board, BoardColumn, ColumnKind, TeamBoards};
+pub use capacity::{
+    CapacityReport, CommitActivity, ConcentrationSummary, CycleTime, DemandClass, DemandMix,
+    DemandVerdictRecord, EffortSummary, FlowSummary, PersonEffort, PersonWip, RepoConcentration,
+    SourceCount, StandingItem, WeekFlow, WipSummary,
+};
 pub use catalog::{canonical_product_slug, repo_product_map, CatalogEntity};
 pub use config::{
     parse_duration, AzureDevOpsAuth, CatalogConfig, CatalogFieldMap, DoctorConfig, PipelineRules,
@@ -46,6 +53,7 @@ pub use config_bundle::{BundleMeta, ConfigBundle, CONFIG_BUNDLE_SCHEMA};
 pub use editable_field::{EditableField, FieldChange, FieldKind};
 pub use flag::{EntityFlag, Flag, FlagCode, Severity, TagSuggestion};
 pub use member::{identity_tokens, TeamMember};
+pub use people::{sanitize_people, LeaveRange, PersonProfile, MAX_LEAVE_RANGES, MAX_PROFILES};
 pub use pipeline::{Pipeline, PipelineRun, RunStatus};
 pub use pull_request::{LinkedPr, PrReviewer, PrStatus, PullRequest};
 pub use report::{DashboardSummary, PipelineHealth, PipelineReport, TagCount, TicketReport};
@@ -53,7 +61,7 @@ pub use report_spec::{
     Condition, DataSource, GroupBy, Metric, Op, Point, RenderKind, ReportResult, ReportSpec,
     ReportTable, ResultSeries, Series, TableRow, TimeRange,
 };
-pub use work_item::{WorkItem, WorkItemUpdate};
+pub use work_item::{BoardMove, WorkItem, WorkItemUpdate};
 
 /// The implicit single owner every stored row is scoped to in the PoC. There
 /// is no auth yet (the hosted instance is gated at the mesh, e.g. Istio), so

@@ -100,6 +100,14 @@ async function demoGet(path) {
     const now = Date.now();
     if (name === 'dashboard' && data.last_polled_at) data.last_polled_at = new Date(now - 14 * 60000).toISOString();
     if (name === 'doctor' && data.checked_at) data.checked_at = new Date(now - 2 * 60000).toISOString();
+    if (name === 'capacity') {
+      // The report's calendar dates are plain days (not timestamps), so shift them here too.
+      const days = Math.round(demoShiftMs(now) / DAY_MS);
+      const day = (d) => new Date(Date.parse(d + 'T00:00:00Z') + days * DAY_MS).toISOString().slice(0, 10);
+      data.window_start = day(data.window_start);
+      data.window_end = day(data.window_end);
+      data.weekly.forEach((w) => { w.week_start = day(w.week_start); });
+    }
     return data;
   } catch { return {}; }
 }
@@ -455,7 +463,11 @@ export const api = {
       method: 'PUT',
       body: changes,
       invokeCmd: 'update_work_item',
-      invokeArgs: { team: changes.team, id, state: changes.state ?? null, tags: changes.tags ?? null },
+      invokeArgs: {
+        team: changes.team, id, state: changes.state ?? null, tags: changes.tags ?? null,
+        // A board drag: `board_move` = { board, column }, `backlog_rank` = the new manual position.
+        boardMove: changes.board_move ?? null, backlogRank: changes.backlog_rank ?? null,
+      },
     }),
   /** Resolve a single PR's web URL by id (for a linked chip outside the polled
    *  window). Returns `{ url }`. */
@@ -529,6 +541,35 @@ export const api = {
     isDemo() ? demoGet('/recap/summaries') : request('/recap/summaries', {
       method: 'POST', body: { team: team || null, period, areas },
       invokeCmd: 'recap_summaries', invokeArgs: { team: team || null, period, areas },
+    }),
+  /** The Capacity report (flow, work in progress, demand mix, knowledge concentration, working
+   *  hours) for the current team scope. `tz` = the viewer's offset east of UTC in minutes. */
+  capacity: ({ weeks = 13, tz = 0 } = {}) =>
+    request('/capacity', {
+      query: { team: team(), weeks, tz },
+      invokeCmd: 'get_capacity',
+      invokeArgs: { team: team() || null, weeks, tzOffsetMinutes: tz },
+    }),
+  /** Save people's timezone + leave (`[{name, unique_name?, timezone?, leave:[{start,end,label?}]}]`).
+   *  Validated server-side; returns the profiles as stored. Lives in the tenant config. */
+  setPeople: (people) =>
+    isDemo() ? Promise.resolve(people) : request('/people', {
+      method: 'PUT', body: people, invokeCmd: 'update_people', invokeArgs: { people },
+    }),
+  /** Ask the AI model to classify untagged demand (reactive / planned / maintenance / standing).
+   *  → { ai_available, classified, remaining, errors }. Verdicts stay local; nothing is written
+   *  to the tracker. */
+  classifyDemand: ({ weeks = 13 } = {}) =>
+    isDemo() ? demoGet('/capacity/classify') : request('/capacity/classify', {
+      method: 'POST', body: { team: team() || null, weeks },
+      invokeCmd: 'classify_demand', invokeArgs: { team: team() || null, weeks },
+    }),
+  /** An AI-written plain-language capacity summary, grounded in the report's facts.
+   *  → { ai_available, text, error }. */
+  capacitySummary: ({ weeks = 13, tz = 0 } = {}) =>
+    isDemo() ? demoGet('/capacity/summary') : request('/capacity/summary', {
+      method: 'POST', body: { team: team() || null, weeks, tz },
+      invokeCmd: 'capacity_summary', invokeArgs: { team: team() || null, weeks, tzOffsetMinutes: tz },
     }),
   /** AI-suggested themed groups for ONE Recap slide → { groups: [{ heading, ids }],
    *  ai_available, error }. Suggestions only (the UI previews them before applying).

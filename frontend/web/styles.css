@@ -463,7 +463,49 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 .board-col-count { flex: 0 0 auto; font-size: 11px; color: var(--ink-soft); background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px; padding: 0 8px; }
 .board-col-cards { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .board-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+/* ── Capacity screen ── */
+.cap-body { display: flex; flex-direction: column; gap: 16px; }
+.cap-note { margin: -8px 0 12px; min-height: 18px; font-size: 13px; }
+.cap-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .cap-grid-2 { grid-template-columns: 1fr; } }
+.cap-facts { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
+.cap-narrative { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel-2); }
+.cap-narr-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); margin-bottom: 6px; }
+.cap-narrative p { margin: 0; line-height: 1.6; }
+.cap-small { font-size: 12px; margin-top: 8px; }
+.cap-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
+.cap-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+.cap-lead { margin: 0 0 10px; }
+.cap-kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.cap-kv:last-of-type { border-bottom: none; }
+.cap-heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; align-items: center; }
+.cap-heat-h { font-size: 10px; color: var(--ink-soft); text-align: center; }
+.cap-heat-d { font-size: 11px; color: var(--ink-soft); }
+.cap-heat-cell {
+  height: 18px; border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) calc(var(--v) * 100%), var(--panel-2));
+}
+.cap-heat-cell.work { outline: 1px solid color-mix(in srgb, var(--ink-soft) 45%, transparent); outline-offset: -1px; }
+.cap-people summary { cursor: pointer; font-weight: 600; }
+.cap-people .inp.bad { border-color: var(--err); }
+.cap-leave-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cap-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2); font-size: 12px; }
+.cap-chip-x { border: none; background: none; color: var(--ink-soft); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; }
+.cap-chip-x:hover { color: var(--err); }
+.cap-spark { display: inline-flex; align-items: flex-end; gap: 1px; height: 24px; }
+.cap-spark i { display: block; width: 3px; background: var(--ink-soft); border-radius: 1px; opacity: 0.7; }
+.cap-spark i.after { background: var(--accent); opacity: 1; }
 .board-card-click { cursor: pointer; }
+/* Dragging a card between columns */
+.board-card-draggable { touch-action: none; }
+.board-card-dragging { opacity: 0.35; }
+.board-card-moving { opacity: 0.6; pointer-events: none; }
+.board-card-ghost { opacity: 0.92; border-color: var(--accent); box-shadow: var(--shadow); cursor: grabbing; }
+.board-col-drop { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.board-drop-before { box-shadow: 0 -3px 0 var(--accent); }
+.board-drop-after { box-shadow: 0 3px 0 var(--accent); }
+body.board-is-dragging, body.board-is-dragging * { cursor: grabbing !important; user-select: none !important; }
+.board-drag-hint { font-size: 12px; margin: 0 0 8px; }
 .board-card-click:hover { border-color: var(--accent); }
 .board-card-click:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .board-card-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }

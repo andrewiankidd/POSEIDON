@@ -8,6 +8,8 @@
 //! [`GroupBy`], and reduces each bucket to a value via a [`Metric`]. Grouped
 //! results are ordered chronologically for time buckets, else by value desc.
 
+pub mod capacity;
+
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use poseidon_core::{
     Condition, DataSource, GroupBy, Metric, Op, PipelineHealth, PipelineRun, Point, PrStatus,

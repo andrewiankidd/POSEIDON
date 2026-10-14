@@ -50,6 +50,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 
 # Time
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+chrono-tz = { version = "0.10", default-features = false }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

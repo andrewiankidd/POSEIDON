@@ -27,6 +27,7 @@ const ROUTES = {
   'work-items': renderWorkItems,
   'pull-requests': renderPulls,
   pipelines: renderPipelines,
+  capacity: renderCapacity,
   reports: renderReports,
   recap: renderRecap,
   doctor: renderDoctor,
@@ -1353,6 +1354,12 @@ async function renderWorkItems() {
   }, 'Clear filters');
   let boardChecks = new Map();
   let boardColHeads = [];
+  // What dragging a card on the CURRENT board means ({ mode: 'tracker' | 'state', board, groups }),
+  // or null when the board is read-only (a tag board, or a tracker board whose write details
+  // haven't been read yet).
+  let boardDrag = null;
+  const movingIds = new Set(); // cards with a move in flight
+  let cardDragEndedAt = 0;     // stops the click that ends a drag from opening the editor
 
   table = dataTable(columns, items, {
     persistKey: 'work-items',
@@ -1504,6 +1511,13 @@ async function renderWorkItems() {
     const groups = trackerBoard
       ? groupForColumns(shown, trackerBoard)
       : groupForBoard(shown, axis, rules.board_state_order);
+    // Dragging a card writes a state / column change back to the tracker, so it is offered only
+    // where that can work: an Azure DevOps tracker board whose write details are known, or the
+    // State board. A tag board has no single "move" (a card sits in several columns), so it
+    // stays read-only.
+    boardDrag = trackerBoard
+      ? (trackerBoard.column_field ? { mode: 'tracker', board: trackerBoard, groups } : null)
+      : (axis === 'state' ? { mode: 'state', board: null, groups } : null);
     for (const g of groups) {
       const colIds = g.items.map((it) => it.id);
       const headCb = el('input', {
@@ -1511,7 +1525,11 @@ async function renderWorkItems() {
         onchange: (e) => table.selectKeys(colIds, e.target.checked),
       });
       boardColHeads.push({ cb: headCb, ids: colIds });
-      cols.appendChild(el('div', { class: 'board-col' }, [
+      cols.appendChild(el('div', {
+        class: 'board-col', 'data-col': g.key,
+        // Pseudo-columns (items the board can't place) are not somewhere to drop a card.
+        'data-nodrop': (g.key === '(other column)' || g.key === '(no state)') ? '1' : null,
+      }, [
         el('div', { class: 'board-col-head' }, [
           headCb,
           el('span', { class: 'board-col-name', title: g.key }, g.key),
@@ -1537,7 +1555,13 @@ async function renderWorkItems() {
       ]));
     }
     if (!groups.length) cols.appendChild(el('div', { class: 'empty' }, 'No matching work items.'));
-    const node = el('div', { class: 'board-view' }, [cols]);
+    const node = el('div', { class: 'board-view' }, [
+      // A tracker board stored before moves existed has no write details until the next poll.
+      trackerBoard && !trackerBoard.column_field
+        ? el('div', { class: 'muted board-drag-hint' }, 'Refresh to enable dragging cards between columns.')
+        : null,
+      cols,
+    ].filter(Boolean));
     syncBoardChecks();
     return node;
   }
@@ -1546,7 +1570,9 @@ async function renderWorkItems() {
   // the editor; the id link goes out to the provider item.
   function boardCard(it) {
     const fl = flagsOf(it) || [];
-    const openEditor = () => openWorkItemEditor(it, () => route(), redraw);
+    const openEditor = () => { if (Date.now() - cardDragEndedAt > 250) openWorkItemEditor(it, () => route(), redraw); };
+    // Only providers that can write back (Azure DevOps; the demo's stub echoes writes).
+    const draggable = !!boardDrag && (it.provider === 'azure-devops' || it.provider === 'stub') && !movingIds.has(it.id);
     const cb = el('input', {
       type: 'checkbox', class: 'dt-check board-card-check', title: 'Select',
       onclick: (e) => e.stopPropagation(),
@@ -1559,8 +1585,10 @@ async function renderWorkItems() {
       onclick: (e) => { e.preventDefault(); e.stopPropagation(); if (it.url) openExternal(it.url); },
     }, '#' + it.id);
     return el('div', {
-      class: 'board-card board-card-click', role: 'button', tabindex: '0',
-      title: 'Edit work-item fields',
+      class: 'board-card board-card-click' + (draggable ? ' board-card-draggable' : '') + (movingIds.has(it.id) ? ' board-card-moving' : ''),
+      role: 'button', tabindex: '0', 'data-id': String(it.id),
+      title: draggable ? 'Click to edit fields, drag to another column' : 'Edit work-item fields',
+      onpointerdown: draggable ? (e) => startCardDrag(e, it) : null,
       onclick: openEditor,
       onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openEditor(); } },
     }, [
@@ -1579,6 +1607,171 @@ async function renderWorkItems() {
           }, flagShort(f))))
         : null,
     ].filter(Boolean));
+  }
+
+  // ── Drag a card to another column (or to a new place in its own) ──────────────
+  // Pointer-based rather than the browser's HTML5 drag-and-drop, which the desktop app's
+  // webview swallows. The card follows the pointer as a floating copy; what is under it picks the
+  // column and the position, and releasing writes the move to the tracker. The board updates at
+  // once and rolls back with a message if the tracker refuses.
+  function startCardDrag(e, it) {
+    if (e.button !== 0 || !boardDrag || e.target.closest('a, input, button, label')) return;
+    const source = e.currentTarget;
+    const start = { x: e.clientX, y: e.clientY };
+    const colsEl = source.closest('.board-cols');
+    let ghost = null, target = null, scroller = null, last = { x: start.x, y: start.y };
+
+    const begin = () => {
+      const r = source.getBoundingClientRect();
+      ghost = source.cloneNode(true);
+      ghost.classList.add('board-card-ghost');
+      ghost.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;margin:0;pointer-events:none;z-index:1000`;
+      document.body.appendChild(ghost);
+      source.classList.add('board-card-dragging');
+      document.body.classList.add('board-is-dragging');
+      window.getSelection && window.getSelection().removeAllRanges();
+      // Keep scrolling while the pointer is held near an edge: the board sideways, the column
+      // under the pointer up / down.
+      scroller = setInterval(() => {
+        if (colsEl) {
+          const cr = colsEl.getBoundingClientRect();
+          if (last.x < cr.left + 60) colsEl.scrollLeft -= 18;
+          else if (last.x > cr.right - 60) colsEl.scrollLeft += 18;
+        }
+        const under = document.elementFromPoint(last.x, last.y);
+        const cards = under && under.closest && under.closest('.board-col') && under.closest('.board-col').querySelector('.board-col-cards');
+        if (cards) {
+          const kr = cards.getBoundingClientRect();
+          if (last.y < kr.top + 40) cards.scrollTop -= 14;
+          else if (last.y > kr.bottom - 40) cards.scrollTop += 14;
+        }
+      }, 30);
+    };
+
+    const clearMarks = () => document.querySelectorAll('.board-col-drop, .board-drop-before, .board-drop-after')
+      .forEach((n) => n.classList.remove('board-col-drop', 'board-drop-before', 'board-drop-after'));
+
+    // Which column + position the pointer is over: before / after a card, or the column's end.
+    const pick = (x, y) => {
+      const node = document.elementFromPoint(x, y);
+      const colEl = node && node.closest && node.closest('.board-col');
+      if (!colEl || colEl.dataset.nodrop || colEl.dataset.col == null) return null;
+      const cardEl = node.closest('.board-card[data-id]');
+      if (cardEl && colEl.contains(cardEl)) {
+        const r = cardEl.getBoundingClientRect();
+        return { colEl, colKey: colEl.dataset.col, ref: Number(cardEl.dataset.id), refEl: cardEl, side: y < r.top + r.height / 2 ? 'before' : 'after' };
+      }
+      return { colEl, colKey: colEl.dataset.col, ref: null, refEl: null, side: 'end' };
+    };
+
+    const move = (ev) => {
+      last = { x: ev.clientX, y: ev.clientY };
+      if (!ghost) {
+        if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 6) return;
+        begin();
+      }
+      ghost.style.transform = `translate(${ev.clientX - start.x}px, ${ev.clientY - start.y}px)`;
+      clearMarks();
+      target = pick(ev.clientX, ev.clientY);
+      if (!target) return;
+      target.colEl.classList.add('board-col-drop');
+      if (target.refEl && target.ref !== it.id) target.refEl.classList.add(target.side === 'before' ? 'board-drop-before' : 'board-drop-after');
+    };
+
+    const finish = (apply) => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', cancel);
+      document.removeEventListener('keydown', esc, true);
+      if (scroller) clearInterval(scroller);
+      if (ghost) ghost.remove();
+      source.classList.remove('board-card-dragging');
+      document.body.classList.remove('board-is-dragging');
+      clearMarks();
+      if (ghost) cardDragEndedAt = Date.now();
+      if (apply && ghost && target) moveCard(it, target);
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    const esc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); finish(false); } };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', cancel);
+    document.addEventListener('keydown', esc, true);
+  }
+
+  // Re-render the board without losing where it is scrolled to (sideways, and each column).
+  function redrawKeepScroll() {
+    const cols = host.querySelector('.board-cols');
+    const left = cols ? cols.scrollLeft : 0;
+    const tops = new Map();
+    host.querySelectorAll('.board-col').forEach((c) => tops.set(c.dataset.col, (c.querySelector('.board-col-cards') || {}).scrollTop || 0));
+    redraw();
+    const again = host.querySelector('.board-cols');
+    if (!again) return;
+    again.scrollLeft = left;
+    host.querySelectorAll('.board-col').forEach((c) => {
+      const cards = c.querySelector('.board-col-cards');
+      const t = tops.get(c.dataset.col);
+      if (cards && t) cards.scrollTop = t;
+    });
+  }
+
+  // Apply a drop: work out the column + rank, show it at once, write it to the tracker, and
+  // roll back with a message if that fails.
+  async function moveCard(it, target) {
+    const ctx = boardDrag;
+    const g = ctx && ctx.groups.find((x) => x.key === target.colKey);
+    if (!g || movingIds.has(it.id)) return;
+    const others = g.items.filter((x) => x.id !== it.id);
+    const currentIdx = g.items.findIndex((x) => x.id === it.id); // -1 when moving in from another column
+    let at;
+    if (target.side === 'end' || target.ref == null) at = others.length;
+    else if (target.ref === it.id) at = currentIdx; // dropped on itself
+    else {
+      const i = others.findIndex((x) => x.id === target.ref);
+      at = i < 0 ? others.length : (target.side === 'before' ? i : i + 1);
+    }
+    const sameColumn = ctx.mode === 'tracker'
+      ? String(it.board_column || '').toLowerCase() === g.key.toLowerCase()
+      : String(it.state || '') === g.key;
+    if (sameColumn && at === currentIdx) return; // dropped where it already is
+    // A tracker board keeps a manual order; land the card between its new neighbours.
+    const rank = ctx.mode === 'tracker' ? rankBetween(others[at - 1]?.backlog_rank, others[at]?.backlog_rank) : null;
+    if (sameColumn && rank == null) { toast('Can\'t reorder here: the neighbouring cards have no manual order yet.', true); return; }
+
+    const req = { team: it.team };
+    if (!sameColumn) {
+      if (ctx.mode === 'tracker') req.board_move = { board: ctx.board.name, column: g.key };
+      else req.state = g.key;
+    }
+    if (rank != null) req.backlog_rank = rank;
+
+    const before = {
+      state: it.state, board_column: it.board_column, board_column_done: it.board_column_done,
+      backlog_rank: it.backlog_rank, changed_at: it.changed_at, closed_at: it.closed_at,
+    };
+    if (!sameColumn) { if (ctx.mode === 'tracker') it.board_column = g.key; else it.state = g.key; }
+    if (rank != null) it.backlog_rank = rank;
+    movingIds.add(it.id);
+    redrawKeepScroll();
+    try {
+      const res = await api.updateWorkItem(it.id, req);
+      if (res && res.item) {
+        // The tracker's own answer wins: the column / state it really ended up in.
+        for (const k of ['state', 'board_column', 'board_column_done', 'board_lane', 'backlog_rank', 'changed_at', 'closed_at']) {
+          if (res.item[k] !== undefined) it[k] = res.item[k];
+        }
+        flagsById.set(it.id, res.flags || []);
+      }
+      toast(sameColumn ? `#${it.id} reordered` : `#${it.id} → ${g.key}`);
+    } catch (e) {
+      Object.assign(it, before);
+      toast(`Could not move #${it.id}: ${e?.message || e}`, true);
+    } finally {
+      movingIds.delete(it.id);
+      redrawKeepScroll();
+    }
   }
 }
 
@@ -1599,6 +1792,10 @@ function mergeBoards(teamBoards) {
   for (const tb of list) {
     for (const b of tb.boards || []) {
       const cur = byName.get(b.name) || { name: b.name, columns: [], work_item_types: [] };
+      // What a card move needs. The server resolves the real fields per item from that item's own
+      // team's board; the UI only needs to know writing is possible for this board.
+      cur.column_field = cur.column_field || b.column_field || null;
+      cur.done_field = cur.done_field || b.done_field || null;
       for (const c of b.columns || []) {
         if (!cur.columns.some((x) => x.name.toLowerCase() === c.name.toLowerCase())) cur.columns.push({ ...c });
       }
@@ -1620,6 +1817,21 @@ function byBacklogRank(a, b) {
   if (ra != null && rb != null && ra !== rb) return ra - rb;
   if ((ra != null) !== (rb != null)) return ra != null ? -1 : 1;
   return a.id - b.id;
+}
+
+// A manual-order rank that sorts between `prev` and `next` (either may be missing: the top or
+// bottom of a column). Null when there is no sensible answer - unranked neighbours, or two equal
+// ranks with no room between them - and the caller then moves the card without re-ranking it.
+function rankBetween(prev, next) {
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  if (ok(prev) && ok(next)) {
+    if (!(prev < next)) return null;
+    const mid = (prev + next) / 2;
+    return mid > prev && mid < next ? mid : null;
+  }
+  if (ok(prev)) return prev + 1000;
+  if (ok(next)) return next > 1000 ? next - 1000 : next - 1;
+  return null;
 }
 
 // Bucket the items that live on `board` into its columns, in the tracker's order. An
@@ -2707,6 +2919,398 @@ function prPill(p) {
   const map = { active: ['run', 'active'], completed: ['ok', 'completed'], abandoned: ['muted', 'abandoned'] };
   const [cls, label] = map[p.status] || ['muted', p.status || 'unknown'];
   return el('span', { class: 'pill ' + cls }, label);
+}
+
+// ── Capacity ────────────────────────────────────────────────────────
+// How much demand the team faces and how much it gets through, with no sprints or story points:
+// arrivals against completions, cycle time, work in progress, where the demand comes from,
+// where knowledge is concentrated, and when people actually work. Everything is computed from
+// data the team already produces (dates, assignees, pull requests, commit timestamps); tags and
+// the AI only enrich it, and what can't be classified is shown as unknown rather than guessed.
+const CAP_WEEKS_KEY = 'poseidon.capacity.weeks';
+const CAP_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const capPct = (x) => (x == null ? '–' : `${Math.round(x * 100)}%`);
+const capNum = (x, d = 1) => (x == null ? '–' : (Math.round(x * 10 ** d) / 10 ** d).toString());
+const capDay = (iso) => String(iso || '').slice(5, 10);
+
+async function renderCapacity() {
+  const wrap = el('div', {});
+  const tz = -new Date().getTimezoneOffset(); // minutes east of UTC: "evening" is the viewer's
+  const saved = Number(localStorage.getItem(CAP_WEEKS_KEY));
+  let weeks = [8, 13, 26, 52].includes(saved) ? saved : 13;
+  let report = null;
+  let narrative = null;
+  let profiles = []; // saved per-person timezone + leave
+  const body = el('div', { class: 'cap-body' });
+  const note = el('div', { class: 'muted cap-note' });
+
+  const weeksSel = el('select', {
+    class: 'inp', style: 'width:auto', title: 'How far back to look',
+    onchange: (e) => { weeks = Number(e.target.value); localStorage.setItem(CAP_WEEKS_KEY, String(weeks)); narrative = null; load(); },
+  }, [8, 13, 26, 52].map((w) => el('option', { value: String(w), selected: w === weeks }, `Last ${w} weeks`)));
+  const classifyBtn = el('button', {
+    class: 'btn', onclick: classify,
+    title: 'Ask the AI model what kind of demand the untagged items are (reactive, planned, maintenance, or a running list). Kept locally - nothing is written to your tracker.',
+  }, '✨ Classify untagged demand');
+  const summaryBtn = el('button', {
+    class: 'btn', onclick: writeSummary,
+    title: 'Have the AI model explain the numbers in plain language, using only the facts shown here',
+  }, '✨ Write summary');
+  const copyBtn = el('button', { class: 'btn', onclick: copyFacts, title: 'Copy the findings as plain text' }, '⧉ Copy');
+
+  wrap.appendChild(pageHead('Capacity',
+    'How much demand the team faces and gets through - from the work you already track, no sprints or points.',
+    el('div', { class: 'row', style: 'gap:8px;align-items:center;flex-wrap:wrap' }, [weeksSel, classifyBtn, summaryBtn, copyBtn])));
+  wrap.appendChild(note);
+  wrap.appendChild(body);
+  await load();
+  return wrap;
+
+  async function load() {
+    clear(body).appendChild(el('div', { class: 'loading' }, 'Working it out…'));
+    try { report = await api.capacity({ weeks, tz }); }
+    catch (e) { clear(body).appendChild(errorPanel('capacity', e)); return; }
+    try { profiles = (await api.config()).people || []; } catch { profiles = []; }
+    draw();
+  }
+
+  function setBusy(on, label) {
+    [classifyBtn, summaryBtn].forEach((b) => { b.disabled = on; });
+    note.textContent = on ? label : note.textContent;
+  }
+
+  async function classify() {
+    setBusy(true, '✨ Asking the model… this can take a minute.');
+    try {
+      const r = await api.classifyDemand({ weeks });
+      if (!r.ai_available) note.textContent = 'No AI model is active - enable one in Settings → AI.';
+      else {
+        const bits = [`Classified ${r.classified} item${r.classified === 1 ? '' : 's'}`];
+        if (r.remaining) bits.push(`${r.remaining} still to do - run it again`);
+        if ((r.errors || []).length) bits.push(r.errors.join('; '));
+        note.textContent = bits.join(' · ');
+      }
+      setBusy(false);
+      if (r.ai_available) await load();
+    } catch (e) { setBusy(false); note.textContent = 'Could not classify: ' + (e?.message || e); }
+  }
+
+  async function writeSummary() {
+    setBusy(true, '✨ Writing the summary…');
+    try {
+      const r = await api.capacitySummary({ weeks, tz });
+      if (!r.ai_available) note.textContent = 'No AI model is active - enable one in Settings → AI. The findings below are computed without it.';
+      else if (r.error || !r.text) note.textContent = 'The model could not write a summary: ' + (r.error || 'it returned nothing.');
+      else { narrative = r.text; note.textContent = ''; }
+      setBusy(false);
+      if (report) draw();
+    } catch (e) { setBusy(false); note.textContent = 'Could not write the summary: ' + (e?.message || e); }
+  }
+
+  async function copyFacts() {
+    if (!report) return;
+    const text = [
+      `Capacity - last ${report.weeks} weeks (${report.window_start} to ${report.window_end})`,
+      ...(narrative ? ['', narrative, ''] : ['']),
+      ...report.facts.map((f) => `- ${f}`),
+      '', ...report.notes.map((n) => `Note: ${n}`),
+    ].join('\n');
+    const ok = await copyText(text);
+    toast(ok ? 'Copied the findings' : 'Could not copy to the clipboard', !ok);
+  }
+
+  function draw() {
+    const r = report;
+    clear(body);
+    if (!r.flow.arrived && !r.flow.closed && !r.effort.available && !r.concentration.merged_prs) {
+      body.appendChild(el('div', { class: 'card' }, el('div', { class: 'empty' }, 'Nothing to work from yet. Refresh to poll your tracker, then come back.')));
+      return;
+    }
+    body.appendChild(capFactsCard(r, narrative));
+    body.appendChild(capTiles(r));
+    body.appendChild(el('div', { class: 'grid cap-grid-2' }, [capFlowChartCard(r), capDemandCard(r)]));
+    body.appendChild(el('div', { class: 'grid cap-grid-2' }, [capCycleCard(r), capWipCard(r)]));
+    if (r.standing.length) body.appendChild(capStandingCard(r));
+    body.appendChild(capConcentrationCard(r));
+    body.appendChild(capEffortCard(r, profiles, load));
+    body.appendChild(el('div', { class: 'card' }, [
+      el('h2', {}, 'About these numbers'),
+      el('ul', { class: 'cap-facts muted' }, r.notes.map((n) => el('li', {}, n))),
+    ]));
+  }
+}
+
+function capFactsCard(r, narrative) {
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'What the data says'),
+    r.facts.length
+      ? el('ul', { class: 'cap-facts' }, r.facts.map((f) => el('li', {}, f)))
+      : el('div', { class: 'muted' }, 'Not enough data yet to say anything.'),
+    narrative ? el('div', { class: 'cap-narrative' }, [
+      el('div', { class: 'cap-narr-label' }, '✨ AI-written from the facts above - read it before you share it'),
+      el('p', {}, narrative),
+    ]) : null,
+  ].filter(Boolean));
+}
+
+function capTiles(r) {
+  const f = r.flow;
+  const ratioTone = f.ratio == null ? '' : f.ratio > 1.5 ? 'err' : f.ratio > 1.15 ? 'warn' : 'ok';
+  const reactiveTone = r.demand.reactive_share == null ? '' : r.demand.reactive_share > 0.5 ? 'warn' : '';
+  const clearTone = f.weeks_to_clear == null ? '' : f.weeks_to_clear > 12 ? 'warn' : '';
+  return el('div', { class: 'grid', style: 'grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))' }, [
+    statTile(f.arrived, `Arrived (${r.weeks}w)`),
+    statTile(f.closed, 'Finished', 'ok'),
+    statTile(f.ratio == null ? null : capNum(f.ratio), 'In per 1 out', ratioTone),
+    statTile(capNum(f.typical_weekly_throughput, 0), 'Typical week'),
+    statTile(r.cycle.median_days == null ? null : `${capNum(r.cycle.median_days, 0)}d`, 'Median cycle time'),
+    statTile(r.demand.reactive_share == null ? null : capPct(r.demand.reactive_share), 'Reactive demand', reactiveTone),
+    statTile(f.weeks_to_clear == null ? null : `${capNum(f.weeks_to_clear, 0)}w`, 'To clear backlog', clearTone),
+  ]);
+}
+
+function capFlowChartCard(r) {
+  const pts = (k) => r.weekly.map((w) => ({ label: capDay(w.week_start), value: w[k] }));
+  const bulk = r.weekly.filter((w) => w.bulk).map((w) => capDay(w.week_start));
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Demand vs delivery, per week'),
+    el('div', { class: 'cap-legend' }, [
+      el('span', {}, [el('i', { style: 'background:var(--accent)' }), 'Arrived']),
+      el('span', {}, [el('i', { style: 'background:var(--ok)' }), 'Finished']),
+    ]),
+    lineChart([{ label: 'Arrived', points: pts('arrived') }, { label: 'Finished', points: pts('closed') }], { width: 560, height: 220 }),
+    el('div', { class: 'muted cap-small' }, bulk.length
+      ? `Weeks starting ${bulk.join(', ')} look like bulk clean-ups and are not counted as capacity.`
+      : 'Arrivals above finishes mean the backlog is growing.'),
+  ]);
+}
+
+function capDemandCard(r) {
+  const d = r.demand;
+  const bars = [
+    { label: 'Reactive', value: d.reactive }, { label: 'Planned', value: d.planned },
+    { label: 'Maintenance', value: d.maintenance }, { label: 'Unclassified', value: d.unknown },
+  ].filter((b) => b.value > 0);
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Where the demand comes from'),
+    d.total ? barChart(bars, { width: 520 }) : el('div', { class: 'empty' }, 'Nothing arrived in this window.'),
+    d.by_source.length ? el('div', { class: 'table-wrap', style: 'margin-top:10px' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Source', 'Items', 'By AI'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, d.by_source.map((s) => el('tr', {}, [
+        el('td', {}, s.source),
+        el('td', {}, String(s.count)),
+        el('td', { class: 'muted' }, s.inferred ? String(s.inferred) : ''),
+      ]))),
+    ])) : null,
+    d.unknown ? el('div', { class: 'muted cap-small' }, `${d.unknown} items have no source tag - use “Classify untagged demand” to fill them in.`) : null,
+  ].filter(Boolean));
+}
+
+function capCycleCard(r) {
+  const c = r.cycle;
+  const row = (label, v) => el('div', { class: 'cap-kv' }, [el('span', { class: 'muted' }, label), el('b', {}, v == null ? '–' : `${capNum(v, 0)} days`)]);
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'How long things take'),
+    c.n ? el('div', {}, [
+      row('Half finish within', c.median_days), row('85% finish within', c.p85_days), row('95% finish within', c.p95_days),
+      el('div', { class: 'muted cap-small' }, `Creation to done, ${c.n} finished items. Percentiles, not averages, so a few very old items don't distort it - and the 85% figure is a fair promise to quote.`),
+    ]) : el('div', { class: 'empty' }, 'Nothing finished in this window.'),
+  ]);
+}
+
+function capWipCard(r) {
+  const w = r.wip;
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'In flight now'),
+    el('div', { class: 'cap-kv' }, [el('span', { class: 'muted' }, 'In progress'), el('b', {}, String(w.in_progress))]),
+    el('div', { class: 'cap-kv' }, [el('span', { class: 'muted' }, 'Untouched 30+ / 90+ days'), el('b', {}, `${w.stalled_30} / ${w.stalled_90}`)]),
+    el('div', { class: 'cap-kv' }, [el('span', { class: 'muted' }, 'Open with no owner'), el('b', {}, String(w.unassigned_open))]),
+    w.per_person.length ? el('div', { class: 'table-wrap', style: 'margin-top:10px' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Person', 'In progress', 'Open'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, w.per_person.map((p) => el('tr', {}, [
+        el('td', {}, p.name), el('td', {}, String(p.in_progress)), el('td', {}, String(p.open_assigned)),
+      ]))),
+    ])) : null,
+  ].filter(Boolean));
+}
+
+function capStandingCard(r) {
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Running lists (left out of the numbers)'),
+    el('div', { class: 'table-wrap' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Item', 'Age', 'Why'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, r.standing.map((s) => el('tr', {}, [
+        el('td', {}, [linkOut('#' + s.id, s.url), ' ', s.title]),
+        el('td', {}, `${s.age_days}d`),
+        el('td', { class: 'muted' }, s.reason === 'ai' ? 'judged by AI' : 'title says so'),
+      ]))),
+    ])),
+    el('div', { class: 'muted cap-small' }, 'Items that are a standing list rather than a deliverable never “finish”, so counting them would make throughput look worse than it is.'),
+  ]);
+}
+
+function capConcentrationCard(r) {
+  const c = r.concentration;
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'Who else can do this? (knowledge concentration)'),
+    c.merged_prs ? el('div', {}, [
+      el('p', { class: 'cap-lead' }, `${c.merged_prs} merged pull requests; half of them come from ${c.people_for_half} ${c.people_for_half === 1 ? 'person' : 'people'}${c.top_author ? ` (${c.top_author} wrote ${capPct(c.top_share)})` : ''}.`),
+      c.repos.length ? el('div', { class: 'table-wrap' }, el('table', {}, [
+        el('thead', {}, el('tr', {}, ['Repository', 'PRs', 'Authors', 'Top author', 'Share', ''].map((h) => el('th', {}, h)))),
+        el('tbody', {}, c.repos.map((p) => el('tr', {}, [
+          el('td', {}, p.repo), el('td', {}, String(p.prs)), el('td', {}, String(p.authors)),
+          el('td', {}, p.top_author), el('td', {}, capPct(p.top_share)),
+          el('td', {}, p.single_point ? el('span', { class: 'flagchip warn', title: 'One person wrote nearly all of this repository' }, 'single point') : ''),
+        ]))),
+      ])) : null,
+      el('div', { class: 'muted cap-small' }, 'A repository where one person wrote nearly everything is why “just delegate it” is not free: someone has to be brought up to speed first.'),
+    ]) : el('div', { class: 'empty' }, 'No merged pull requests in this window.'),
+  ]);
+}
+
+function capHeatmap(heat) {
+  const max = Math.max(1, ...heat.flat());
+  const grid = el('div', { class: 'cap-heat' });
+  grid.appendChild(el('div', {}));
+  for (let h = 0; h < 24; h++) grid.appendChild(el('div', { class: 'cap-heat-h' }, h % 3 === 0 ? String(h) : ''));
+  heat.forEach((row, d) => {
+    grid.appendChild(el('div', { class: 'cap-heat-d' }, CAP_DAYS[d]));
+    row.forEach((v, h) => grid.appendChild(el('div', {
+      class: 'cap-heat-cell' + (d < 5 && h >= 9 && h < 18 ? ' work' : ''),
+      style: `--v:${(v / max).toFixed(3)}`, title: `${CAP_DAYS[d]} ${String(h).padStart(2, '0')}:00 - ${v} commit${v === 1 ? '' : 's'}`,
+    })));
+  });
+  return grid;
+}
+
+function capSpark(hours) {
+  const max = Math.max(1, ...hours);
+  return el('span', { class: 'cap-spark', title: 'Commits by hour of day, 00-23' },
+    hours.map((v, h) => el('i', { class: h < 9 || h >= 18 ? 'after' : '', style: `height:${Math.max(2, Math.round((v / max) * 22))}px` })));
+}
+
+function capEffortCard(r, profiles, reload) {
+  const e = r.effort;
+  if (!e.available) {
+    return el('div', { class: 'card' }, [el('h2', {}, 'When people work (from commits)'),
+      el('div', { class: 'empty' }, 'No commit activity collected yet. It is gathered in the background after a poll, then shown here.')]);
+  }
+  return el('div', { class: 'card' }, [
+    el('h2', {}, 'When people work (from commits)'),
+    el('p', { class: 'cap-lead' }, `${e.commits} commits; ${capPct(e.after_hours_share)} fall outside 09:00-18:00 Monday-Friday, each person read in their own timezone where one is set (the outlined cells are the working day).`),
+    capHeatmap(e.heat),
+    el('div', { class: 'table-wrap', style: 'margin-top:14px' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Person', 'Timezone', 'Commits', 'Days active', 'After hours', 'Late nights', 'Weekend days', 'Longest run', 'Longest day', 'Leave', 'By hour'].map((h) => el('th', {}, h)))),
+      el('tbody', {}, e.people.map((p) => el('tr', {}, [
+        el('td', {}, p.name),
+        el('td', { class: p.timezone ? '' : 'muted', title: p.timezone ? '' : 'Not set: read in your own timezone' }, p.timezone || 'yours'),
+        el('td', {}, String(p.commits)),
+        el('td', { title: 'Days with a commit, out of the weekdays they were expected to work (leave taken off)' }, `${p.active_days} / ${p.available_days}`),
+        el('td', {}, capPct(p.after_hours_share)), el('td', {}, String(p.late_nights)), el('td', {}, String(p.weekend_days)),
+        el('td', {}, `${p.longest_streak}d`), el('td', {}, `${capNum(p.longest_span_hours)}h`),
+        el('td', {}, p.leave_days ? [`${p.leave_days}d`, p.worked_on_leave_days ? el('span', { class: 'flagchip warn', title: 'Days on leave when they still committed' }, `worked ${p.worked_on_leave_days}`) : null] : el('span', { class: 'muted' }, '-')),
+        el('td', {}, capSpark(p.hours)),
+      ]))),
+    ])),
+    el('div', { class: 'muted cap-small' }, 'Late night = a commit at/after 22:00 or before 05:00, on their own clock. Longest day = first to last commit on one day. Commits miss meetings, reviews and escalations, so this understates the load - it is corroboration, not a timesheet.'),
+    capPeopleEditor(e, profiles, reload),
+  ]);
+}
+
+// Where people work and when they were away. Without a timezone someone in another part of the
+// world looks like they are working all night; without leave a fortnight off looks like a lull.
+function capTimezoneNames() {
+  try { if (typeof Intl.supportedValuesOf === 'function') return Intl.supportedValuesOf('timeZone'); } catch { /* older engine */ }
+  return ['Europe/London', 'Europe/Dublin', 'Europe/Copenhagen', 'Europe/Paris', 'Europe/Berlin', 'Asia/Manila', 'Asia/Singapore',
+    'Asia/Kolkata', 'Asia/Tokyo', 'Australia/Sydney', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'UTC'];
+}
+
+function capTimezoneOk(v) {
+  if (!v) return true;
+  try { new Intl.DateTimeFormat(undefined, { timeZone: v }); return true; } catch { return false; }
+}
+
+function capPeopleEditor(effort, saved, reload) {
+  // Start from what is saved, and add everyone the report shows who has no profile yet.
+  const same = (a, b) => a.name.toLowerCase() === b.name.toLowerCase()
+    || (a.unique_name && b.unique_name && a.unique_name.toLowerCase() === b.unique_name.toLowerCase());
+  const draft = (saved || []).map((p) => ({ ...p, leave: (p.leave || []).map((l) => ({ ...l })) }));
+  for (const p of effort.people) {
+    if (!draft.some((d) => same(d, p))) draft.push({ name: p.name, unique_name: p.unique_name || null, timezone: p.timezone || null, leave: [] });
+  }
+  draft.sort((a, b) => a.name.localeCompare(b.name));
+
+  const list = el('datalist', { id: 'cap-tz-list' }, capTimezoneNames().map((z) => el('option', { value: z })));
+  const tbody = el('tbody', {});
+  const status = el('span', { class: 'muted cap-small' });
+  const saveBtn = el('button', { class: 'btn', onclick: save }, 'Save');
+
+  const draw = () => {
+    clear(tbody);
+    draft.forEach((p) => tbody.appendChild(row(p)));
+  };
+
+  function row(p) {
+    const tz = el('input', {
+      class: 'inp', list: 'cap-tz-list', placeholder: 'e.g. Europe/London', value: p.timezone || '', style: 'min-width:190px',
+      oninput: (e) => {
+        const v = e.target.value.trim();
+        p.timezone = v || null;
+        e.target.classList.toggle('bad', !capTimezoneOk(v));
+      },
+    });
+    const chips = el('div', { class: 'cap-leave-chips' }, (p.leave || []).map((l, i) => el('span', { class: 'cap-chip' }, [
+      `${l.start} → ${l.end}${l.label ? ' · ' + l.label : ''}`,
+      el('button', { class: 'cap-chip-x', title: 'Remove', onclick: () => { p.leave.splice(i, 1); draw(); } }, '×'),
+    ])));
+    const from = el('input', { class: 'inp', type: 'date', title: 'First day away', style: 'width:150px' });
+    const to = el('input', { class: 'inp', type: 'date', title: 'Last day away (inclusive)', style: 'width:150px' });
+    const label = el('input', { class: 'inp', placeholder: 'label (optional)', style: 'width:120px' });
+    const add = el('button', {
+      class: 'btn', title: 'Add this time away',
+      onclick: () => {
+        if (!from.value) { status.textContent = 'Pick the first day away.'; return; }
+        p.leave = p.leave || [];
+        p.leave.push({ start: from.value, end: to.value || from.value, label: label.value.trim() || null });
+        status.textContent = '';
+        draw();
+      },
+    }, 'Add');
+    return el('tr', {}, [
+      el('td', {}, p.name),
+      el('td', {}, tz),
+      el('td', {}, [chips, el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;margin-top:4px' }, [from, to, label, add])]),
+    ]);
+  }
+
+  async function save() {
+    if (draft.some((p) => !capTimezoneOk(p.timezone))) { status.textContent = 'One of the timezones is not recognised - use names like Europe/London.'; return; }
+    saveBtn.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      await api.setPeople(draft.map((p) => ({
+        name: p.name, unique_name: p.unique_name || null, timezone: p.timezone || null,
+        leave: (p.leave || []).map((l) => ({ start: l.start, end: l.end, label: l.label || null })),
+      })));
+      toast('Saved - recalculating');
+      await reload();
+    } catch (err) {
+      status.textContent = 'Could not save: ' + (err?.message || err);
+      saveBtn.disabled = false;
+    }
+  }
+
+  draw();
+  return el('details', { class: 'cap-people', style: 'margin-top:14px' }, [
+    el('summary', {}, 'Timezones & leave'),
+    el('p', { class: 'muted cap-small' }, 'Set where each person works so their hours are read in their own day, and add leave (annual leave, public holidays) so time off is not read as a quiet spell. Stored in your Poseidon config only; nothing is written to the tracker.'),
+    list,
+    el('div', { class: 'table-wrap' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Person', 'Timezone', 'Leave'].map((h) => el('th', {}, h)))),
+      tbody,
+    ])),
+    el('div', { class: 'row', style: 'gap:10px;align-items:center;margin-top:8px' }, [saveBtn, status]),
+  ]);
 }
 
 // ── Reports ─────────────────────────────────────────────────────────
@@ -4816,6 +5420,7 @@ const DOC_GROUPS = [
     { file: 'features/work-items.md', name: 'Work Items', blurb: 'The backlog table + editing.' },
     { file: 'features/pull-requests.md', name: 'Pull Requests', blurb: 'In-flight PRs + links.' },
     { file: 'features/pipelines.md', name: 'Pipelines', blurb: 'Pipeline health.' },
+    { file: 'features/capacity.md', name: 'Capacity', blurb: 'Demand vs delivery, effort.' },
     { file: 'features/reports.md', name: 'Reports', blurb: 'Configurable report engine.' },
     { file: 'features/rules.md', name: 'Rules', blurb: 'Hygiene policy, per team.' },
     { file: 'features/setup.md', name: 'Setup', blurb: 'Sign-in, teams, config.' },

@@ -165,6 +165,24 @@ pub trait AiTagger: Send + Sync {
             "AI grouping needs an online model (Settings → AI)".into(),
         ))
     }
+
+    /// Judge what KIND of demand each of a batch of work items is (reactive, planned,
+    /// maintenance, or a standing running list) for the Capacity screen. Advisory: the verdicts
+    /// only ever reference items in `ctx`, once each. Default: unsupported - like the other
+    /// prose / classification calls, only the online chat / Claude Code backends do it.
+    async fn classify_demand(&self, _ctx: &DemandContext) -> Result<Vec<DemandVerdict>, AiError> {
+        Err(AiError::Unsupported(
+            "AI demand classification needs an online model (Settings → AI)".into(),
+        ))
+    }
+
+    /// Write a short, grounded explanation of the team's capacity from the computed `facts`.
+    /// Default: unsupported (the deterministic facts are shown instead).
+    async fn summarize_capacity(&self, _ctx: &CapacitySummaryContext) -> Result<String, AiError> {
+        Err(AiError::Unsupported(
+            "AI capacity summaries need an online model (Settings → AI)".into(),
+        ))
+    }
 }
 
 /// One closed work item as the Recap summariser sees it.
@@ -392,6 +410,190 @@ pub fn parse_recap_groups(raw: &str, ctx: &RecapGroupContext) -> Result<Vec<Reca
         return Err(AiError::Http("the model returned no usable groups".into()));
     }
     Ok(out)
+}
+
+/// One work item as the demand classifier sees it.
+#[derive(Debug, Clone)]
+pub struct DemandItem {
+    pub id: i64,
+    pub title: String,
+    pub work_item_type: String,
+    pub tags: Vec<String>,
+    /// The start of the description, when there is one - often what tells a request from a plan.
+    pub excerpt: Option<String>,
+}
+
+/// A batch of items to classify, plus the team background.
+#[derive(Debug, Clone)]
+pub struct DemandContext {
+    pub items: Vec<DemandItem>,
+    pub background: String,
+}
+
+/// One verdict: the item, what kind of demand it is, and the source the model thinks it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemandVerdict {
+    pub id: i64,
+    pub class: poseidon_core::DemandClass,
+    pub source: Option<String>,
+}
+
+/// How many items go to the model in one call.
+pub const MAX_DEMAND_BATCH: usize = 25;
+
+/// The sources the classifier may name (the `source:` tag vocabulary the capacity report reads).
+const DEMAND_SOURCES: [&str; 7] = [
+    "support", "request", "incident", "sre", "external", "roadmap", "fpp",
+];
+
+pub const DEMAND_SYSTEM_PROMPT: &str = "You classify work items for a platform engineering team \
+so its capacity can be understood. For each numbered item decide what KIND of demand it is: \
+\"reactive\" - an escalation, support request, incident, a defect found in use, or an ad hoc \
+ask from another team or unit; \"planned\" - committed roadmap or project delivery the team \
+chose and scheduled; \"maintenance\" - upgrades, tech debt, cleanup and housekeeping the team \
+chose to do; \"standing\" - a running list, catch-all or ongoing container that is not itself \
+a deliverable. Judge from the title, type, tags and description excerpt only; when torn \
+between reactive and planned, prefer reactive if something outside the team caused it. Also \
+give the most likely source, one of support, request, incident, sre, external, roadmap, fpp - \
+or null if you cannot tell. Reply with ONLY a JSON object of this exact shape and nothing else \
+- no markdown, no commentary: {\"items\":[{\"n\":1,\"class\":\"reactive\",\"source\":\"support\"}]} \
+where n is the item NUMBER you were given and every item appears once.";
+
+/// Build the user prompt for one batch. Items are numbered 1..n; the model answers with those.
+pub fn build_demand_prompt(ctx: &DemandContext) -> String {
+    let mut p = String::new();
+    if !ctx.background.trim().is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(ctx.background.trim());
+        p.push_str("\n\n");
+    }
+    p.push_str("WORK ITEMS:\n");
+    for (i, it) in ctx.items.iter().take(MAX_DEMAND_BATCH).enumerate() {
+        let kind = it.work_item_type.trim();
+        let kind = if kind.is_empty() { "Item" } else { kind };
+        p.push_str(&format!("{}. [{kind}] {}", i + 1, it.title.trim()));
+        let tags: Vec<&str> = it
+            .tags
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !t.trim().is_empty())
+            .collect();
+        if !tags.is_empty() {
+            p.push_str(&format!(" (tags: {})", tags.join(", ")));
+        }
+        p.push('\n');
+        if let Some(e) = it
+            .excerpt
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+        {
+            let e: String = e.split_whitespace().collect::<Vec<_>>().join(" ");
+            p.push_str(&format!("   {}\n", e.chars().take(240).collect::<String>()));
+        }
+    }
+    p.push_str("\nClassify every item. Reply with the JSON object only.");
+    p
+}
+
+/// Turn a model's reply into verdicts, strictly: tolerate a code fence or chatter around the JSON,
+/// but only real item numbers count, each item is judged once (first wins), an unknown class drops
+/// that entry, and a source outside the known vocabulary is ignored rather than invented.
+pub fn parse_demand_verdicts(
+    raw: &str,
+    ctx: &DemandContext,
+) -> Result<Vec<DemandVerdict>, AiError> {
+    let text = strip_code_fence(raw);
+    let (start, end) = match (text.find('{'), text.rfind('}')) {
+        (Some(a), Some(b)) if b > a => (a, b),
+        _ => {
+            return Err(AiError::Http(
+                "the model did not return a JSON classification".into(),
+            ))
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&text[start..=end]).map_err(|e| {
+        AiError::Http(format!(
+            "the model's classification was not valid JSON: {e}"
+        ))
+    })?;
+    let entries = v["items"]
+        .as_array()
+        .ok_or_else(|| AiError::Http("the model's reply had no \"items\" list".into()))?;
+    let limit = ctx.items.len().min(MAX_DEMAND_BATCH);
+    let mut done = vec![false; limit];
+    let mut out = Vec::new();
+    for e in entries {
+        let n = e["n"]
+            .as_u64()
+            .or_else(|| e["n"].as_str().and_then(|s| s.trim().parse().ok()));
+        let Some(i) = n
+            .and_then(|n| (n as usize).checked_sub(1))
+            .filter(|i| *i < limit)
+        else {
+            continue;
+        };
+        let Some(class) = e["class"]
+            .as_str()
+            .and_then(poseidon_core::DemandClass::from_slug)
+        else {
+            continue;
+        };
+        if done[i] {
+            continue;
+        }
+        done[i] = true;
+        let source = e["source"]
+            .as_str()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| DEMAND_SOURCES.contains(&s.as_str()));
+        out.push(DemandVerdict {
+            id: ctx.items[i].id,
+            class,
+            source,
+        });
+    }
+    if out.is_empty() {
+        return Err(AiError::Http(
+            "the model returned no usable verdicts".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// What the capacity summary is written from: facts the app computed, and nothing else.
+#[derive(Debug, Clone)]
+pub struct CapacitySummaryContext {
+    /// Plain-language findings and caveats, computed from the data.
+    pub facts: Vec<String>,
+    pub background: String,
+}
+
+pub const CAPACITY_SYSTEM_PROMPT: &str = "You help a platform engineering lead explain their \
+team's capacity to management. You are given FACTS computed from the team's work tracker and \
+repositories, and CAVEATS about the data. Write 4 to 6 sentences of plain prose that say what the \
+data shows about demand against capacity: how much arrives versus how much is finished, how much \
+of the demand is reactive, where the load is concentrated, and what that implies for the team's \
+ability to take on more. Be direct and specific, calm rather than defensive, and never blame \
+anyone. Use ONLY the supplied facts: do not introduce any number, cause, person or recommendation \
+that they do not support. Where the facts support it, frame the way forward as choices for \
+management (for example reducing reactive intake, deferring planned work, or spreading knowledge \
+that sits with one person) rather than as demands. Mention the single most important caveat once. \
+Write prose only - no markdown, no bullet points, no headings, no preamble. Output ONLY the text.";
+
+pub fn build_capacity_prompt(ctx: &CapacitySummaryContext) -> String {
+    let mut p = String::new();
+    if !ctx.background.trim().is_empty() {
+        p.push_str("TEAM BACKGROUND:\n");
+        p.push_str(ctx.background.trim());
+        p.push_str("\n\n");
+    }
+    p.push_str("FACTS AND CAVEATS:\n");
+    for f in &ctx.facts {
+        p.push_str(&format!("- {}\n", f.trim()));
+    }
+    p.push_str("\nWrite the summary.");
+    p
 }
 
 /// Whether to write a field from scratch or refine what's already there.
@@ -1797,6 +1999,39 @@ struct ChatTagger {
     api_key: Option<String>,
 }
 
+impl ChatTagger {
+    /// One system + user chat round trip, returning the model's text.
+    async fn chat(&self, system: &str, user: &str, temperature: f64) -> Result<String, AiError> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": temperature,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+        });
+        let mut req = self.http.post(&self.endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))?;
+        Ok(v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string())
+    }
+}
+
 #[async_trait]
 impl AiTagger for ChatTagger {
     async fn suggest(
@@ -1941,6 +2176,24 @@ impl AiTagger for ChatTagger {
             v["choices"][0]["message"]["content"].as_str().unwrap_or(""),
             ctx,
         )
+    }
+
+    async fn classify_demand(&self, ctx: &DemandContext) -> Result<Vec<DemandVerdict>, AiError> {
+        let content = self
+            .chat(
+                DEMAND_SYSTEM_PROMPT,
+                &build_demand_prompt(ctx),
+                0.0, // a classification, not prose: deterministic
+            )
+            .await?;
+        parse_demand_verdicts(&content, ctx)
+    }
+
+    async fn summarize_capacity(&self, ctx: &CapacitySummaryContext) -> Result<String, AiError> {
+        let content = self
+            .chat(CAPACITY_SYSTEM_PROMPT, &build_capacity_prompt(ctx), 0.3)
+            .await?;
+        Ok(clean_recap_summary(&content))
     }
 
     async fn audit_item(
@@ -2195,6 +2448,22 @@ impl AiTagger for ClaudeCodeTagger {
         parse_recap_groups(&content, ctx)
     }
 
+    async fn classify_demand(&self, ctx: &DemandContext) -> Result<Vec<DemandVerdict>, AiError> {
+        let prompt = Self::make_prompt(DEMAND_SYSTEM_PROMPT, &build_demand_prompt(ctx));
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        parse_demand_verdicts(&content, ctx)
+    }
+
+    async fn summarize_capacity(&self, ctx: &CapacitySummaryContext) -> Result<String, AiError> {
+        let prompt = Self::make_prompt(CAPACITY_SYSTEM_PROMPT, &build_capacity_prompt(ctx));
+        let content = tokio::task::spawn_blocking(move || Self::call(prompt))
+            .await
+            .map_err(|e| AiError::Http(e.to_string()))??;
+        Ok(clean_recap_summary(&content))
+    }
+
     async fn audit_item(
         &self,
         input: &AuditInput,
@@ -2368,6 +2637,104 @@ mod tests {
             background: c.background,
             guidance: guidance.into(),
         }
+    }
+
+    fn demand_ctx(n: usize) -> DemandContext {
+        DemandContext {
+            items: (0..n)
+                .map(|i| DemandItem {
+                    id: 5000 + i as i64,
+                    title: format!("Item {i}"),
+                    work_item_type: if i == 0 { "Bug".into() } else { String::new() },
+                    tags: if i == 1 {
+                        vec!["area:x".into()]
+                    } else {
+                        vec![]
+                    },
+                    excerpt: (i == 2)
+                        .then(|| "  Customer   asked us\nto look at this ".to_string()),
+                })
+                .collect(),
+            background: "WS = the Widget Service team.".into(),
+        }
+    }
+
+    #[test]
+    fn demand_prompt_numbers_items_and_keeps_ids_out() {
+        let p = build_demand_prompt(&demand_ctx(3));
+        assert!(p.contains("TEAM BACKGROUND"));
+        assert!(p.contains("1. [Bug] Item 0"));
+        assert!(p.contains("2. [Item] Item 1 (tags: area:x)"));
+        assert!(
+            p.contains("Customer asked us to look at this"),
+            "excerpt is flattened"
+        );
+        assert!(!p.contains("5000"), "real ids stay out");
+    }
+
+    #[test]
+    fn demand_reply_maps_numbers_and_ignores_what_it_cannot_trust() {
+        let ctx = demand_ctx(4);
+        let reply = "Here you go:\n```json\n{\"items\":[\
+            {\"n\":1,\"class\":\"Reactive\",\"source\":\"Support\"},\
+            {\"n\":\"2\",\"class\":\"planned\",\"source\":\"made-up\"},\
+            {\"n\":2,\"class\":\"reactive\"},\
+            {\"n\":3,\"class\":\"urgent\"},\
+            {\"n\":9,\"class\":\"planned\"},\
+            {\"n\":4,\"class\":\"standing\",\"source\":null}]}\n```";
+        let v = parse_demand_verdicts(reply, &ctx).unwrap();
+        assert_eq!(
+            v,
+            vec![
+                DemandVerdict {
+                    id: 5000,
+                    class: poseidon_core::DemandClass::Reactive,
+                    source: Some("support".into())
+                },
+                // a source outside the vocabulary is dropped; the duplicate n=2 is ignored
+                DemandVerdict {
+                    id: 5001,
+                    class: poseidon_core::DemandClass::Planned,
+                    source: None
+                },
+                DemandVerdict {
+                    id: 5003,
+                    class: poseidon_core::DemandClass::Standing,
+                    source: None
+                },
+            ],
+            "an unknown class (3) and an out-of-range number (9) are skipped"
+        );
+    }
+
+    #[test]
+    fn an_unusable_demand_reply_is_an_error_not_a_guess() {
+        let ctx = demand_ctx(2);
+        for bad in [
+            "no idea",
+            "{\"items\":3}",
+            "{\"items\":[]}",
+            "{\"items\":[{\"n\":1,\"class\":\"nope\"}]}",
+            "{x}",
+        ] {
+            assert!(parse_demand_verdicts(bad, &ctx).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn capacity_prompt_carries_only_the_supplied_facts() {
+        let ctx = CapacitySummaryContext {
+            facts: vec![
+                "40 items arrived and 10 were finished.".into(),
+                "Caveat: few finished.".into(),
+            ],
+            background: String::new(),
+        };
+        let p = build_capacity_prompt(&ctx);
+        assert!(p.contains("FACTS AND CAVEATS"));
+        assert!(p.contains("- 40 items arrived and 10 were finished."));
+        assert!(!p.contains("TEAM BACKGROUND"));
+        assert!(CAPACITY_SYSTEM_PROMPT.contains("Use ONLY the supplied facts"));
     }
 
     #[test]

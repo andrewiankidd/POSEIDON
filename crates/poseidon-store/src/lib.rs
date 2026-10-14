@@ -193,6 +193,24 @@ impl Store {
         Ok(rows.into_iter().map(WorkItemRow::into_domain).collect())
     }
 
+    /// One stored work item, or `None` when it isn't in the store.
+    pub async fn get_work_item(
+        &self,
+        owner: &str,
+        team: &str,
+        id: i64,
+    ) -> Result<Option<WorkItem>> {
+        let row = sqlx::query_as::<_, WorkItemRow>(
+            "SELECT * FROM work_items WHERE owner = ? AND team = ? AND id = ? LIMIT 1",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(WorkItemRow::into_domain))
+    }
+
     /// Work-item ids (in `team` scope) whose origin area hasn't been fetched yet,
     /// capped at `limit` - the backfill worklist for the "moved-in" source signal.
     pub async fn work_item_ids_missing_origin(
@@ -682,6 +700,139 @@ impl Store {
             .filter_map(|(team, json)| {
                 let boards: Vec<poseidon_core::Board> = serde_json::from_str(&json).ok()?;
                 (!boards.is_empty()).then_some(poseidon_core::TeamBoards { team, boards })
+            })
+            .collect())
+    }
+
+    /// Upsert commit activity (idempotent per repo + commit id).
+    pub async fn upsert_commits(
+        &self,
+        owner: &str,
+        commits: &[poseidon_core::CommitActivity],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for c in commits {
+            sqlx::query(
+                "INSERT INTO commit_activity
+                    (owner, team, repo, id, author, author_email, authored_at)
+                 VALUES (?,?,?,?,?,?,?)
+                 ON CONFLICT(owner, team, repo, id) DO UPDATE SET
+                    author=excluded.author, author_email=excluded.author_email,
+                    authored_at=excluded.authored_at",
+            )
+            .bind(owner)
+            .bind(&c.team)
+            .bind(&c.repo)
+            .bind(&c.id)
+            .bind(&c.author)
+            .bind(&c.author_email)
+            .bind(c.authored_at.to_rfc3339())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forget commit activity older than `before` (the rolling window).
+    pub async fn prune_commits(&self, owner: &str, before: DateTime<Utc>) -> Result<u64> {
+        let done = sqlx::query("DELETE FROM commit_activity WHERE owner = ? AND authored_at < ?")
+            .bind(owner)
+            .bind(before.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Commit activity at/after `since`, optionally scoped to one team.
+    pub async fn list_commits(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<poseidon_core::CommitActivity>> {
+        let rows: Vec<(String, String, String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT team, repo, id, author, author_email, authored_at FROM commit_activity
+             WHERE owner = ? AND (? IS NULL OR team = ?) AND authored_at >= ?
+             ORDER BY authored_at",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(team)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(team, repo, id, author, author_email, at)| poseidon_core::CommitActivity {
+                    id,
+                    team,
+                    repo,
+                    author,
+                    author_email,
+                    authored_at: parse_dt(&at),
+                },
+            )
+            .collect())
+    }
+
+    /// Store AI demand verdicts (replacing any earlier verdict for the same item).
+    pub async fn upsert_demand(
+        &self,
+        owner: &str,
+        verdicts: &[poseidon_core::DemandVerdictRecord],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now().to_rfc3339();
+        for v in verdicts {
+            sqlx::query(
+                "INSERT INTO demand_class
+                    (owner, team, work_item_id, class, source, title_hash, classified_at)
+                 VALUES (?,?,?,?,?,?,?)
+                 ON CONFLICT(owner, team, work_item_id) DO UPDATE SET
+                    class=excluded.class, source=excluded.source,
+                    title_hash=excluded.title_hash, classified_at=excluded.classified_at",
+            )
+            .bind(owner)
+            .bind(&v.team)
+            .bind(v.work_item_id)
+            .bind(v.class.as_str())
+            .bind(&v.source)
+            .bind(&v.title_hash)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Stored AI demand verdicts, optionally scoped to one team.
+    pub async fn list_demand(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+    ) -> Result<Vec<poseidon_core::DemandVerdictRecord>> {
+        let rows: Vec<(String, i64, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT team, work_item_id, class, source, title_hash FROM demand_class
+             WHERE owner = ? AND (? IS NULL OR team = ?)",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(team, work_item_id, class, source, title_hash)| {
+                Some(poseidon_core::DemandVerdictRecord {
+                    work_item_id,
+                    team,
+                    class: poseidon_core::DemandClass::from_slug(&class)?,
+                    source,
+                    title_hash,
+                })
             })
             .collect())
     }
@@ -1895,6 +2046,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_activity_is_idempotent_scoped_and_prunable() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let at = |s: &str| -> DateTime<Utc> { s.parse().unwrap() };
+        let c = |id: &str, team: &str, when: &str| poseidon_core::CommitActivity {
+            id: id.into(),
+            team: team.into(),
+            repo: "iac".into(),
+            author: "Ana".into(),
+            author_email: Some("ana@x.com".into()),
+            authored_at: at(when),
+        };
+        let batch = [
+            c("1", "A", "2026-09-01T10:00:00Z"),
+            c("2", "A", "2026-10-01T23:30:00Z"),
+            c("3", "B", "2026-10-02T09:00:00Z"),
+        ];
+        store.upsert_commits(DEFAULT_OWNER, &batch).await.unwrap();
+        // re-collecting the same commits adds nothing
+        store.upsert_commits(DEFAULT_OWNER, &batch).await.unwrap();
+        let all = store
+            .list_commits(DEFAULT_OWNER, None, at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all[1].authored_at,
+            at("2026-10-01T23:30:00Z"),
+            "time survives the round trip"
+        );
+        assert_eq!(all[0].author_email.as_deref(), Some("ana@x.com"));
+        let team_a = store
+            .list_commits(DEFAULT_OWNER, Some("A"), at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(team_a.len(), 2);
+        // other owners never see them
+        assert!(store
+            .list_commits("someone@else.com", None, at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap()
+            .is_empty());
+        // the rolling window forgets the old
+        assert_eq!(
+            store
+                .prune_commits(DEFAULT_OWNER, at("2026-09-15T00:00:00Z"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_commits(DEFAULT_OWNER, None, at("2026-01-01T00:00:00Z"))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn demand_verdicts_are_replaced_per_item_and_scoped() {
+        use poseidon_core::{DemandClass, DemandVerdictRecord};
+        let store = Store::connect_in_memory().await.unwrap();
+        let v = |id: i64, team: &str, class, source: Option<&str>| DemandVerdictRecord {
+            work_item_id: id,
+            team: team.into(),
+            class,
+            source: source.map(str::to_string),
+            title_hash: format!("h{id}"),
+        };
+        store
+            .upsert_demand(
+                DEFAULT_OWNER,
+                &[
+                    v(1, "A", DemandClass::Reactive, Some("support")),
+                    v(2, "A", DemandClass::Planned, None),
+                    v(3, "B", DemandClass::Standing, None),
+                ],
+            )
+            .await
+            .unwrap();
+        // judging item 1 again replaces the earlier verdict
+        store
+            .upsert_demand(DEFAULT_OWNER, &[v(1, "A", DemandClass::Maintenance, None)])
+            .await
+            .unwrap();
+        let mut a = store.list_demand(DEFAULT_OWNER, Some("A")).await.unwrap();
+        a.sort_by_key(|r| r.work_item_id);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].class, DemandClass::Maintenance);
+        assert_eq!(
+            a[0].source, None,
+            "the old source went with the old verdict"
+        );
+        assert_eq!(
+            store.list_demand(DEFAULT_OWNER, None).await.unwrap().len(),
+            3
+        );
+    }
+
+    #[tokio::test]
     async fn team_rosters_are_replaced_and_scoped_per_owner() {
         let store = Store::connect_in_memory().await.unwrap();
         let person = |n: &str, u: &str| poseidon_core::TeamMember {
@@ -2227,10 +2479,14 @@ mod tests {
                     wip_limit: None,
                     kind: ColumnKind::InProgress,
                     split: false,
+                    // What a move needs to be written back survives the store round trip.
+                    states: [("Bug".to_string(), (*c).to_string())].into(),
                 })
                 .collect(),
             lanes: vec![],
             work_item_types: vec!["Bug".into()],
+            column_field: Some("WEF_AAA_Kanban.Column".into()),
+            done_field: None,
         };
         store
             .replace_team_boards(

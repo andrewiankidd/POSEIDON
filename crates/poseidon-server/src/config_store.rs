@@ -80,6 +80,10 @@ impl ConfigStore {
         // An imported bundle is untrusted input; its deck theme/logo end up in CSS and an
         // <img src>, so they are validated on the way in.
         cfg.recap = cfg.recap.sanitized();
+        cfg.people = poseidon_core::sanitize_people(
+            std::mem::take(&mut cfg.people),
+            poseidon_reports::capacity::timezone_is_valid,
+        );
         self.store.put_user_config(owner, &cfg).await?;
         self.cache.write().unwrap().insert(owner.to_string(), cfg);
         Ok(())
@@ -189,6 +193,20 @@ impl ConfigStore {
         let clean = recap.sanitized();
         let stored = clean.clone();
         self.update(owner, move |c| c.recap = clean).await?;
+        Ok(stored)
+    }
+
+    /// Replace the owner's people profiles (timezone + leave), validated. Returns what was
+    /// actually stored so the caller can show what survived validation.
+    pub async fn set_people(
+        &self,
+        owner: &str,
+        people: Vec<poseidon_core::PersonProfile>,
+    ) -> anyhow::Result<Vec<poseidon_core::PersonProfile>> {
+        let clean =
+            poseidon_core::sanitize_people(people, poseidon_reports::capacity::timezone_is_valid);
+        let stored = clean.clone();
+        self.update(owner, move |c| c.people = clean).await?;
         Ok(stored)
     }
 

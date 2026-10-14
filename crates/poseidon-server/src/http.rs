@@ -125,6 +125,9 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/work-items/{id}/pr-link", post(link_work_item_pr))
         .route("/api/work-items/{id}/mark-duplicate", post(mark_duplicate))
         .route("/api/pipelines", get(pipelines))
+        .route("/api/capacity", get(capacity))
+        .route("/api/capacity/classify", post(capacity_classify))
+        .route("/api/capacity/summary", post(capacity_summary))
         .route("/api/pull-requests", get(pull_requests))
         .route("/api/pull-requests/{id}/url", get(pull_request_url))
         .route("/api/reports", get(reports))
@@ -145,6 +148,7 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/recap/summaries", post(recap_summaries))
         .route("/api/recap/groupings", post(recap_groupings))
         .route("/api/recap/settings", put(update_recap_settings))
+        .route("/api/people", put(update_people))
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
         .route("/api/llm-config/autotune", post(llm_config_autotune))
@@ -342,9 +346,15 @@ struct UpdateWorkItemBody {
     state: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+    /// Move the card to a board column (`{ board, column }`).
+    #[serde(default)]
+    board_move: Option<poseidon_core::BoardMove>,
+    /// A new position in the tracker's manual order.
+    #[serde(default)]
+    backlog_rank: Option<f64>,
 }
 
-/// Edit a work item's state / tags - writes through to the provider (Azure
+/// Edit a work item's state / tags, move its card, or re-rank it - writes through to the provider (Azure
 /// DevOps), then returns the updated item.
 async fn update_work_item(
     svc: Scoped,
@@ -354,6 +364,8 @@ async fn update_work_item(
     let update = poseidon_core::WorkItemUpdate {
         state: body.state,
         tags: body.tags,
+        board_move: body.board_move,
+        backlog_rank: body.backlog_rank,
     };
     match svc.update_work_item(&body.team, id, update).await {
         Ok((item, flags)) => Ok(Json(serde_json::json!({ "item": item, "flags": flags }))),
@@ -603,6 +615,15 @@ async fn update_recap_settings(
     Ok(Json(serde_json::to_value(stored).map_err(err500)?))
 }
 
+/// Save people's timezones and leave. The response is the profiles as stored.
+async fn update_people(
+    svc: Scoped,
+    Json(body): Json<Vec<poseidon_core::PersonProfile>>,
+) -> ApiResult {
+    let stored = svc.update_people(body).await.map_err(err500)?;
+    Ok(Json(serde_json::to_value(stored).map_err(err500)?))
+}
+
 #[derive(serde::Deserialize)]
 struct RefineFieldsBody {
     team: String,
@@ -749,6 +770,49 @@ async fn teams(svc: Scoped) -> ApiResult {
     Ok(Json(
         serde_json::to_value(svc.team_names().await.map_err(err500)?).unwrap(),
     ))
+}
+
+/// Query / body for the Capacity endpoints: the team scope, the window, and the viewer's UTC offset.
+#[derive(Debug, Deserialize)]
+struct CapacityParams {
+    #[serde(default)]
+    team: Option<String>,
+    #[serde(default)]
+    weeks: Option<u32>,
+    /// Minutes east of UTC for the viewer's clock (so "evening" is theirs).
+    #[serde(default)]
+    tz: Option<i32>,
+}
+
+/// The Capacity report: flow, work in progress, demand mix, concentration, working hours.
+async fn capacity(svc: Scoped, Query(q): Query<CapacityParams>) -> ApiResult {
+    let report = svc
+        .capacity(scope(&q.team), q.weeks.unwrap_or(13), q.tz.unwrap_or(0))
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(report).map_err(err500)?))
+}
+
+/// Ask the AI to classify untagged demand → `{ ai_available, classified, remaining, errors }`.
+async fn capacity_classify(svc: Scoped, Json(body): Json<CapacityParams>) -> ApiResult {
+    let r = svc
+        .classify_demand(scope(&body.team), body.weeks.unwrap_or(13))
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(r).map_err(err500)?))
+}
+
+/// An AI-written capacity summary → `{ ai_available, text, error }`.
+async fn capacity_summary(svc: Scoped, Json(body): Json<CapacityParams>) -> ApiResult {
+    let r = svc
+        .capacity_summary(
+            scope(&body.team),
+            body.weeks.unwrap_or(13),
+            body.tz.unwrap_or(0),
+        )
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(r).map_err(err500)?))
 }
 
 /// Optional `?team=<name>` scope. Empty / missing → all teams.

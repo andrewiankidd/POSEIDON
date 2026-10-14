@@ -528,6 +528,12 @@ impl Provider for StubProvider {
         if let Some(tags) = &update.tags {
             item.tags = tags.clone();
         }
+        if let Some(mv) = &update.board_move {
+            item.board_column = Some(mv.column.clone());
+        }
+        if let Some(rank) = update.backlog_rank {
+            item.backlog_rank = Some(rank);
+        }
         item.changed_at = item.created_at.max(item.changed_at);
         Ok(item)
     }
@@ -737,6 +743,7 @@ mod tests {
         let update = WorkItemUpdate {
             state: Some("Closed".into()),
             tags: Some(vec!["team:platform".into(), "type:bug".into()]),
+            ..Default::default()
         };
         let updated = p.update_work_item(1004, &update).await.unwrap();
         assert_eq!(updated.id, 1004);

@@ -15,7 +15,7 @@ work across all three; the inline write-backs (State / Tags edits, work-item ↔
 links) are **Azure DevOps only**.
 
 The sidebar groups these screens the same way this index is ordered: **Dashboard**
-on its own, then the trackers (**Work Items / Pull Requests / Pipelines**), then
+on its own, then the trackers (**Work Items / Pull Requests / Pipelines / Capacity**), then
 **Rules**, then the shareable outputs (**Reports / Recap**) below it.
 
 | Feature | What it does |
@@ -24,6 +24,7 @@ on its own, then the trackers (**Work Items / Pull Requests / Pipelines**), then
 | [Work Items](work-items.md) | The backlog as a sortable, filterable, inline-editable table with hygiene flags. |
 | [Pull Requests](pull-requests.md) | In-flight PRs, their linked work items, and PR hygiene flags. |
 | [Pipelines](pipelines.md) | Pipeline health - last status, failing / never-run flags. |
+| [Capacity](capacity.md) | Demand vs delivery, cycle time, work in progress, knowledge concentration, and working hours - no sprints or points needed. |
 | [Rules](rules.md) | The hygiene policy every flag is evaluated against, per team. |
 | [Reports](reports.md) | Configurable report engine (datasource, group, render) + a CLI flow summary. |
 | [Recap](recap.md) | A shareable highlights deck built from your closed work, exportable as a self-contained HTML file. |

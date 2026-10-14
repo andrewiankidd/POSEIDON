@@ -45,6 +45,10 @@ const PR_PAGE: u32 = 100;
 /// links fall back to "unknown" rather than driving an unbounded history pull.
 const PR_HISTORY_DAYS: i64 = 90;
 
+/// Commits are listed per repository: a page, and a safety bound on pages per repository.
+const COMMIT_PAGE: u32 = 1000;
+const COMMIT_MAX_PAGES: u32 = 5;
+
 /// Safety bound on pages walked per closed status (`PR_PAGE` each), so a huge
 /// project can't spin an unbounded fetch every poll.
 const PR_CLOSED_MAX_PAGES: u32 = 30;
@@ -738,6 +742,49 @@ impl Provider for AzureDevOpsProvider {
         Ok(self.board_info().await.boards.clone())
     }
 
+    async fn fetch_commits(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<poseidon_core::CommitActivity>, ProviderError> {
+        let repos: ReposResponse = self
+            .get_json(&self.project_url("git/repositories", ""))
+            .await?;
+        let from = since.format("%Y-%m-%dT%H%%3A%M%%3A%SZ").to_string();
+        let mut out = Vec::new();
+        for repo in repos.value.into_iter().filter(|r| !r.is_disabled) {
+            // One request per repository (and page). A repository that can't be read (empty,
+            // or the token lacks access) is skipped rather than failing the whole collection.
+            for page in 0..COMMIT_MAX_PAGES {
+                let query = format!(
+                    "searchCriteria.fromDate={from}&searchCriteria.$top={COMMIT_PAGE}&searchCriteria.$skip={}",
+                    page * COMMIT_PAGE
+                );
+                let url = self.project_url(
+                    &format!("git/repositories/{}/commits", enc(&repo.id)),
+                    &query,
+                );
+                let batch: CommitsResponse = match self.get_json(&url).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::debug!(repo = %repo.name, error = %e, "could not list commits");
+                        break;
+                    }
+                };
+                let full = batch.value.len() as u32 == COMMIT_PAGE;
+                out.extend(
+                    batch
+                        .value
+                        .into_iter()
+                        .filter_map(|c| normalise_commit(c, &self.team_name, &repo.name)),
+                );
+                if !full {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn fetch_team_members(&self) -> Result<Vec<TeamMember>, ProviderError> {
         // Same team-name guessing as the boards (the ADO team is often `<name> Team`),
         // but the roster lives in the project-scoped Core API, not the team-scoped one.
@@ -865,23 +912,7 @@ impl Provider for AzureDevOpsProvider {
         if update.is_empty() {
             return Err(ProviderError::Config("no fields to update".into()));
         }
-        // Azure DevOps updates are JSON-Patch documents against `/fields/...`.
-        let mut ops: Vec<serde_json::Value> = Vec::new();
-        if let Some(state) = &update.state {
-            ops.push(serde_json::json!({
-                "op": "add", "path": "/fields/System.State", "value": state
-            }));
-        }
-        if let Some(tags) = &update.tags {
-            // ADO stores tags as one "; "-separated string, but treats the field
-            // as a COLLECTION: `op: "add"` MERGES (appends) and never removes,
-            // so a tag left out of the list survives. `op: "replace"` sets the
-            // exact set - the semantics we want (we always send the full list).
-            ops.push(serde_json::json!({
-                "op": "replace", "path": "/fields/System.Tags", "value": tags.join("; ")
-            }));
-        }
-        self.patch_work_item(id, ops).await
+        self.patch_work_item(id, update_ops(update)).await
     }
 
     async fn link_pr(&self, work_item_id: i64, pr_id: i64) -> Result<WorkItem, ProviderError> {
@@ -1416,15 +1447,24 @@ impl BoardInfo {
                     _ => ColumnKind::InProgress,
                 },
                 split: c.is_split.unwrap_or(false),
+                // The state this column puts each type in - what a card move writes back.
+                states: c
+                    .state_mappings
+                    .iter()
+                    .map(|(t, s)| (t.clone(), s.clone()))
+                    .collect(),
             })
             .collect();
+        let done_field = name_of(b.fields.done_field);
         self.fields.push(BoardFields {
             types: types.clone(),
-            column: column_field,
-            done: name_of(b.fields.done_field),
+            column: column_field.clone(),
+            done: done_field.clone(),
             lane: name_of(b.fields.row_field),
         });
         self.boards.push(Board {
+            column_field: Some(column_field),
+            done_field,
             name: b.name,
             columns,
             lanes: b
@@ -1445,6 +1485,54 @@ struct AdoIdentity {
     /// Sign-in identity (an email-style address for Entra users).
     #[serde(rename = "uniqueName", default)]
     unique_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReposResponse {
+    #[serde(default)]
+    value: Vec<AdoRepoSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoRepoSummary {
+    id: String,
+    name: String,
+    #[serde(rename = "isDisabled", default)]
+    is_disabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitsResponse {
+    #[serde(default)]
+    value: Vec<AdoCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoCommit {
+    #[serde(rename = "commitId")]
+    commit_id: String,
+    author: Option<AdoCommitPerson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdoCommitPerson {
+    name: Option<String>,
+    email: Option<String>,
+    date: Option<DateTime<Utc>>,
+}
+
+/// A commit reduced to who / where / when. One without an author date can't be placed in time,
+/// so it is dropped.
+fn normalise_commit(c: AdoCommit, team: &str, repo: &str) -> Option<poseidon_core::CommitActivity> {
+    let a = c.author?;
+    Some(poseidon_core::CommitActivity {
+        id: c.commit_id,
+        team: team.to_string(),
+        repo: repo.to_string(),
+        author: a.name.filter(|n| !n.trim().is_empty())?,
+        author_email: a.email.filter(|e| !e.trim().is_empty()),
+        authored_at: a.date?,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1897,6 +1985,59 @@ struct AdoProjectRef {
     name: Option<String>,
 }
 
+/// The JSON-Patch operations for an update, against `/fields/...`. Pure (no network), so the
+/// exact write is testable.
+fn update_ops(update: &WorkItemUpdate) -> Vec<serde_json::Value> {
+    let mut ops: Vec<serde_json::Value> = Vec::new();
+    // Order matters: the state goes first, then the column field. Setting the column alone does
+    // NOT move a card (Azure DevOps snaps it back to the column its state maps to); the state
+    // alone moves it to the first column that maps that state. Both together land it in the
+    // exact column, which is what tells apart columns that share a state ("New" and
+    // "To prioritize" are both state New).
+    if let Some(state) = &update.state {
+        ops.push(serde_json::json!({
+            "op": "add", "path": "/fields/System.State", "value": state
+        }));
+    }
+    if let Some(tags) = &update.tags {
+        // ADO stores tags as one "; "-separated string, but treats the field
+        // as a COLLECTION: `op: "add"` MERGES (appends) and never removes,
+        // so a tag left out of the list survives. `op: "replace"` sets the
+        // exact set - the semantics we want (we always send the full list).
+        ops.push(serde_json::json!({
+            "op": "replace", "path": "/fields/System.Tags", "value": tags.join("; ")
+        }));
+    }
+    if let Some(mv) = &update.board_move {
+        // Only a board column field (`WEF_...`) is ever written - the service supplies the
+        // name from the stored board, and this refuses anything else as a second guard.
+        if let Some(field) = mv
+            .column_field
+            .as_deref()
+            .filter(|f| f.starts_with("WEF_") && f.ends_with(".Column"))
+        {
+            ops.push(serde_json::json!({
+                "op": "add", "path": format!("/fields/{field}"), "value": mv.column
+            }));
+            if let Some(done) = mv
+                .done_field
+                .as_deref()
+                .filter(|f| mv.reset_done && f.starts_with("WEF_") && f.ends_with(".Column.Done"))
+            {
+                ops.push(serde_json::json!({
+                    "op": "add", "path": format!("/fields/{done}"), "value": false
+                }));
+            }
+        }
+    }
+    if let Some(rank) = update.backlog_rank {
+        ops.push(serde_json::json!({
+            "op": "add", "path": "/fields/Microsoft.VSTS.Common.StackRank", "value": rank
+        }));
+    }
+    ops
+}
+
 /// Strip the `refs/heads/` prefix Azure DevOps puts on branch refs for display.
 fn short_branch(refname: Option<String>) -> Option<String> {
     refname.map(|r| r.trim_start_matches("refs/heads/").to_string())
@@ -2169,6 +2310,13 @@ mod tests {
             "the unnamed default lane is not listed"
         );
         assert_eq!(info.fields[0].column, "WEF_AAA_Kanban.Column");
+        // What a card move needs travels with the board to the store and the UI: the field that
+        // holds the column, and the state each column puts each type in.
+        assert_eq!(b.column_field.as_deref(), Some("WEF_AAA_Kanban.Column"));
+        assert_eq!(b.done_field.as_deref(), Some("WEF_AAA_Kanban.Column.Done"));
+        assert_eq!(b.columns[1].state_for("User Story"), Some("New"));
+        assert_eq!(b.columns[2].state_for("Bug"), Some("Active"));
+        assert_eq!(b.columns[3].state_for("improvement"), Some("Closed"));
     }
 
     #[test]
@@ -2646,6 +2794,126 @@ mod tests {
         // ...while 865173's two links use lower-case %2f - both must be captured,
         // and the sibling commit/hierarchy relations must NOT leak in as PR ids.
         assert_eq!(by_id(865173).linked_pr_ids, vec![248657, 248674]);
+    }
+
+    fn moving_to(column: &str, split: bool) -> poseidon_core::BoardMove {
+        poseidon_core::BoardMove {
+            board: "Stories".into(),
+            column: column.into(),
+            column_field: Some("WEF_AAA_Kanban.Column".into()),
+            done_field: Some("WEF_AAA_Kanban.Column.Done".into()),
+            reset_done: split,
+        }
+    }
+
+    #[test]
+    fn a_card_move_writes_the_state_then_the_column_then_the_rank() {
+        let ops = update_ops(&WorkItemUpdate {
+            state: Some("Ready".into()),
+            board_move: Some(moving_to("This week", false)),
+            backlog_rank: Some(1_100_500.0),
+            ..Default::default()
+        });
+        let shape: Vec<(&str, &str)> = ops
+            .iter()
+            .map(|o| (o["op"].as_str().unwrap(), o["path"].as_str().unwrap()))
+            .collect();
+        // Order matters to Azure DevOps: the state first, then the column field that picks the
+        // exact column among those sharing that state. (Verified against a live board: the
+        // column alone snaps back; the state alone lands in the first matching column.)
+        assert_eq!(
+            shape,
+            vec![
+                ("add", "/fields/System.State"),
+                ("add", "/fields/WEF_AAA_Kanban.Column"),
+                ("add", "/fields/Microsoft.VSTS.Common.StackRank"),
+            ]
+        );
+        assert_eq!(ops[0]["value"], "Ready");
+        assert_eq!(ops[1]["value"], "This week");
+        assert_eq!(ops[2]["value"], 1_100_500.0);
+    }
+
+    #[test]
+    fn moving_into_a_split_column_starts_the_card_in_doing() {
+        let ops = update_ops(&WorkItemUpdate {
+            state: Some("Active".into()),
+            board_move: Some(moving_to("Doing", true)),
+            ..Default::default()
+        });
+        let done = ops
+            .iter()
+            .find(|o| o["path"] == "/fields/WEF_AAA_Kanban.Column.Done");
+        assert_eq!(
+            done.map(|o| o["value"].clone()),
+            Some(serde_json::json!(false))
+        );
+        // a plain column leaves the done half alone
+        let plain = update_ops(&WorkItemUpdate {
+            board_move: Some(moving_to("Doing", false)),
+            ..Default::default()
+        });
+        assert!(plain
+            .iter()
+            .all(|o| o["path"] != "/fields/WEF_AAA_Kanban.Column.Done"));
+    }
+
+    #[test]
+    fn a_move_only_ever_writes_a_board_column_field() {
+        // Even if a bad field name reached the provider, it is not written.
+        for bad in ["System.Title", "WEF_AAA_Kanban.Lane", "System.State"] {
+            let mut mv = moving_to("New", false);
+            mv.column_field = Some(bad.into());
+            let ops = update_ops(&WorkItemUpdate {
+                board_move: Some(mv),
+                ..Default::default()
+            });
+            assert!(ops.is_empty(), "{bad} must not be written");
+        }
+        // a plain state/tag edit is unchanged
+        let ops = update_ops(&WorkItemUpdate {
+            state: Some("Resolved".into()),
+            tags: Some(vec!["a".into(), "b".into()]),
+            ..Default::default()
+        });
+        assert_eq!(ops[0]["path"], "/fields/System.State");
+        assert_eq!(ops[1]["op"], "replace");
+        assert_eq!(ops[1]["value"], "a; b");
+    }
+
+    #[test]
+    fn commits_keep_who_where_and_when_and_drop_the_unplaceable() {
+        // Shape of GET git/repositories/{id}/commits (names and ids are fictional).
+        let parsed: CommitsResponse = serde_json::from_value(serde_json::json!({
+            "value": [
+                { "commitId": "aaa", "comment": "fix the thing",
+                  "author": { "name": "Ana Example", "email": "ana@example.com", "date": "2026-07-09T01:38:00Z" },
+                  "committer": { "name": "Ana Example", "date": "2026-07-09T01:38:00Z" } },
+                { "commitId": "bbb", "author": { "name": "Ben Example", "date": "2026-07-10T09:00:00Z" } },
+                { "commitId": "ccc", "author": { "name": "No Date" } },
+                { "commitId": "ddd", "author": { "name": "  ", "date": "2026-07-10T09:00:00Z" } },
+                { "commitId": "eee" }
+            ]
+        }))
+        .unwrap();
+        let got: Vec<_> = parsed
+            .value
+            .into_iter()
+            .filter_map(|c| normalise_commit(c, "Example", "iac"))
+            .collect();
+        assert_eq!(
+            got.len(),
+            2,
+            "no date, a blank name and no author are dropped"
+        );
+        assert_eq!(got[0].id, "aaa");
+        assert_eq!(got[0].repo, "iac");
+        assert_eq!(got[0].team, "Example");
+        assert_eq!(got[0].author_email.as_deref(), Some("ana@example.com"));
+        assert_eq!(got[0].authored_at.to_rfc3339(), "2026-07-09T01:38:00+00:00");
+        assert_eq!(got[1].author_email, None, "a missing email stays missing");
+        // the commit message is never kept - only who / where / when
+        assert!(!format!("{:?}", got[0]).contains("fix the thing"));
     }
 
     #[test]

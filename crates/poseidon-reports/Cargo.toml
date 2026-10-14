@@ -11,6 +11,7 @@ description = "POSEIDON report engine - runs a ReportSpec over loaded datasets a
 [dependencies]
 poseidon-core = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

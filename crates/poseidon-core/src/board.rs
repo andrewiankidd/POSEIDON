@@ -6,6 +6,8 @@
 //! Providers that have columns discover them into these provider-agnostic shapes and stamp
 //! each work item with the column it sits in (see `WorkItem::board_column`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Where a column sits in the flow, which decides how a view treats it (a board normally
@@ -34,6 +36,21 @@ pub struct BoardColumn {
     /// The column is split into Doing / Done halves.
     #[serde(default)]
     pub split: bool,
+    /// The workflow state this column puts each work-item type in (type -> state). Moving a
+    /// card into the column sets that state - which is what lets a board move be written
+    /// back. Empty until the boards have been re-read since this field was added.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub states: BTreeMap<String, String>,
+}
+
+impl BoardColumn {
+    /// The state this column maps `work_item_type` to, if it holds that type.
+    pub fn state_for(&self, work_item_type: &str) -> Option<&str> {
+        self.states
+            .iter()
+            .find(|(t, _)| t.eq_ignore_ascii_case(work_item_type))
+            .map(|(_, s)| s.as_str())
+    }
 }
 
 /// A tracker board at one backlog level (Azure DevOps: Stories, Features, Epics).
@@ -50,6 +67,13 @@ pub struct Board {
     /// list contains its type). Compared case-insensitively.
     #[serde(default)]
     pub work_item_types: Vec<String>,
+    /// The tracker field that holds a card's column (Azure DevOps `WEF_<guid>_Kanban.Column`).
+    /// Needed to write a move back; absent until the boards have been re-read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_field: Option<String>,
+    /// The field that holds the Doing / Done half of a split column, if the board has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_field: Option<String>,
 }
 
 impl Board {
@@ -79,6 +103,8 @@ mod tests {
             columns: vec![],
             lanes: vec![],
             work_item_types: vec!["User Story".into(), "Bug".into()],
+            column_field: None,
+            done_field: None,
         };
         assert!(b.covers("user story"));
         assert!(b.covers("Bug"));
@@ -96,9 +122,24 @@ mod tests {
             wip_limit: Some(25),
             kind: ColumnKind::Outgoing,
             split: false,
+            states: BTreeMap::new(),
         })
         .unwrap();
         assert_eq!(j["kind"], "outgoing");
         assert_eq!(j["wip_limit"], 25);
+    }
+
+    #[test]
+    fn a_column_maps_each_work_item_type_to_its_state() {
+        let c: BoardColumn = serde_json::from_str(
+            r#"{"name":"This week","states":{"Bug":"Ready","Ticket":"Accepted"}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.state_for("bug"), Some("Ready"), "case-insensitive");
+        assert_eq!(c.state_for("Ticket"), Some("Accepted"));
+        assert_eq!(c.state_for("Epic"), None);
+        // an old stored board (no states) still loads, with nothing to move by
+        let old: BoardColumn = serde_json::from_str(r#"{"name":"New"}"#).unwrap();
+        assert!(old.states.is_empty());
     }
 }

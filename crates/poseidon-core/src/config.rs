@@ -34,6 +34,10 @@ pub struct UserConfig {
     /// tenant config so it survives restarts and round-trips through config import/export.
     #[serde(skip_serializing_if = "RecapSettings::is_empty")]
     pub recap: RecapSettings,
+    /// What the tracker doesn't say about people: their timezone and leave, so working-hours
+    /// numbers read each person in their own day and an absence isn't a lull.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<crate::PersonProfile>,
 }
 
 /// Largest accepted branding logo, as a data URL (the encoded string, not the pixels).
