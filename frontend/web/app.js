@@ -2941,6 +2941,8 @@ async function renderCapacity() {
   let report = null;
   let narrative = null;
   let profiles = []; // saved per-person timezone + leave
+  let teamsStatus = null; // the Teams connector's state (null = this server predates it)
+  let signals = null; // the Interruptions report
   const body = el('div', { class: 'cap-body' });
   const note = el('div', { class: 'muted cap-note' });
 
@@ -2971,6 +2973,10 @@ async function renderCapacity() {
     try { report = await api.capacity({ weeks, tz }); }
     catch (e) { clear(body).appendChild(errorPanel('capacity', e)); return; }
     try { profiles = (await api.config()).people || []; } catch { profiles = []; }
+    [teamsStatus, signals] = await Promise.all([
+      api.teamsStatus().catch(() => null),
+      api.signals({ weeks, tz }).catch(() => null),
+    ]);
     draw();
   }
 
@@ -3032,6 +3038,7 @@ async function renderCapacity() {
     body.appendChild(el('div', { class: 'grid cap-grid-2' }, [capCycleCard(r), capWipCard(r)]));
     if (r.standing.length) body.appendChild(capStandingCard(r));
     body.appendChild(capConcentrationCard(r));
+    if (teamsStatus) body.appendChild(capSignalsCard(teamsStatus, signals, { reload: load }));
     body.appendChild(capEffortCard(r, profiles, load));
     body.appendChild(el('div', { class: 'card' }, [
       el('h2', {}, 'About these numbers'),
@@ -3166,6 +3173,190 @@ function capConcentrationCard(r) {
       el('div', { class: 'muted cap-small' }, 'A repository where one person wrote nearly everything is why “just delegate it” is not free: someone has to be brought up to speed first.'),
     ]) : el('div', { class: 'empty' }, 'No merged pull requests in this window.'),
   ]);
+}
+
+// ── Interruptions: asks arriving in watched Teams channels ──────────────────
+// Read through Microsoft Graph with the signed-in user's own token, against a one-off
+// single-tenant app registration the owner makes. Metadata only: who started each thread, who
+// answered, when - never the message text.
+// A Teams channel link ↔ the ids Poseidon stores. The server re-validates whatever arrives.
+function parseTeamsChannelLink(link) {
+  try {
+    const u = new URL(String(link).trim());
+    const parts = u.pathname.split('/');
+    const at = parts.indexOf('channel');
+    if (at < 0 || !parts[at + 1]) return null;
+    const channel_id = decodeURIComponent(parts[at + 1]);
+    const team_id = (u.searchParams.get('groupId') || '').toLowerCase();
+    if (!/^19:.+@thread/.test(channel_id) || !/^[0-9a-f-]{1,64}$/.test(team_id)) return null;
+    const name = parts[at + 2] ? decodeURIComponent(parts[at + 2]) : null;
+    return { team_id, channel_id, name };
+  } catch { return null; }
+}
+
+function teamsChannelLink(c) {
+  return `https://teams.microsoft.com/l/channel/${encodeURIComponent(c.channel_id)}/${encodeURIComponent(c.name || 'channel')}?groupId=${encodeURIComponent(c.team_id)}`;
+}
+
+function capMinutes(m) {
+  if (m == null) return '–';
+  if (m < 90) return `${Math.round(m)}m`;
+  if (m < 48 * 60) return `${(m / 60).toFixed(1)}h`;
+  return `${(m / 1440).toFixed(1)}d`;
+}
+
+function capSignalsCard(st, sg, ctx) {
+  const card = el('div', { class: 'card' }, [el('h2', {}, 'Interruptions (Teams channels)')]);
+  if (!st.configured) {
+    card.append(
+      el('p', { class: 'muted' }, 'See how often the team is interrupted from chat: how many asks arrive in the channels you watch, who from, how fast they are answered, and who ends up answering. Reads Microsoft Teams as you, read-only; message text is never stored.'),
+      capTeamsSetupForm(st, ctx),
+    );
+    return card;
+  }
+  if (!st.signed_in) {
+    card.append(
+      el('p', { class: 'muted' }, 'The app registration is saved. Sign in so Poseidon can read the channels you are a member of.'),
+      el('div', { class: 'row', style: 'gap:8px' }, [el('button', { class: 'btn btn-primary', onclick: (e) => capConnectTeams(e.currentTarget, ctx) }, 'Connect Teams')]),
+      capTeamsSetupForm(st, ctx, true),
+    );
+    return card;
+  }
+  const status = el('div', { class: 'muted cap-small' }, [
+    st.last_collected ? `Last read ${ago(st.last_collected)}. ` : 'Not read yet. ',
+    st.last_error ? el('span', { class: 'cap-err' }, st.last_error) : null,
+  ]);
+  const refreshBtn = el('button', {
+    class: 'btn', title: 'Read the watched channels now',
+    onclick: async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = 'Reading…';
+      try {
+        const r = await api.refreshSignals();
+        toast(r.errors && r.errors.length ? `Read with problems: ${r.errors[0]}` : `Read ${r.channels} channel(s), ${r.threads} conversations`, !!(r.errors && r.errors.length));
+      } catch (err) { toast('Could not read Teams: ' + (err?.message || err), true); }
+      await ctx.reload();
+    },
+  }, '↻ Read channels now');
+  card.append(el('div', { class: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px' }, [refreshBtn, status]));
+  if (!st.channels) {
+    card.append(el('p', { class: 'muted' }, 'No channels are watched yet. Open Settings, edit the team, and paste Teams channel links into “Teams channels” (in Teams: right-click a channel → Get link to channel).'));
+    card.append(capTeamsSetupForm(st, ctx, true));
+    return card;
+  }
+  if (!sg || !sg.available || !sg.threads) {
+    card.append(el('div', { class: 'empty' }, sg && sg.available ? 'No conversations from people in this window.' : 'Nothing read yet - use “Read channels now”.'));
+    card.append(capTeamsSetupForm(st, ctx, true));
+    return card;
+  }
+  const waitTone = sg.unanswered_over_day > 0 ? 'warn' : '';
+  card.append(
+    sg.facts.length ? el('ul', { class: 'cap-facts' }, sg.facts.map((f) => el('li', {}, f))) : null,
+    el('div', { class: 'grid', style: 'grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));margin:12px 0' }, [
+      statTile(sg.threads, `Conversations (${sg.weeks}w)`),
+      statTile(capNum(sg.threads / sg.weeks, 0), 'Per week'),
+      statTile(sg.outside_share == null ? null : capPct(sg.outside_share), 'From outside the team'),
+      statTile(sg.response.median_minutes == null ? null : capMinutes(sg.response.median_minutes), 'First answer (median)'),
+      statTile(sg.unanswered_over_day, 'Unanswered > 1 day', waitTone),
+      statTile(sg.after_hours_share == null ? null : capPct(sg.after_hours_share), 'Started after hours'),
+    ]),
+  );
+  const wk = (k) => sg.weekly.map((w) => ({ label: capDay(w.week_start), value: w[k] }));
+  card.append(el('div', { class: 'grid cap-grid-2' }, [
+    el('div', {}, [
+      el('div', { class: 'cap-legend' }, [
+        el('span', {}, [el('i', { style: 'background:var(--accent)' }), 'Conversations started']),
+        el('span', {}, [el('i', { style: 'background:var(--ok)' }), 'Answers']),
+      ]),
+      lineChart([{ label: 'Conversations', points: wk('threads') }, { label: 'Answers', points: wk('replies') }], { width: 560, height: 200 }),
+    ]),
+    el('div', {}, [
+      el('div', { class: 'table-wrap' }, el('table', {}, [
+        el('thead', {}, el('tr', {}, ['Channel', 'Conversations', 'Unanswered', 'Bots'].map((h) => el('th', {}, h)))),
+        el('tbody', {}, sg.channels.map((c) => el('tr', {}, [el('td', {}, c.name), el('td', {}, String(c.threads)), el('td', {}, String(c.unanswered)), el('td', { class: 'muted' }, c.automated ? String(c.automated) : '')]))),
+      ])),
+    ]),
+  ]));
+  const personTable = (title, people, countLabel) => el('div', {}, [
+    el('h3', { class: 'cap-h3' }, title),
+    el('div', { class: 'table-wrap' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Person', countLabel, ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, people.map((p) => el('tr', {}, [
+        el('td', {}, p.name), el('td', {}, String(p.count)),
+        el('td', {}, p.on_team ? el('span', { class: 'flagchip', title: 'On the team roster' }, 'team') : el('span', { class: 'muted' }, 'outside')),
+      ]))),
+    ])),
+  ]);
+  card.append(el('div', { class: 'grid cap-grid-2', style: 'margin-top:12px' }, [
+    personTable('Who asks', sg.askers, 'Conversations'),
+    personTable('Who answers', sg.responders, 'Answers'),
+  ]));
+  if (sg.waiting.length) {
+    card.append(el('h3', { class: 'cap-h3' }, 'Still waiting for an answer'), el('div', { class: 'table-wrap' }, el('table', {}, [
+      el('thead', {}, el('tr', {}, ['Started by', 'Channel', 'Waiting', ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, sg.waiting.map((w) => el('tr', {}, [
+        el('td', {}, w.author), el('td', {}, w.channel),
+        el('td', {}, w.age_hours >= 48 ? `${Math.round(w.age_hours / 24)}d` : `${w.age_hours}h`),
+        el('td', {}, [w.urgent ? el('span', { class: 'flagchip warn' }, 'urgent') : null, w.url ? linkOut(' Open in Teams', w.url) : null]),
+      ]))),
+    ])));
+  }
+  card.append(
+    el('details', { class: 'cap-people', style: 'margin-top:12px' }, [
+      el('summary', {}, 'About these numbers'),
+      el('ul', { class: 'cap-facts muted' }, sg.notes.map((n) => el('li', {}, n))),
+    ]),
+    capTeamsSetupForm(st, ctx, true),
+  );
+  return card;
+}
+
+// The one-off app registration (client + tenant id) the Teams connector signs in with.
+function capTeamsSetupForm(st, ctx, collapsed) {
+  const client = el('input', { class: 'inp', placeholder: 'Application (client) ID', value: st.client_id || '', style: 'min-width:300px' });
+  const tenant = el('input', { class: 'inp', placeholder: 'Directory (tenant) ID or domain', value: st.tenant_id || '', style: 'min-width:300px' });
+  const status = el('span', { class: 'muted cap-small' });
+  const save = el('button', {
+    class: 'btn', onclick: async () => {
+      status.textContent = 'Saving…';
+      try {
+        const stored = await api.setTeamsConnector({ client_id: client.value.trim(), tenant_id: tenant.value.trim() });
+        if (!stored.client_id || !stored.tenant_id) { status.textContent = 'Those do not look like valid IDs (a GUID for the client; a GUID or domain for the tenant).'; return; }
+        toast('Saved');
+        await ctx.reload();
+      } catch (err) { status.textContent = 'Could not save: ' + (err?.message || err); }
+    },
+  }, 'Save');
+  const steps = el('ol', { class: 'cap-facts muted' }, [
+    el('li', {}, 'In the Microsoft Entra admin centre: App registrations → New registration. Name it anything (e.g. “Poseidon Teams reader”), supported account types: this organisation only.'),
+    el('li', {}, 'Authentication → Advanced settings → Allow public client flows: Yes. (No secret and no redirect URI are needed.)'),
+    el('li', {}, 'API permissions → Add → Microsoft Graph → Delegated: ChannelMessage.Read.All, Team.ReadBasic.All, Channel.ReadBasic.All. Then “Grant admin consent” (someone with the right role must do this once).'),
+    el('li', {}, 'Copy the Application (client) ID and Directory (tenant) ID from the Overview page into the boxes above, save, then Connect.'),
+  ]);
+  const form = el('div', {}, [
+    el('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;align-items:center' }, [client, tenant, save, status]),
+    el('details', { style: 'margin-top:8px' }, [el('summary', {}, 'How to create the app registration (one-off)'), steps]),
+  ]);
+  if (!collapsed) return form;
+  return el('details', { class: 'cap-people', style: 'margin-top:12px' }, [el('summary', {}, 'Teams connection'), form]);
+}
+
+async function capConnectTeams(btn, ctx) {
+  btn.disabled = true;
+  try {
+    const prompt = await api.startTeamsSignIn();
+    showDeviceCodeModal(prompt.url, prompt.code);
+    openExternal(prompt.url);
+    for (let i = 0; i < 180; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const s = await api.teamsSignInStatus();
+      if (s.state === 'done') { hideDeviceCodeModal(); toast('Connected to Teams'); break; }
+      if (s.state === 'failed') { hideDeviceCodeModal(); toast('Teams sign-in failed: ' + (s.error || 'unknown error'), true); break; }
+    }
+  } catch (err) {
+    hideDeviceCodeModal();
+    toast('Could not start the Teams sign-in: ' + (err?.message || err), true);
+  }
+  await ctx.reload();
 }
 
 function capHeatmap(heat) {
@@ -3965,7 +4156,7 @@ async function renderRecap() {
 
   async function build() {
     const seq = ++buildSeq;
-    lastDeck = null; dlBtn.disabled = true; aiGroupBtn.disabled = true; aiNote.textContent = '';
+    lastDeck = null; dlBtn.disabled = true; aiGroupBtn.disabled = true; aiSummaryBtn.disabled = true; aiNote.textContent = '';
     clear(deckHost).appendChild(el('div', { class: 'loading' }, 'Generating deck…'));
     let items = [];
     try { ({ items } = await api.tickets()); }
@@ -3981,7 +4172,7 @@ async function renderRecap() {
       deckHost.appendChild(el('div', { class: 'empty' }, 'No closed work items in this window to recap yet.'));
       return;
     }
-    lastDeck = deck; dlBtn.disabled = false; aiGroupBtn.disabled = false;
+    lastDeck = deck; dlBtn.disabled = false; aiGroupBtn.disabled = false; aiSummaryBtn.disabled = false;
     renderDeck(deck, deckHost, editor);
 
     // Progressive enhancement: show the deterministic deck now, then swap each area
@@ -4124,6 +4315,52 @@ async function renderRecap() {
     document.body.appendChild(overlay);
     showAsk();
   }
+  // ✨ Suggest summary: have the model (re)write the summary of the slide on screen from the
+  // work items it lists. Works on any slide that lists items - notably the catch-all "Other"
+  // slide made by condensing, whose summary is otherwise generic placeholder text.
+  async function suggestSummary() {
+    const idx = deckHost._recapIndex ? deckHost._recapIndex() : 0;
+    const slide = lastDeck && lastDeck.slides[idx];
+    const rows = slide && slide.groups
+      ? slide.groups.flatMap((g) => g.items || []).filter((h) => h && typeof h === 'object')
+      : [];
+    if (!rows.length) { toast('Open a slide that lists work items first.', true); return; }
+    // The model is told what the slide is: an area by its name, the catch-all by what it holds.
+    const area = slide.other
+      ? `Other: smaller areas (${slide.groups.map((g) => g.heading).join(', ')})`
+      : (slide.area || slide.title || 'this slide');
+    const label = aiSummaryBtn.textContent;
+    aiSummaryBtn.disabled = true; aiSummaryBtn.textContent = '✨ Writing…';
+    try {
+      const res = await api.recapSummaries({
+        team: getTeamScope(), period: `the last ${periodSel.value} days`,
+        areas: [{
+          area,
+          items: rows.map((h) => ({ id: Number(h.id) || 0, title: h.title || '', work_item_type: h.type || '', parent_title: h.parent || null })),
+        }],
+      });
+      const text = res.summaries && res.summaries[area];
+      if (!text) {
+        toast(!res.ai_available ? 'No AI model is active - enable one in Settings → AI.'
+          : `The model returned no summary${(res.errors || []).length ? ': ' + res.errors.join('; ') : '.'}`, true);
+        return;
+      }
+      slide.description = text;
+      editedSlides.add(slide); // a later background AI pass must not overwrite what was just asked for
+      const p = deckHost.querySelector('.recap-slide.pos-current .recap-desc');
+      if (p) p.textContent = text;
+      toast('Summary updated - edit it if you like');
+    } catch (e) {
+      toast('Could not suggest a summary: ' + (e?.message || e), true);
+    } finally {
+      aiSummaryBtn.textContent = label; aiSummaryBtn.disabled = !lastDeck;
+    }
+  }
+  const aiSummaryBtn = el('button', {
+    class: 'btn', disabled: true,
+    title: 'Ask the AI model to write the summary of the slide on screen from the work items it lists (replaces the current text)',
+    onclick: suggestSummary,
+  }, '✨ Suggest summary');
   const aiGroupBtn = el('button', {
     class: 'btn', disabled: true,
     title: 'Ask the AI model to suggest themed groups for the slide on screen (you review them before anything changes)',
@@ -4134,10 +4371,10 @@ async function renderRecap() {
   wrap.appendChild(el('div', { class: 'row', style: 'gap:8px;align-items:center;margin-bottom:10px' }, [
     el('span', { class: 'muted' }, 'Window:'), periodSel,
     el('button', { class: 'btn', onclick: build }, '↻ Regenerate'),
-    themeControl, brandingControl, aiGroupBtn, dlBtn, aiNote,
+    themeControl, brandingControl, aiGroupBtn, aiSummaryBtn, dlBtn, aiNote,
   ]));
   wrap.appendChild(el('div', { class: 'muted', style: 'font-size:12px;margin:-4px 0 10px' },
-    'Click a summary or group heading to edit it · drag ⋮⋮ to reorder or regroup · ✨ suggests groups · × removes · Regenerate resets all edits.'));
+    'Click a summary or group heading to edit it · drag ⋮⋮ to reorder or regroup · ✨ suggests groups or a summary · × removes · Regenerate resets all edits.'));
   wrap.appendChild(deckHost);
   build();
   return wrap;
@@ -5850,6 +6087,12 @@ function renderTeamForm(panel, existing) {
     title: 'Overrides who counts as on this team in per-person reports (author / reviewer breakdowns). Names or sign-ins, one per line. Leave blank to use the tracker\'s roster (Azure DevOps teams are detected automatically).',
   });
   members.value = ((existing && existing.members) || []).join('\n');
+  const channelsTa = el('textarea', {
+    class: 'inp', rows: 3, spellcheck: 'false',
+    placeholder: 'https://teams.microsoft.com/l/channel/19%3A...%40thread.tacv2/General?groupId=...',
+    title: 'In Teams: right-click a channel → Get link to channel. Read-only; needs the Teams connection on the Capacity screen.',
+  });
+  channelsTa.value = ((existing && existing.channels) || []).map(teamsChannelLink).join('\n');
   const field = (labelText, input) => el('label', { class: 'field' }, [el('span', {}, labelText), input]);
 
   const providerSel = el('select', {
@@ -5873,6 +6116,7 @@ function renderTeamForm(panel, existing) {
     }
     fieldsHost.append(field('Token env var (optional)', patEnv));
     fieldsHost.append(field('Team members override (optional)', members));
+    fieldsHost.append(field('Teams channels to watch for asks (optional, one link per line)', channelsTa));
   }
 
   const save = el('button', {
@@ -5894,6 +6138,13 @@ function renderTeamForm(panel, existing) {
         members: members.value.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean),
       };
       if (!team.members.length) delete team.members;
+      const chanLines = channelsTa.value.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+      const chans = chanLines.map(parseTeamsChannelLink);
+      if (chans.some((c) => !c)) {
+        toast(`Could not read channel link ${chans.findIndex((c) => !c) + 1}: in Teams, right-click the channel → Get link to channel`, true);
+        b.disabled = false; b.textContent = 'Save'; return;
+      }
+      if (chans.length) team.channels = chans; else delete team.channels;
       const patEnvVal = patEnv.value.trim();
       if (patEnvVal) team.auth = { pat_env: patEnvVal }; else delete team.auth;
       try {

@@ -487,6 +487,8 @@ button.foot-item { appearance: none; -webkit-appearance: none; background: trans
 }
 .cap-heat-cell.work { outline: 1px solid color-mix(in srgb, var(--ink-soft) 45%, transparent); outline-offset: -1px; }
 .cap-people summary { cursor: pointer; font-weight: 600; }
+.cap-h3 { font-size: 13px; margin: 0 0 6px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; }
+.cap-err { color: var(--err); }
 .cap-people .inp.bad { border-color: var(--err); }
 .cap-leave-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .cap-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2); font-size: 12px; }

@@ -64,8 +64,21 @@ Open **Recap** from the sidebar (hash route `#recap`), grouped with
     nothing changes until you apply. Any item the model leaves out stays in the group it
     was in, an item never appears twice, and you can keep dragging to fine-tune the
     result. Needs an online model (Settings → AI); without one the dialog says so.
+  - **✨ Suggest summary** - asks your AI model to (re)write the summary of the slide on
+    screen from the work items it lists, replacing the current text (edit it afterwards if
+    you like; it is yours then, and a late background pass won't overwrite it). Most useful
+    on the **Other** slide that condensing creates, which starts with a generic line. Needs
+    an AI model, like the other ✨ actions.
   - **Reorder slides** - **← Move** / **Move →** next to the slide counter move the
     current slide earlier or later.
+  - **Condense or delete a slide** - **⇲ Condense slide** folds an area slide's work
+    items into one shared **Other** slide (created on first use, after the last area
+    slide) instead of dropping it: each item stays listed under a heading named after the
+    slide it came from, and the Other slide's count grows to match, so every closed item is
+    still shown and the "closed" total on the first slides stays honest. Condense as many
+    slides as you like; they all land on the same Other slide, which you can regroup or ✨
+    re-theme like any other. **🗑 Delete slide** removes a slide outright (Regenerate brings
+    either back).
   - **Rewrite the summary** - click a slide's summary to edit it (plain text; **Esc** or
     clicking away saves).
 

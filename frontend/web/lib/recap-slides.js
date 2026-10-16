@@ -33,6 +33,21 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
+// A slide whose work items can be folded into the shared "Other" slide: a feature slide that
+// lists items, and isn't that slide itself.
+function canCondense(slide) {
+  return !!slide && slide.type === 'feature' && !slide.other
+    && !!slide.groups && slide.groups.some((g) => (g.items || []).length > 0);
+}
+
+// What a condensed slide's items are listed under on the "Other" slide: its title, with an
+// `area:` tag prefix made readable ("area:platform-deployment" -> "Platform deployment").
+function condensedHeading(slide) {
+  const raw = String(slide.title || slide.area || 'Other').trim();
+  const bare = raw.replace(/^[a-z]+:/i, '').replace(/[-_]+/g, ' ').trim();
+  return bare ? bare.charAt(0).toUpperCase() + bare.slice(1) : raw;
+}
+
 // ── Slide renderers ──────────────────────────────────────────────────────────
 // Each takes a slide object and returns an HTML string. Ported one-for-one from
 // OCTOGON's src/slides.js, with `recap-` class prefixes.
@@ -314,7 +329,7 @@ function renderSlide(s, editable = false) {
  * and added, slides can be moved earlier / later, and the summary is click-to-edit. Edits
  * mutate `deck` itself (so the exported file carries them) and are reported through
  * `opts.onEdit(slide, kind)` with kind `'remove'`, `'description'`, `'heading'`, `'regroup'`
- * (move / add / remove a group, or move an item), `'reorder'` (slide moved) or `'delete-slide'`. The exported
+ * (move / add / remove a group, or move an item), `'reorder'` (slide moved), or `'delete-slide'` (also reported when a slide is condensed into "Other"). The exported
  * standalone deck never passes it.
  * `opts.scrollTop` restores the current slide's scroll position after a re-render.
  * `opts.onOpen(url)` opens a work item link (the desktop app routes it to the system browser).
@@ -344,6 +359,7 @@ export function renderDeck(deck, mountEl, opts = {}) {
         ${editable ? `<span class="recap-nav-reorder">
           <button class="recap-nav-btn" data-recap="mv-left" title="Move this slide earlier">&larr; Move</button>
           <button class="recap-nav-btn" data-recap="mv-right" title="Move this slide later">Move &rarr;</button>
+          <button class="recap-nav-btn" data-recap="condense" title="Fold this slide's work items into one shared 'Other' slide: the area stops taking a slide, but every item is still shown and counted">⇲ Condense slide</button>
           <button class="recap-nav-btn recap-nav-del" data-recap="del" title="Delete this whole slide (Regenerate brings it back)">🗑 Delete slide</button>
         </span>` : ''}
         <span class="recap-nav-counter"><span data-recap="num">${total ? 1 : 0}</span> / ${total}</span>
@@ -364,6 +380,7 @@ export function renderDeck(deck, mountEl, opts = {}) {
   const moveLeftBtn = root.querySelector('[data-recap="mv-left"]');
   const moveRightBtn = root.querySelector('[data-recap="mv-right"]');
   const deleteBtn = root.querySelector('[data-recap="del"]');
+  const condenseBtn = root.querySelector('[data-recap="condense"]');
   // The footer credit opens GitHub: through the host app's opener in the desktop shell (a
   // webview anchor would not leave the app), as a plain link in a browser / the exported file.
   const credit = root.querySelector('[data-credit]');
@@ -420,6 +437,7 @@ export function renderDeck(deck, mountEl, opts = {}) {
     if (moveLeftBtn) moveLeftBtn.disabled = current === 0;
     if (moveRightBtn) moveRightBtn.disabled = current >= total - 1;
     if (deleteBtn) deleteBtn.disabled = total <= 1; // a deck keeps at least one slide
+    if (condenseBtn) condenseBtn.disabled = !canCondense(slides[current]);
   }
 
   prevBtn.addEventListener('click', (e) => { e.stopPropagation(); go(current - 1); });
@@ -515,6 +533,36 @@ export function renderDeck(deck, mountEl, opts = {}) {
     renderDeck(deck, mountEl, { ...opts, startIndex: Math.min(current, slides.length - 1) });
   }
   if (deleteBtn) deleteBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteSlide(); });
+  // Fold the current slide's work items into the shared "Other" slide (created on first use,
+  // just after the last feature slide). Unlike delete, nothing is dropped: each item stays
+  // listed, under a heading that names the slide it came from, so the totals still add up.
+  function condenseSlide() {
+    const slide = slides[current];
+    if (!canCondense(slide)) return;
+    const from = current;
+    const rows = slide.groups.flatMap((g) => g.items || []);
+    slides.splice(from, 1);
+    let other = slides.find((s) => s.other);
+    if (!other) {
+      other = {
+        type: 'feature', other: true, label: '', title: 'Other',
+        description: 'Everything else that closed - kept together so every item is still counted.',
+        groups: [],
+      };
+      let at = -1;
+      slides.forEach((s, i) => { if (s.type === 'feature') at = i; });
+      slides.splice(at >= 0 ? at + 1 : Math.min(from, slides.length), 0, other);
+    }
+    const heading = condensedHeading(slide);
+    const into = other.groups.find((g) => g.heading === heading);
+    if (into) into.items.push(...rows);
+    else other.groups.push({ heading, items: rows });
+    const count = other.groups.reduce((n, g) => n + (g.items || []).length, 0);
+    other.label = `Other · ${count} closed`;
+    if (opts.onEdit) { opts.onEdit(slide, 'delete-slide'); opts.onEdit(other, 'regroup'); }
+    renderDeck(deck, mountEl, { ...opts, startIndex: slides.indexOf(other) });
+  }
+  if (condenseBtn) condenseBtn.addEventListener('click', (e) => { e.stopPropagation(); condenseSlide(); });
   if (moveLeftBtn) moveLeftBtn.addEventListener('click', (e) => { e.stopPropagation(); moveSlide(-1); });
   if (moveRightBtn) moveRightBtn.addEventListener('click', (e) => { e.stopPropagation(); moveSlide(1); });
 

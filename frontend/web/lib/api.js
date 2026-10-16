@@ -100,16 +100,29 @@ async function demoGet(path) {
     const now = Date.now();
     if (name === 'dashboard' && data.last_polled_at) data.last_polled_at = new Date(now - 14 * 60000).toISOString();
     if (name === 'doctor' && data.checked_at) data.checked_at = new Date(now - 2 * 60000).toISOString();
-    if (name === 'capacity') {
+    if (name === 'capacity' || name === 'signals') {
       // The report's calendar dates are plain days (not timestamps), so shift them here too.
       const days = Math.round(demoShiftMs(now) / DAY_MS);
       const day = (d) => new Date(Date.parse(d + 'T00:00:00Z') + days * DAY_MS).toISOString().slice(0, 10);
-      data.window_start = day(data.window_start);
-      data.window_end = day(data.window_end);
+      if (data.window_start) data.window_start = day(data.window_start);
+      if (data.window_end) data.window_end = day(data.window_end);
       data.weekly.forEach((w) => { w.week_start = day(w.week_start); });
     }
     return data;
   } catch { return {}; }
+}
+
+// Demo-only: the canned blurbs, plus a generic one for any area the fixture doesn't know (a
+// user-made catch-all like "Other"), so "Suggest summary" shows something on every slide.
+async function demoRecapSummaries(areas) {
+  const res = await demoGet('/recap/summaries');
+  const summaries = { ...(res.summaries || {}) };
+  for (const a of areas || []) {
+    if (!summaries[a.area]) {
+      summaries[a.area] = 'A spread of smaller pieces of work that kept things running: fixes, tidy-ups and one-off requests that did not need a slide of their own.';
+    }
+  }
+  return { ...res, ai_available: true, summaries };
 }
 
 // Demo-only stand-in for the AI grouping suggester: buckets items by title keywords. Items that
@@ -538,7 +551,7 @@ export const api = {
    *  failed). `areas` = [{ area, items: [{ id, title, work_item_type, parent_title }] }]. */
   recapSummaries: ({ team, period, areas }) =>
     // The public demo has no model: serve canned (fictional) blurbs so the feature shows.
-    isDemo() ? demoGet('/recap/summaries') : request('/recap/summaries', {
+    isDemo() ? demoRecapSummaries(areas) : request('/recap/summaries', {
       method: 'POST', body: { team: team || null, period, areas },
       invokeCmd: 'recap_summaries', invokeArgs: { team: team || null, period, areas },
     }),
@@ -550,6 +563,35 @@ export const api = {
       invokeCmd: 'get_capacity',
       invokeArgs: { team: team() || null, weeks, tzOffsetMinutes: tz },
     }),
+  /** The Interruptions report: asks arriving in the watched Teams channels (who started them,
+   *  who answered, how fast). Metadata only - no message text is stored. */
+  signals: ({ weeks = 13, tz = 0 } = {}) =>
+    request('/signals', {
+      query: { team: team(), weeks, tz },
+      invokeCmd: 'get_signals',
+      invokeArgs: { team: team() || null, weeks, tzOffsetMinutes: tz },
+    }),
+  /** Read the watched channels now. → { channels, threads, errors } */
+  refreshSignals: () =>
+    isDemo() ? demoGet('/signals/refresh') : request('/signals/refresh', {
+      method: 'POST', body: { team: team() || null },
+      invokeCmd: 'refresh_signals', invokeArgs: { team: team() || null },
+    }),
+  /** Where the Teams connector stands: { configured, signed_in, client_id, tenant_id, channels,
+   *  last_collected, last_error }. */
+  teamsStatus: () => request('/teams-connector', { invokeCmd: 'get_teams_status' }),
+  /** Save the single-tenant app registration to sign in with (`{client_id, tenant_id}`). */
+  setTeamsConnector: (connector) =>
+    isDemo() ? Promise.resolve(connector) : request('/teams-connector', {
+      method: 'PUT', body: connector, invokeCmd: 'set_teams_connector', invokeArgs: { connector },
+    }),
+  /** Begin the Teams device-code sign-in → { url, code }. */
+  startTeamsSignIn: () =>
+    isDemo() ? Promise.resolve({ url: 'https://microsoft.com/devicelogin', code: 'DEMO1234' })
+      : request('/teams-connector/sign-in', { method: 'POST', invokeCmd: 'start_teams_sign_in' }),
+  /** The Teams sign-in's progress → { state: idle|pending|done|failed, error? }. */
+  teamsSignInStatus: () =>
+    request('/teams-connector/sign-in', { invokeCmd: 'get_teams_sign_in_status' }),
   /** Save people's timezone + leave (`[{name, unique_name?, timezone?, leave:[{start,end,label?}]}]`).
    *  Validated server-side; returns the profiles as stored. Lives in the tenant config. */
   setPeople: (people) =>

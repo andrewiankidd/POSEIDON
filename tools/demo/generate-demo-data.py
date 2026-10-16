@@ -641,3 +641,61 @@ write("capacity-summary", {"ai_available": True, "error": None, "text": (
     "concentrated: one person wrote most of the merged pull requests and nearly all of cluster-bootstrap, and the "
     "commit timestamps show that person working late nights and long runs far more than anyone else. Delegating "
     "this work would first need time to bring others up to speed.")})
+
+
+# ── interruptions: a made-up channel's worth of asks (the real report is computed server-side) ──
+sig_rng = random.Random(23)
+sig_weekly = []
+for w in range(13):
+    threads = sig_rng.randint(9, 24)
+    sig_weekly.append({"week_start": (first_week + dt.timedelta(weeks=w)).isoformat(),
+                       "threads": threads, "replies": int(threads * sig_rng.uniform(1.4, 2.6))})
+sig_threads = sum(x["threads"] for x in sig_weekly)
+sig_replies = sum(x["replies"] for x in sig_weekly)
+write("signals", {
+    "available": True, "generated_at": z(ts(0, 12)), "weeks": 13,
+    "threads": sig_threads, "automated": 212, "replies": sig_replies,
+    "outside_share": 0.71, "after_hours_share": 0.18, "urgent": 9,
+    "weekly": sig_weekly,
+    "channels": [
+        {"name": "Platform help", "threads": int(sig_threads * 0.6), "automated": 0, "unanswered": 6},
+        {"name": "Escalations", "threads": sig_threads - int(sig_threads * 0.6), "automated": 0, "unanswered": 3},
+        {"name": "Alerts", "threads": 0, "automated": 212, "unanswered": 0},
+    ],
+    "response": {"answered": sig_threads - 9, "median_minutes": 47.0, "p85_minutes": 410.0},
+    "waiting": [
+        {"channel": "Escalations", "author": "Morgan Hale", "age_hours": 71, "urgent": True, "url": "https://example.invalid/teams/1"},
+        {"channel": "Platform help", "author": "Casey Brooks", "age_hours": 29, "urgent": False, "url": "https://example.invalid/teams/2"},
+    ],
+    "unanswered_over_day": 2,
+    "askers": [
+        {"name": "Morgan Hale", "count": 31, "on_team": False}, {"name": "Casey Brooks", "count": 24, "on_team": False},
+        {"name": "Dana Whitfield", "count": 17, "on_team": False}, {"name": PEOPLE[1], "count": 9, "on_team": True},
+    ],
+    "responders": [
+        {"name": PEOPLE[0], "count": int(sig_replies * 0.64), "on_team": True},
+        {"name": PEOPLE[1], "count": int(sig_replies * 0.21), "on_team": True},
+        {"name": PEOPLE[2], "count": int(sig_replies * 0.09), "on_team": True},
+    ],
+    "top_responder_share": 0.64,
+    "facts": [
+        f"{sig_threads} conversations were started in the watched channels over 13 weeks (about {sig_threads // 13} a week), 71% of them from someone outside the team.",
+        f"The first answer to a conversation took 47 minutes at the median and 6.8 hours for 85% ({sig_threads - 9} answered).",
+        "2 conversations have had no answer for more than a day.",
+        f"{PEOPLE[0]} wrote 64% of the {sig_replies} answers given.",
+        "18% of conversations were started outside 09:00-18:00 Monday-Friday in the poster's own timezone.",
+        "9 were marked urgent by the person asking.",
+        "212 automated posts (bots, connectors) are left out of these numbers.",
+    ],
+    "notes": [
+        "Demo data: a made-up channel, so the numbers only illustrate how the card reads.",
+        "Only conversations in channels you are a member of can be read, and only metadata (who started a thread, who answered, when) is kept - never the message text.",
+        "A conversation counts once however much work it caused. Read it as how often the team is interrupted, not how much effort it cost.",
+    ],
+})
+write("teams-connector", {"configured": True, "signed_in": True, "client_id": "00000000-0000-0000-0000-000000000000",
+                          "tenant_id": "00000000-0000-0000-0000-000000000001", "channels": 2,
+                          "last_collected": z(ts(0, 10)), "last_error": None})
+write("teams-connector-sign-in", {"state": "done"})
+write("signals-refresh", {"channels": 2, "threads": sig_threads, "errors": []})
+print("signals:", sig_threads, "threads", sig_replies, "answers")
