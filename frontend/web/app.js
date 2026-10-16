@@ -5559,6 +5559,7 @@ function incompatReason(i, caps) {
   if (i.kind === 'webgpu') return 'Unsupported on this platform - needs a WebGPU-capable browser';
   if (i.kind === 'offline' && !caps.embedded) return 'Unsupported on this platform - no in-process model engine here';
   if (i.kind === 'offline' && i.device === 'gpu' && !caps.gpu) return 'Unsupported on this platform - needs a CUDA GPU';
+  if (i.kind === 'claude-code') return 'Unsupported on this platform - needs the Claude Code desktop app (the `claude` command) installed here';
   return 'Unsupported on this platform';
 }
 
