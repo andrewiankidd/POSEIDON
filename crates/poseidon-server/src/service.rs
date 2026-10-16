@@ -188,6 +188,9 @@ pub struct Service {
     /// (never held across `.await`): the `az login` progress callback writes it
     /// synchronously and the status endpoint reads it.
     signins: Arc<std::sync::Mutex<HashMap<String, SigninState>>>,
+    /// The same for the Microsoft Teams connector's device-code sign-in (a separate app
+    /// registration and token cache from the Azure DevOps one).
+    teams_signins: Arc<std::sync::Mutex<HashMap<String, SigninState>>>,
     /// Optional access-token verifier. When set, the HTTP transport derives the
     /// owner from a verified token instead of trusting the identity header (see
     /// [`crate::token`]). `Arc<Option<_>>` so `with_owner` clones keep it shared.
@@ -204,6 +207,9 @@ pub struct Service {
     /// job). Same non-`.await`-held mutex discipline as `suggest_jobs`.
     audit_jobs: Arc<std::sync::Mutex<HashMap<String, AuditState>>>,
 }
+
+mod teams;
+pub use teams::{TeamsRefresh, TeamsStatus};
 
 /// State of an owner's web (hosted) device-code sign-in. Backs `GET /api/sign-in`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -316,6 +322,7 @@ impl Service {
             owner: DEFAULT_OWNER.to_string(),
             az_config_root: Arc::new(az_config_root),
             signins: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            teams_signins: Arc::new(std::sync::Mutex::new(HashMap::new())),
             verifier: Arc::new(None),
             ai: Arc::new(std::sync::RwLock::new(HashMap::new())),
             suggest_jobs: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1251,6 +1258,7 @@ impl Service {
             .replace_team_pull_requests(&self.owner, team_name, &pulls)
             .await?;
         self.collect_commits(team_name, provider).await;
+        self.collect_team_channels(team_name).await;
 
         Ok((items.len(), pipelines.len(), runs.len(), pulls.len()))
     }
@@ -1483,8 +1491,18 @@ impl Service {
             return Ok(CapacityNarrative::default());
         };
         let report = self.capacity(team, weeks, tz_offset_minutes).await?;
+        let mut facts = poseidon_reports::capacity::summary_facts(&report);
+        // Interruptions from the watched chat channels, when there are any: more evidence for the
+        // same summary, still computed facts only.
+        if let Ok(sig) = self.signals(team, weeks, tz_offset_minutes).await {
+            facts.extend(
+                sig.facts
+                    .iter()
+                    .map(|f| format!("Interruptions (chat): {f}")),
+            );
+        }
         let ctx = poseidon_ai::CapacitySummaryContext {
-            facts: poseidon_reports::capacity::summary_facts(&report),
+            facts,
             background: self.team_background(team).await,
         };
         let mut out = CapacityNarrative {
@@ -4473,6 +4491,60 @@ mod tests {
     // restores it, an export carries it, and anything unsafe in an untrusted import is
     // dropped rather than stored.
     #[tokio::test]
+    async fn the_teams_connector_and_channels_are_validated_and_round_trip() {
+        let store = Store::connect_in_memory().await.unwrap();
+        let svc = Service::new(PoseidonConfig::default(), store, std::env::temp_dir())
+            .with_owner("teams@x.com");
+
+        // Nothing is set up on a fresh owner.
+        let st = svc.teams_status().await;
+        assert!(!st.configured && !st.signed_in && st.channels == 0);
+
+        // Only GUID client ids and plain tenant ids survive; junk is dropped, not stored.
+        let stored = svc
+            .set_teams_connector(poseidon_core::TeamsConnector {
+                client_id: " 04B07795-8DDB-461A-BBEE-02F9E1BF7B46 ".into(),
+                tenant_id: "6C891BD8-96AF-4ED3-93BB-155D620876AE".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(stored.client_id, "04b07795-8ddb-461a-bbee-02f9e1bf7b46");
+        let bad = svc
+            .set_teams_connector(poseidon_core::TeamsConnector {
+                client_id: "nope".into(),
+                tenant_id: "x; drop".into(),
+            })
+            .await
+            .unwrap();
+        assert!(bad.is_empty());
+        assert!(!svc.teams_status().await.configured);
+        assert!(
+            svc.start_teams_sign_in().await.is_err(),
+            "sign-in needs a configured app"
+        );
+
+        // Channels arrive through an import, are cleaned, and come back out on export.
+        let yaml = "poseidon:\n  schema: 1\nteams_connector:\n  client_id: 04b07795-8ddb-461a-bbee-02f9e1bf7b46\n  tenant_id: contoso.onmicrosoft.com\nteam:\n- name: Ops\n  provider: azure-dev-ops\n  organization: o\n  project: p\n  channels:\n  - { team_id: 0A1B-22, channel_id: '19:abc@thread.tacv2' }\n  - { team_id: '', channel_id: junk }\n";
+        svc.import_config(yaml, true).await.unwrap();
+        let st = svc.teams_status().await;
+        assert!(st.configured);
+        assert_eq!(st.channels, 1, "the malformed channel was dropped");
+        let exported = svc.export_config().await.unwrap();
+        assert!(
+            exported.contains("teams_connector:") && exported.contains("0a1b-22"),
+            "{exported}"
+        );
+
+        // Another owner never sees it.
+        assert!(
+            !svc.with_owner("other@x.com")
+                .teams_status()
+                .await
+                .configured
+        );
+    }
+
+    #[tokio::test]
     async fn recap_theme_and_logo_round_trip_through_import_export_and_are_validated() {
         let store = Store::connect_in_memory().await.unwrap();
         let svc = Service::new(PoseidonConfig::default(), store, std::env::temp_dir())
@@ -4998,6 +5070,7 @@ mod tests {
                     board_team: None,
                     members: Vec::new(),
                     rules: None,
+                    channels: vec![],
                 },
                 TeamConfig {
                     name: "Beta".into(),
@@ -5013,6 +5086,7 @@ mod tests {
                     board_team: None,
                     members: Vec::new(),
                     rules: Some(RuleSet::default()),
+                    channels: vec![],
                 },
             ],
             rules: RuleSet {

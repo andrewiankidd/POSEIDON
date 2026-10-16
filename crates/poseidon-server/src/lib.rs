@@ -26,7 +26,7 @@ pub use scheduler::Scheduler;
 pub use service::{
     AuthStatus, BrowserAuditResult, BrowserSuggestion, CapacityNarrative, DemandClassification,
     DraftOutcome, PollOutcome, RecapAreaInput, RecapGroupOut, RecapGroupings, RecapItemInput,
-    RecapSummaries, RefineOutcome, Service, SharedService, SigninState,
+    RecapSummaries, RefineOutcome, Service, SharedService, SigninState, TeamsRefresh, TeamsStatus,
 };
 
 /// Env var pointing at the static frontend bundle. Set in the Docker image;

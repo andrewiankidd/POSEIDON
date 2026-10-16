@@ -57,6 +57,49 @@ other screen.
   commits miss meetings, escalations and chat, so hours understate the load;
   how much was classified, and whether timezones and leave are set).
 
+## Interruptions (Teams channels)
+
+Work that arrives in chat never touches the backlog, so a card on the Capacity
+screen measures it directly: how many conversations start in the Teams channels
+a team watches, how many come from outside the team, how long the first answer
+takes, who ends up answering, and what is still waiting. It needs no tagging.
+
+- **Read-only, metadata only.** POSEIDON records who started each conversation,
+  who replied and when. Message text is never stored (and nothing is ever posted
+  to Teams). Bots and connectors (alert feeds) are counted separately and left
+  out of the human numbers.
+- **As you.** It reads Microsoft Graph with your own delegated token, so it sees
+  only the channels you are a member of.
+- **Per team.** Paste channel links into the team's profile (Settings → edit the
+  team → *Teams channels*; in Teams, right-click a channel → *Get link to
+  channel*). The same card appears under each team's Capacity view.
+- **After hours** uses each poster's own timezone when one is set under
+  *Timezones & leave*; **inside / outside the team** uses the team roster.
+
+### One-off setup: a single-tenant app registration
+
+Reading channel messages needs a Microsoft Entra app registration with admin
+consent; there is no supported way around that. It is made once, in your own
+tenant, and Poseidon ships with no ID baked in:
+
+1. Entra admin centre → *App registrations* → *New registration*; supported
+   account types: *this organisation only*.
+2. *Authentication* → *Advanced settings* → *Allow public client flows*: **Yes**
+   (no secret and no redirect URI are needed).
+3. *API permissions* → *Microsoft Graph* → *Delegated*: `ChannelMessage.Read.All`,
+   `Team.ReadBasic.All`, `Channel.ReadBasic.All`; then *Grant admin consent*.
+4. Copy the *Application (client) ID* and *Directory (tenant) ID* into the card
+   on the Capacity screen, save, and press **Connect Teams** (a device-code
+   sign-in, like the Azure DevOps one).
+
+The two IDs are not secrets and live in the config (so they export and import
+with it). The sign-in token is cached on the data volume next to the Azure
+DevOps one - never in the database - and renews silently.
+
+Collection runs in the background after a poll (at most every 3 hours; **Read
+channels now** forces it). The first read goes back 90 days; later reads re-check
+the last two weeks, so answers to threads older than that are not picked up.
+
 ## AI
 
 The two ✨ actions use the AI model configured in Settings → AI (an

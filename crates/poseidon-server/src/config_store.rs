@@ -84,6 +84,10 @@ impl ConfigStore {
             std::mem::take(&mut cfg.people),
             poseidon_reports::capacity::timezone_is_valid,
         );
+        cfg.teams_connector = std::mem::take(&mut cfg.teams_connector).sanitized();
+        for t in &mut cfg.teams {
+            t.channels = poseidon_core::sanitize_channels(std::mem::take(&mut t.channels));
+        }
         self.store.put_user_config(owner, &cfg).await?;
         self.cache.write().unwrap().insert(owner.to_string(), cfg);
         Ok(())
@@ -129,8 +133,23 @@ impl ConfigStore {
         .await
     }
 
+    /// Replace the owner's Teams app registration (client + tenant id), validated. Returns what
+    /// was actually stored.
+    pub async fn set_teams_connector(
+        &self,
+        owner: &str,
+        connector: poseidon_core::TeamsConnector,
+    ) -> anyhow::Result<poseidon_core::TeamsConnector> {
+        let clean = connector.sanitized();
+        let stored = clean.clone();
+        self.update(owner, move |c| c.teams_connector = clean)
+            .await?;
+        Ok(stored)
+    }
+
     /// Append a team (deduped by name). `false` if the name already existed.
-    pub async fn add_team(&self, owner: &str, team: TeamConfig) -> anyhow::Result<bool> {
+    pub async fn add_team(&self, owner: &str, mut team: TeamConfig) -> anyhow::Result<bool> {
+        team.channels = poseidon_core::sanitize_channels(std::mem::take(&mut team.channels));
         self.update(owner, move |c| {
             if c.teams
                 .iter()
@@ -160,8 +179,9 @@ impl ConfigStore {
         &self,
         owner: &str,
         original: &str,
-        team: TeamConfig,
+        mut team: TeamConfig,
     ) -> anyhow::Result<bool> {
+        team.channels = poseidon_core::sanitize_channels(std::mem::take(&mut team.channels));
         self.update(owner, move |c| {
             match c
                 .teams

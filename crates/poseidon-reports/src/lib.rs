@@ -9,6 +9,7 @@
 //! results are ordered chronologically for time buckets, else by value desc.
 
 pub mod capacity;
+pub mod signals;
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use poseidon_core::{

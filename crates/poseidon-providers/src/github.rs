@@ -947,6 +947,7 @@ mod tests {
             board_team: None,
             members: Vec::new(),
             rules: None,
+            channels: vec![],
         }
     }
 

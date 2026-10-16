@@ -67,22 +67,48 @@ pub struct TokenSet {
     pub expires_at: DateTime<Utc>,
 }
 
+/// An OAuth public client and the scopes it asks for: what a device-code flow and its refresh
+/// are made of. Azure DevOps uses the Azure CLI's well-known client; the Teams connector uses the
+/// owner's own single-tenant registration.
+#[derive(Debug, Clone, Copy)]
+pub struct OAuthApp<'a> {
+    pub client_id: &'a str,
+    pub scope: &'a str,
+}
+
 /// Begin a device-code flow against the tenant (or `organizations`).
 pub async fn start_device_code(
     http: &reqwest::Client,
     tenant: Option<&str>,
 ) -> Result<DeviceCodeStart, ProviderError> {
     let sc = scope();
+    start_device_code_for(
+        http,
+        tenant,
+        OAuthApp {
+            client_id: AZURE_CLI_CLIENT_ID,
+            scope: &sc,
+        },
+    )
+    .await
+}
+
+/// Begin a device-code flow for any public client.
+pub async fn start_device_code_for(
+    http: &reqwest::Client,
+    tenant: Option<&str>,
+    app: OAuthApp<'_>,
+) -> Result<DeviceCodeStart, ProviderError> {
     let resp = http
         .post(devicecode_url(tenant))
-        .form(&[("client_id", AZURE_CLI_CLIENT_ID), ("scope", sc.as_str())])
+        .form(&[("client_id", app.client_id), ("scope", app.scope)])
         .send()
         .await?;
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(ProviderError::NotSignedIn(format!(
             "device-code request failed: {}",
-            body.chars().take(200).collect::<String>()
+            body.chars().take(300).collect::<String>()
         )));
     }
     let d: DeviceCodeResp = resp.json().await?;
@@ -109,11 +135,21 @@ pub async fn poll_once(
     tenant: Option<&str>,
     device_code: &str,
 ) -> Result<PollOutcome, ProviderError> {
+    poll_once_for(http, tenant, AZURE_CLI_CLIENT_ID, device_code).await
+}
+
+/// Poll the token endpoint once for any public client's device-code grant.
+pub async fn poll_once_for(
+    http: &reqwest::Client,
+    tenant: Option<&str>,
+    client_id: &str,
+    device_code: &str,
+) -> Result<PollOutcome, ProviderError> {
     let resp = http
         .post(token_url(tenant))
         .form(&[
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", AZURE_CLI_CLIENT_ID),
+            ("client_id", client_id),
             ("device_code", device_code),
         ])
         .send()
@@ -130,13 +166,32 @@ pub async fn refresh(
     refresh_token: &str,
 ) -> Result<TokenSet, ProviderError> {
     let sc = scope();
+    refresh_for(
+        http,
+        tenant,
+        OAuthApp {
+            client_id: AZURE_CLI_CLIENT_ID,
+            scope: &sc,
+        },
+        refresh_token,
+    )
+    .await
+}
+
+/// Exchange a refresh token for any public client.
+pub async fn refresh_for(
+    http: &reqwest::Client,
+    tenant: Option<&str>,
+    app: OAuthApp<'_>,
+    refresh_token: &str,
+) -> Result<TokenSet, ProviderError> {
     let resp = http
         .post(token_url(tenant))
         .form(&[
             ("grant_type", "refresh_token"),
-            ("client_id", AZURE_CLI_CLIENT_ID),
+            ("client_id", app.client_id),
             ("refresh_token", refresh_token),
-            ("scope", sc.as_str()),
+            ("scope", app.scope),
         ])
         .send()
         .await?;

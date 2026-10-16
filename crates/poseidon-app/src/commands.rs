@@ -889,6 +889,76 @@ fn reveal(file: &std::path::Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// The Interruptions report for the current scope.
+#[tauri::command]
+pub async fn get_signals(
+    state: State<'_, AppState>,
+    team: Option<String>,
+    weeks: Option<u32>,
+    tz_offset_minutes: Option<i32>,
+) -> CmdResult {
+    let service = state.service()?;
+    let r = service
+        .signals(
+            scope(&team),
+            weeks.unwrap_or(13),
+            tz_offset_minutes.unwrap_or(0),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
+}
+
+/// Read the watched Teams channels now.
+#[tauri::command]
+pub async fn refresh_signals(state: State<'_, AppState>, team: Option<String>) -> CmdResult {
+    let service = state.service()?;
+    let r = service
+        .refresh_teams(scope(&team))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
+}
+
+/// Where the Teams connector stands.
+#[tauri::command]
+pub async fn get_teams_status(state: State<'_, AppState>) -> CmdResult {
+    let service = state.service()?;
+    serde_json::to_value(service.teams_status().await).map_err(|e| e.to_string())
+}
+
+/// Save the Teams app registration (client + tenant id).
+#[tauri::command]
+pub async fn set_teams_connector(
+    state: State<'_, AppState>,
+    connector: poseidon_core::TeamsConnector,
+) -> CmdResult {
+    let service = state.service()?;
+    let stored = service
+        .set_teams_connector(connector)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(stored).map_err(|e| e.to_string())
+}
+
+/// Begin the Teams device-code sign-in.
+#[tauri::command]
+pub async fn start_teams_sign_in(state: State<'_, AppState>) -> CmdResult {
+    let service = state.service()?;
+    let prompt = service
+        .start_teams_sign_in()
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(prompt).map_err(|e| e.to_string())
+}
+
+/// The Teams sign-in's progress.
+#[tauri::command]
+pub async fn get_teams_sign_in_status(state: State<'_, AppState>) -> CmdResult {
+    let service = state.service()?;
+    serde_json::to_value(service.teams_sign_in_status()).map_err(|e| e.to_string())
+}
+
 /// Save people's timezones and leave.
 #[tauri::command]
 pub async fn update_people(

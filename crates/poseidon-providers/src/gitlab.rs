@@ -903,6 +903,7 @@ mod tests {
             board_team: None,
             members: Vec::new(),
             rules: None,
+            channels: vec![],
         };
         // Empty token -> anonymous (public project reads without auth).
         let provider = GitlabProvider::new(&cfg, Credential::Pat(String::new())).unwrap();

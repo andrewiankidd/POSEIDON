@@ -34,6 +34,7 @@ mod pipeline;
 mod pull_request;
 mod report;
 mod report_spec;
+mod signals;
 mod work_item;
 
 pub use ai_activity::{AiActivityRecord, AiFieldDraft};
@@ -60,6 +61,11 @@ pub use report::{DashboardSummary, PipelineHealth, PipelineReport, TagCount, Tic
 pub use report_spec::{
     Condition, DataSource, GroupBy, Metric, Op, Point, RenderKind, ReportResult, ReportSpec,
     ReportTable, ResultSeries, Series, TableRow, TimeRange,
+};
+pub use signals::{
+    parse_channel_link, sanitize_channels, ChannelConfig, ChannelSummary, ChannelThread,
+    ResponseTimes, SignalPerson, SignalWeek, SignalsReport, TeamsConnector, ThreadReply,
+    WaitingThread,
 };
 pub use work_item::{BoardMove, WorkItem, WorkItemUpdate};
 

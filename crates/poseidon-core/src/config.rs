@@ -38,6 +38,10 @@ pub struct UserConfig {
     /// numbers read each person in their own day and an absence isn't a lull.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<crate::PersonProfile>,
+    /// The single-tenant app registration used to read Teams channels (client + tenant id; no
+    /// secret). Empty until the owner sets it up.
+    #[serde(skip_serializing_if = "crate::TeamsConnector::is_empty")]
+    pub teams_connector: crate::TeamsConnector,
 }
 
 /// Largest accepted branding logo, as a data URL (the encoded string, not the pixels).
@@ -335,6 +339,11 @@ pub struct TeamConfig {
     /// there means "no rule", which a field merge couldn't express unambiguously).
     #[serde(default)]
     pub rules: Option<RuleSet>,
+    /// Chat channels (Microsoft Teams) this team watches for incoming asks. Read-only: POSEIDON
+    /// records who started each thread and who answered, never the message text. Needs the
+    /// owner's [`UserConfig::teams_connector`] to be set up and signed in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<crate::ChannelConfig>,
 }
 
 /// The hygiene ruleset. Tag patterns support a trailing `*` wildcard:

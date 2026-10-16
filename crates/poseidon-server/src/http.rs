@@ -149,6 +149,16 @@ pub fn router(service: SharedService, static_dir: &Path) -> Router {
         .route("/api/recap/groupings", post(recap_groupings))
         .route("/api/recap/settings", put(update_recap_settings))
         .route("/api/people", put(update_people))
+        .route("/api/signals", get(signals))
+        .route("/api/signals/refresh", post(signals_refresh))
+        .route(
+            "/api/teams-connector",
+            get(teams_status).put(set_teams_connector),
+        )
+        .route(
+            "/api/teams-connector/sign-in",
+            get(teams_sign_in_status).post(teams_sign_in_start),
+        )
         .route("/api/llm-config", get(llm_config_get).post(llm_config_set))
         .route("/api/llm-config/reset", post(llm_config_reset))
         .route("/api/llm-config/autotune", post(llm_config_autotune))
@@ -613,6 +623,50 @@ async fn update_recap_settings(
 ) -> ApiResult {
     let stored = svc.update_recap_settings(body).await.map_err(err500)?;
     Ok(Json(serde_json::to_value(stored).map_err(err500)?))
+}
+
+/// The Interruptions report: asks arriving in the watched chat channels.
+async fn signals(svc: Scoped, Query(q): Query<CapacityParams>) -> ApiResult {
+    let r = svc
+        .signals(scope(&q.team), q.weeks.unwrap_or(13), q.tz.unwrap_or(0))
+        .await
+        .map_err(err500)?;
+    Ok(Json(serde_json::to_value(r).map_err(err500)?))
+}
+
+/// Read the watched channels now.
+async fn signals_refresh(svc: Scoped, Json(body): Json<CapacityParams>) -> ApiResult {
+    let r = svc.refresh_teams(scope(&body.team)).await.map_err(err500)?;
+    Ok(Json(serde_json::to_value(r).map_err(err500)?))
+}
+
+/// Where the Teams connector stands (configured / signed in / last read).
+async fn teams_status(svc: Scoped) -> ApiResult {
+    Ok(Json(
+        serde_json::to_value(svc.teams_status().await).map_err(err500)?,
+    ))
+}
+
+/// Save the Teams app registration (client + tenant id). Response = as stored.
+async fn set_teams_connector(
+    svc: Scoped,
+    Json(body): Json<poseidon_core::TeamsConnector>,
+) -> ApiResult {
+    let stored = svc.set_teams_connector(body).await.map_err(err500)?;
+    Ok(Json(serde_json::to_value(stored).map_err(err500)?))
+}
+
+/// Begin the Teams device-code sign-in; returns `{ url, code }`.
+async fn teams_sign_in_start(svc: Scoped) -> ApiResult {
+    let prompt = svc.start_teams_sign_in().await.map_err(err500)?;
+    Ok(Json(serde_json::to_value(prompt).map_err(err500)?))
+}
+
+/// The Teams sign-in's progress: idle / pending / done / failed.
+async fn teams_sign_in_status(svc: Scoped) -> ApiResult {
+    Ok(Json(
+        serde_json::to_value(svc.teams_sign_in_status()).map_err(err500)?,
+    ))
 }
 
 /// Save people's timezones and leave. The response is the profiles as stored.

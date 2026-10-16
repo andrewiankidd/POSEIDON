@@ -16,6 +16,7 @@ pub mod github;
 pub mod gitlab;
 pub mod oauth;
 pub mod stub;
+pub mod teams;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

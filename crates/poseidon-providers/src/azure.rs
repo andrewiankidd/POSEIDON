@@ -2405,6 +2405,7 @@ mod tests {
             board_team: Some("Custom Squad".into()),
             members: vec![],
             rules: None,
+            channels: vec![],
         };
         let p = AzureDevOpsProvider::new(&cfg, Credential::Pat("t".into())).unwrap();
         assert_eq!(
@@ -2693,6 +2694,7 @@ mod tests {
             board_team: None,
             members: vec![],
             rules: None,
+            channels: vec![],
         };
         // Both a PAT (→ Basic) and an OAuth token (→ Bearer) construct cleanly.
         assert!(AzureDevOpsProvider::new(&cfg, Credential::Pat("tok".into())).is_ok());

@@ -777,6 +777,124 @@ impl Store {
             .collect())
     }
 
+    /// Upsert chat-channel threads (idempotent per channel + root message id). A thread that
+    /// gained replies is replaced wholesale, so the stored picture is always the latest read.
+    pub async fn upsert_threads(
+        &self,
+        owner: &str,
+        threads: &[poseidon_core::ChannelThread],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for t in threads {
+            sqlx::query(
+                "INSERT INTO channel_thread
+                    (owner, team, channel_key, id, channel_name, author, automated, created_at,
+                     last_activity_at, urgent, web_url, replies_json)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(owner, team, channel_key, id) DO UPDATE SET
+                    channel_name=excluded.channel_name, author=excluded.author,
+                    automated=excluded.automated, created_at=excluded.created_at,
+                    last_activity_at=excluded.last_activity_at, urgent=excluded.urgent,
+                    web_url=excluded.web_url, replies_json=excluded.replies_json",
+            )
+            .bind(owner)
+            .bind(&t.team)
+            .bind(&t.channel_key)
+            .bind(&t.id)
+            .bind(&t.channel_name)
+            .bind(&t.author)
+            .bind(t.automated)
+            .bind(t.created_at.to_rfc3339())
+            .bind(t.last_activity_at.to_rfc3339())
+            .bind(t.urgent)
+            .bind(&t.web_url)
+            .bind(serde_json::to_string(&t.replies).unwrap_or_else(|_| "[]".to_string()))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forget threads started before `before` (the rolling window).
+    pub async fn prune_threads(&self, owner: &str, before: DateTime<Utc>) -> Result<u64> {
+        let done = sqlx::query("DELETE FROM channel_thread WHERE owner = ? AND created_at < ?")
+            .bind(owner)
+            .bind(before.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Forget every thread of one channel (it was removed from the team's profile).
+    pub async fn delete_channel_threads(
+        &self,
+        owner: &str,
+        team: &str,
+        channel_key: &str,
+    ) -> Result<u64> {
+        let done = sqlx::query(
+            "DELETE FROM channel_thread WHERE owner = ? AND team = ? AND channel_key = ?",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(channel_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Threads started at/after `since`, optionally scoped to one team.
+    pub async fn list_threads(
+        &self,
+        owner: &str,
+        team: Option<&str>,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<poseidon_core::ChannelThread>> {
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            String,
+            String,
+            bool,
+            Option<String>,
+            String,
+        );
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT team, channel_key, id, channel_name, author, automated, created_at,
+                    last_activity_at, urgent, web_url, replies_json
+             FROM channel_thread
+             WHERE owner = ? AND (? IS NULL OR team = ?) AND created_at >= ?
+             ORDER BY created_at",
+        )
+        .bind(owner)
+        .bind(team)
+        .bind(team)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| poseidon_core::ChannelThread {
+                team: r.0,
+                channel_key: r.1,
+                id: r.2,
+                channel_name: r.3,
+                author: r.4,
+                automated: r.5,
+                created_at: parse_dt(&r.6),
+                last_activity_at: parse_dt(&r.7),
+                urgent: r.8,
+                web_url: r.9,
+                replies: serde_json::from_str(&r.10).unwrap_or_default(),
+            })
+            .collect())
+    }
+
     /// Store AI demand verdicts (replacing any earlier verdict for the same item).
     pub async fn upsert_demand(
         &self,
@@ -2103,6 +2221,94 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn channel_threads_round_trip_replace_scope_and_prune() {
+        use poseidon_core::{ChannelThread, ThreadReply};
+        let store = Store::connect_in_memory().await.unwrap();
+        let at = |s: &str| -> DateTime<Utc> { s.parse().unwrap() };
+        let thread =
+            |id: &str, team: &str, created: &str, replies: Vec<ThreadReply>| ChannelThread {
+                id: id.into(),
+                team: team.into(),
+                channel_key: "g/19:c@thread".into(),
+                channel_name: "Ops".into(),
+                author: "Ana".into(),
+                automated: false,
+                created_at: at(created),
+                last_activity_at: at(created),
+                urgent: true,
+                web_url: Some("https://teams.microsoft.com/l/message/1".into()),
+                replies,
+            };
+        let reply = ThreadReply {
+            author: "Ben".into(),
+            at: at("2026-10-01T10:00:00Z"),
+        };
+        store
+            .upsert_threads(
+                DEFAULT_OWNER,
+                &[
+                    thread("1", "A", "2026-09-01T09:00:00Z", vec![]),
+                    thread("2", "B", "2026-10-01T09:00:00Z", vec![]),
+                ],
+            )
+            .await
+            .unwrap();
+        // a later read of thread 1 now has an answer: replaced, not duplicated
+        store
+            .upsert_threads(
+                DEFAULT_OWNER,
+                &[thread(
+                    "1",
+                    "A",
+                    "2026-09-01T09:00:00Z",
+                    vec![reply.clone()],
+                )],
+            )
+            .await
+            .unwrap();
+        let all = store
+            .list_threads(DEFAULT_OWNER, None, at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].replies, vec![reply]);
+        assert!(all[0].urgent && !all[0].automated);
+        assert_eq!(all[0].created_at, at("2026-09-01T09:00:00Z"));
+        assert_eq!(
+            store
+                .list_threads(DEFAULT_OWNER, Some("B"), at("2026-01-01T00:00:00Z"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .list_threads("someone@else.com", None, at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .prune_threads(DEFAULT_OWNER, at("2026-09-15T00:00:00Z"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .delete_channel_threads(DEFAULT_OWNER, "B", "g/19:c@thread")
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(store
+            .list_threads(DEFAULT_OWNER, None, at("2026-01-01T00:00:00Z"))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
