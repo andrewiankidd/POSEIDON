@@ -56,7 +56,7 @@ chrono-tz = { version = "0.10", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 
 # Paths
-directories = "5"
+directories = "6"
 
 # Logging
 tracing = "0.1"
