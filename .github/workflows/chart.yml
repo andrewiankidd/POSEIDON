@@ -36,7 +36,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Derive version (tag → X.Y.Z, or the dispatch input)
         id: ver
