@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - name: Bundle docs into the web assets
         # The in-app docs viewer fetches assets/docs/*.md by relative URL. The
         # Tauri build does this copy via build.rs; for the static Pages bundle we
